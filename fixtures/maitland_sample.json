@@ -1,0 +1,25 @@
+{
+  "places": [
+    {
+      "id": "MOCK_PLACE_0001",
+      "displayName": { "text": "Green Sprout Cafe", "languageCode": "en" },
+      "formattedAddress": "123 Independence Ln, Maitland, FL 32751, USA",
+      "websiteUri": "https://example.com/green-sprout",
+      "location": { "latitude": 28.6281, "longitude": -81.3625 }
+    },
+    {
+      "id": "MOCK_PLACE_0002",
+      "displayName": { "text": "Lakeside Grill", "languageCode": "en" },
+      "formattedAddress": "456 Horatio Ave, Maitland, FL 32751, USA",
+      "websiteUri": "https://example.com/lakeside-grill",
+      "location": { "latitude": 28.6255, "longitude": -81.3648 }
+    },
+    {
+      "id": "MOCK_PLACE_0003",
+      "displayName": { "text": "Casa Verde Taqueria", "languageCode": "en" },
+      "formattedAddress": "789 Maitland Ave, Maitland, FL 32751, USA",
+      "websiteUri": null,
+      "location": { "latitude": 28.6302, "longitude": -81.3611 }
+    }
+  ]
+}
