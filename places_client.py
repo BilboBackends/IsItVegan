@@ -110,6 +110,16 @@ def _grid_centers(
     return centers
 
 
+def _in_city(restaurant: dict, city: str) -> bool:
+    """True if the restaurant's formatted address is in the target city.
+
+    Matches the city as a comma-delimited address component (", Maitland,")
+    so a street named after another town doesn't create false positives.
+    """
+    address = restaurant.get("address") or ""
+    return f", {city.lower()}," in f" {address.lower()} "
+
+
 def discover_restaurants(
     *,
     api_key: str | None,
@@ -117,42 +127,59 @@ def discover_restaurants(
     lng: float,
     radius_meters: float,
     cell_radius_meters: float = 800.0,
+    city_filter: str | None = None,
     mock_fixture_path: str | None = None,
-) -> list[dict]:
-    """Return deduplicated, normalized restaurant dicts covering the area.
+) -> dict:
+    """Discover restaurants covering the area; optionally filter to a city.
 
     Tiles the area (centered on lat/lng, out to radius_meters) with a grid of
     smaller search circles of cell_radius_meters each, since one call returns
     at most 20 results. Results are deduped by place_id.
 
-    If mock_fixture_path is set, reads places from that JSON file (a list of
-    raw Places API place objects) and skips the network entirely — no grid.
+    If city_filter is set, results whose address is not in that city are
+    dropped (the area search overshoots small towns into neighbors).
+
+    Returns a dict: {"restaurants": [...], "raw_count": int, "dropped": int}
+    so callers can log how many out-of-city places were filtered.
+
+    If mock_fixture_path is set, reads places from that JSON file and skips the
+    network entirely — no grid.
     """
     if mock_fixture_path:
         raw = json.loads(Path(mock_fixture_path).read_text(encoding="utf-8"))
         places = raw.get("places", raw) if isinstance(raw, dict) else raw
-        return _dedup([_normalize_place(p) for p in places])
-
-    if not api_key:
+        found = _dedup([_normalize_place(p) for p in places])
+    elif not api_key:
         raise RuntimeError(
             "GOOGLE_PLACES_API_KEY is not set. Put it in .env, or run with a "
             "mock fixture (see fixtures/maitland_sample.json)."
         )
+    else:
+        centers = _grid_centers(lat, lng, radius_meters, cell_radius_meters)
+        normalized: list[dict] = []
+        with httpx.Client(timeout=30.0) as client:
+            for c_lat, c_lng in centers:
+                raw_places = _search_circle(
+                    client,
+                    api_key=api_key,
+                    lat=c_lat,
+                    lng=c_lng,
+                    radius_meters=cell_radius_meters,
+                )
+                normalized.extend(_normalize_place(p) for p in raw_places)
+        found = _dedup(normalized)
 
-    centers = _grid_centers(lat, lng, radius_meters, cell_radius_meters)
-    normalized: list[dict] = []
-    with httpx.Client(timeout=30.0) as client:
-        for c_lat, c_lng in centers:
-            raw_places = _search_circle(
-                client,
-                api_key=api_key,
-                lat=c_lat,
-                lng=c_lng,
-                radius_meters=cell_radius_meters,
-            )
-            normalized.extend(_normalize_place(p) for p in raw_places)
+    raw_count = len(found)
+    if city_filter:
+        kept = [r for r in found if _in_city(r, city_filter)]
+    else:
+        kept = found
 
-    return _dedup(normalized)
+    return {
+        "restaurants": kept,
+        "raw_count": raw_count,
+        "dropped": raw_count - len(kept),
+    }
 
 
 def _dedup(restaurants: list[dict]) -> list[dict]:

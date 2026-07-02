@@ -23,6 +23,7 @@ class Settings:
     discovery_lng: float
     discovery_radius_meters: float
     discovery_cell_radius_meters: float
+    discovery_city: str | None
     database_path: str
 
 
@@ -48,6 +49,10 @@ def load_settings() -> Settings:
         discovery_cell_radius_meters=_get_float(
             "DISCOVERY_CELL_RADIUS_METERS", 1500.0
         ),
+        # Keep only results whose address is in this city. The area search
+        # overshoots small towns into neighbors (Orlando, Winter Park). Set
+        # empty to keep everything. MVP: Maitland only.
+        discovery_city=(os.environ.get("DISCOVERY_CITY", "Maitland") or None),
         database_path=os.environ.get("DATABASE_PATH", "veganfind.db"),
     )
 
