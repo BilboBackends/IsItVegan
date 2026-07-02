@@ -4,7 +4,8 @@ Finds vegan-friendly dishes at restaurants by analyzing menu text and photos,
 even when a restaurant doesn't market itself as vegan. See [CLAUDE.md](CLAUDE.md)
 for the full product spec and pipeline design.
 
-**Current phase: Phase 0 — restaurant discovery (Maitland, FL).**
+**Current phase: Phase 1 — menu-text ingestion (Maitland, FL).**
+Phase 0 (discovery) is complete.
 
 ## Setup
 
@@ -58,6 +59,31 @@ python discover.py --mock fixtures/maitland_sample.json
 # Preview without writing to the DB:
 python discover.py --mock fixtures/maitland_sample.json --dry-run
 ```
+
+### Phase 1 — menu-text ingestion
+
+Scrapes each restaurant's website for readable menu text (stored as a
+restaurant-level `text` source). Does not parse dishes — Claude does that in
+Phase 3. Idempotent; re-runs upsert on (restaurant_id, url).
+
+```bash
+# Ingest restaurants that have a website but no menu text yet:
+python ingest.py
+
+# Re-scrape everything:
+python ingest.py --all
+
+# One restaurant (debug a single site):
+python ingest.py --restaurant-id 30
+
+# Preview without writing:
+python ingest.py --dry-run
+```
+
+Sites that are bot-blocked (403/409), JS-rendered (no server-side text), or
+non-HTML are reported as failures and skipped — they're candidates for the
+photo-based fallback (a later phase). In the current Maitland set, ~32 of 51
+sites scrape successfully.
 
 ## Discovery configuration (`.env`)
 

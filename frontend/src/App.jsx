@@ -20,8 +20,12 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [discovering, setDiscovering] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
+  const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
+  const [menuText, setMenuText] = useState(null);
+  const [menuLoading, setMenuLoading] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -71,10 +75,53 @@ export default function App() {
     }
   }
 
-  // Data-quality flags surfaced from the earlier discovery run: places with
-  // no website (scraping fallback needed) and obvious non-dining spots.
+  async function runIngest() {
+    setIngesting(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Ingest failed (${res.status})`);
+      setNotice(
+        `Menu ingestion: ${data.succeeded} scraped, ${data.failed} failed ` +
+          `(blocked / JS-rendered — photo-fallback candidates).`
+      );
+      await loadData();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIngesting(false);
+    }
+  }
+
+  async function openMenu(r) {
+    setMenuFor(r);
+    setMenuText(null);
+    setMenuLoading(true);
+    try {
+      const res = await fetch(`/api/restaurants/${r.id}/menu-text`);
+      const data = await res.json();
+      setMenuText(res.ok ? data.content : `(${data.error || "no text"})`);
+    } catch (e) {
+      setMenuText(`(failed to load: ${e.message})`);
+    } finally {
+      setMenuLoading(false);
+    }
+  }
+
+  // Data-quality flags: places with no website (scraping fallback needed)
+  // and how many have menu text scraped so far.
   const noWebsite = useMemo(
     () => restaurants.filter((r) => !r.website_url).length,
+    [restaurants]
+  );
+  const withMenuText = useMemo(
+    () => restaurants.filter((r) => r.has_menu_text).length,
     [restaurants]
   );
 
@@ -99,18 +146,28 @@ export default function App() {
               {config?.city ? ` · ${config.city}, FL` : ""}
             </p>
           </div>
-          <button
-            onClick={runDiscovery}
-            disabled={discovering || !config?.has_api_key}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-            title={
-              config && !config.has_api_key
-                ? "GOOGLE_PLACES_API_KEY not set in .env"
-                : "Runs ~49 Places API calls"
-            }
-          >
-            {discovering ? "Discovering…" : "Run discovery"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={runIngest}
+              disabled={ingesting || discovering}
+              className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
+              title="Scrapes menu text for restaurants that don't have it yet"
+            >
+              {ingesting ? "Ingesting…" : "Ingest menus"}
+            </button>
+            <button
+              onClick={runDiscovery}
+              disabled={discovering || ingesting || !config?.has_api_key}
+              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              title={
+                config && !config.has_api_key
+                  ? "GOOGLE_PLACES_API_KEY not set in .env"
+                  : "Runs ~49 Places API calls"
+              }
+            >
+              {discovering ? "Discovering…" : "Run discovery"}
+            </button>
+          </div>
         </header>
 
         {config && !config.has_api_key && (
@@ -135,17 +192,17 @@ export default function App() {
           <StatCard
             label="With website"
             value={restaurants.length - noWebsite}
-            hint="scrapable in Phase 1"
+            hint="scrapable"
           />
           <StatCard
-            label="No website"
-            value={noWebsite}
-            hint="need photo fallback"
+            label="Menu text scraped"
+            value={withMenuText}
+            hint="ready for classification"
           />
           <StatCard
-            label="Search radius"
-            value={config ? `${config.radius_meters / 1000} km` : "—"}
-            hint={config ? `${config.cell_radius_meters} m cells` : ""}
+            label="No menu text"
+            value={restaurants.length - withMenuText}
+            hint="no site / blocked / JS"
           />
         </div>
 
@@ -177,6 +234,7 @@ export default function App() {
                     <th className="px-4 py-3 font-medium">Name</th>
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
+                    <th className="px-4 py-3 font-medium">Menu text</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -200,6 +258,18 @@ export default function App() {
                           <span className="text-slate-300">—</span>
                         )}
                       </td>
+                      <td className="px-4 py-3">
+                        {r.has_menu_text ? (
+                          <button
+                            onClick={() => openMenu(r)}
+                            className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                          >
+                            view
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-400">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -208,6 +278,42 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {menuFor && (
+        <div
+          className="fixed inset-0 z-10 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setMenuFor(null)}
+        >
+          <div
+            className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <h2 className="font-semibold text-slate-900">
+                Scraped menu text — {menuFor.name}
+              </h2>
+              <button
+                onClick={() => setMenuFor(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="overflow-y-auto p-4">
+              {menuLoading ? (
+                <div className="text-slate-400">Loading…</div>
+              ) : (
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs text-slate-700">
+                  {menuText}
+                </pre>
+              )}
+            </div>
+            <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
+              Raw text — Claude will parse dishes from this in Phase 3.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

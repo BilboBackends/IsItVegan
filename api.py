@@ -17,6 +17,7 @@ from flask_cors import CORS
 
 import db
 import discover
+import ingest
 from config import settings
 
 app = Flask(__name__)
@@ -86,6 +87,38 @@ def run_discovery() -> object:
             "total_in_db": db.count_restaurants(),
         }
     )
+
+
+@app.post("/api/ingest")
+def run_ingest() -> object:
+    """Trigger Phase 1 menu-text ingestion.
+
+    Scrapes websites for restaurants that don't have menu text yet (or all,
+    with {"all": true}). Synchronous; can take a minute across many sites.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = ingest.run(do_all=bool(payload.get("all")))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(
+        {
+            "succeeded": result["succeeded"],
+            "failed": result["failed"],
+            "failures": [
+                {"name": name, "error": err} for name, err in result["failures"]
+            ],
+        }
+    )
+
+
+@app.get("/api/restaurants/<int:restaurant_id>/menu-text")
+def restaurant_menu_text(restaurant_id: int) -> object:
+    """Return the scraped menu text for a restaurant, or 404 if none yet."""
+    source = db.get_menu_text(restaurant_id)
+    if source is None:
+        return jsonify({"error": "No menu text ingested for this restaurant."}), 404
+    return jsonify(source)
 
 
 if __name__ == "__main__":

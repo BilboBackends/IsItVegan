@@ -36,13 +36,28 @@ CREATE TABLE IF NOT EXISTS dishes (
     UNIQUE (restaurant_id, name)
 );
 
+-- A source is evidence: a menu-text excerpt or an image. It can attach to a
+-- whole restaurant (raw menu text scraped in Phase 1, before dishes exist) or
+-- to a specific dish (once classification produces dishes). Exactly one of
+-- restaurant_id / dish_id is set. `url` records where the text/image came from.
 CREATE TABLE IF NOT EXISTS sources (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    dish_id    INTEGER NOT NULL REFERENCES dishes(id),
-    type       TEXT NOT NULL CHECK (type IN ('text', 'image')),
-    content    TEXT NOT NULL,
-    fetched_at TEXT
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER REFERENCES restaurants(id),
+    dish_id       INTEGER REFERENCES dishes(id),
+    type          TEXT NOT NULL CHECK (type IN ('text', 'image')),
+    content       TEXT NOT NULL,
+    url           TEXT,
+    fetched_at    TEXT,
+    CHECK (
+        (restaurant_id IS NOT NULL AND dish_id IS NULL)
+        OR (restaurant_id IS NULL AND dish_id IS NOT NULL)
+    )
 );
+
+-- One menu-text source per restaurant+url, so re-scraping upserts in place.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_restaurant_url
+    ON sources (restaurant_id, url)
+    WHERE restaurant_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS classifications (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,14 +138,80 @@ def count_restaurants(db_path: str | None = None) -> int:
 
 
 def list_restaurants(db_path: str | None = None) -> list[dict]:
-    """Return all restaurants as plain dicts, newest-scraped first."""
+    """Return all restaurants as plain dicts, newest-scraped first.
+
+    Includes has_menu_text: whether a menu-text source has been ingested.
+    """
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT id, name, address, place_id, website_url, lat, lng,
-                   last_scraped_at
-            FROM restaurants
-            ORDER BY last_scraped_at DESC, name ASC
+            SELECT r.id, r.name, r.address, r.place_id, r.website_url,
+                   r.lat, r.lng, r.last_scraped_at,
+                   EXISTS (
+                       SELECT 1 FROM sources s
+                       WHERE s.restaurant_id = r.id AND s.type = 'text'
+                   ) AS has_menu_text
+            FROM restaurants r
+            ORDER BY r.last_scraped_at DESC, r.name ASC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_menu_text(
+    restaurant_id: int,
+    url: str,
+    content: str,
+    fetched_at: str,
+    db_path: str | None = None,
+) -> None:
+    """Insert or replace the menu-text source for (restaurant_id, url)."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sources (restaurant_id, dish_id, type, content, url, fetched_at)
+            VALUES (:restaurant_id, NULL, 'text', :content, :url, :fetched_at)
+            ON CONFLICT (restaurant_id, url) WHERE restaurant_id IS NOT NULL
+            DO UPDATE SET content = excluded.content, fetched_at = excluded.fetched_at
+            """,
+            {
+                "restaurant_id": restaurant_id,
+                "url": url,
+                "content": content,
+                "fetched_at": fetched_at,
+            },
+        )
+
+
+def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None:
+    """Return the stored menu-text source for a restaurant, or None."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT id, restaurant_id, content, url, fetched_at
+            FROM sources
+            WHERE restaurant_id = ? AND type = 'text'
+            ORDER BY fetched_at DESC
+            LIMIT 1
+            """,
+            (restaurant_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def restaurants_needing_ingest(db_path: str | None = None) -> list[dict]:
+    """Restaurants that have a website but no menu-text source yet."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.name, r.website_url
+            FROM restaurants r
+            WHERE r.website_url IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM sources s
+                  WHERE s.restaurant_id = r.id AND s.type = 'text'
+              )
+            ORDER BY r.name ASC
             """
         ).fetchall()
     return [dict(r) for r in rows]
