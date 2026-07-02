@@ -31,6 +31,7 @@ def run(mock_fixture_path: str | None = None, dry_run: bool = False) -> list[dic
         lat=settings.discovery_lat,
         lng=settings.discovery_lng,
         radius_meters=settings.discovery_radius_meters,
+        cell_radius_meters=settings.discovery_cell_radius_meters,
         mock_fixture_path=mock_fixture_path,
     )
 

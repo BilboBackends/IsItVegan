@@ -22,6 +22,7 @@ class Settings:
     discovery_lat: float
     discovery_lng: float
     discovery_radius_meters: float
+    discovery_cell_radius_meters: float
     database_path: str
 
 
@@ -42,6 +43,11 @@ def load_settings() -> Settings:
         discovery_lat=_get_float("DISCOVERY_LAT", 28.6278),
         discovery_lng=_get_float("DISCOVERY_LNG", -81.3631),
         discovery_radius_meters=_get_float("DISCOVERY_RADIUS_METERS", 4000.0),
+        # Grid cell radius. Smaller = more thorough but more API calls.
+        # 1500m over the 4km Maitland area ≈ 49 calls/run.
+        discovery_cell_radius_meters=_get_float(
+            "DISCOVERY_CELL_RADIUS_METERS", 1500.0
+        ),
         database_path=os.environ.get("DATABASE_PATH", "veganfind.db"),
     )
 
