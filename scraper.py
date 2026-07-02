@@ -29,6 +29,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from headless import fetch_rendered_html, is_available
 from menu_score import score_menu_text
 
 # A browser-ish UA; some sites 403 the default httpx agent.
@@ -190,22 +191,13 @@ def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
     return follow[:_MAX_FOLLOW], third_party
 
 
-def scrape_menu_text(
-    url: str,
-    *,
-    timeout: float = 20.0,
-    mock_html: str | None = None,
-) -> ScrapeResult:
-    """Scrape a restaurant site for menu text, following menu links one level.
+def _collect_http(
+    url: str, timeout: float
+) -> tuple[list[tuple[str, str]] | None, list[str], _Fetched]:
+    """Collect (page_url, text) via plain HTTP: landing + followed menu links.
 
-    Fetches the landing page, follows up to _MAX_FOLLOW same-domain menu-ish
-    links, and combines the text. Pass mock_html to skip the network entirely
-    (no link-following in mock mode).
+    Returns (pages | None if landing failed, third_party_hosts, landing_meta).
     """
-    if mock_html is not None:
-        text = _extract_text(mock_html)
-        return _finish(url, [(url, text)], [], status_code=None)
-
     with httpx.Client(
         timeout=timeout,
         follow_redirects=True,
@@ -213,28 +205,98 @@ def scrape_menu_text(
     ) as client:
         landing = _fetch(client, url)
         if landing.html is None:
-            # Couldn't even get the landing page — report that failure directly.
-            return ScrapeResult(
-                url=url,
-                ok=False,
-                status_code=landing.status_code,
-                error=landing.error,
-            )
+            return None, [], landing
 
         menu_links, third_party = _find_menu_links(landing.html, url)
-
-        # Collect (url, text) for the landing page and each followed menu link,
-        # so _finish can score them and keep the single most menu-like page.
         pages: list[tuple[str, str]] = [(url, _extract_text(landing.html))]
         for link in menu_links:
             page = _fetch(client, link)
             if page.html is None:
                 continue
-            page_text = _extract_text(page.html)
-            if page_text:
-                pages.append((link, page_text))
+            text = _extract_text(page.html)
+            if text:
+                pages.append((link, text))
+    return pages, third_party, landing
 
-    return _finish(url, pages, third_party, status_code=landing.status_code)
+
+def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """Collect (page_url, text) via headless browser: landing + menu links.
+
+    Renders the landing page (running its JS), follows same-domain menu links
+    by rendering those too. Used only as a fallback when HTTP finds no menu.
+    """
+    landing_html, err = fetch_rendered_html(url)
+    if landing_html is None:
+        return [], []
+
+    menu_links, third_party = _find_menu_links(landing_html, url)
+    pages: list[tuple[str, str]] = [(url, _extract_text(landing_html))]
+    for link in menu_links:
+        page_html, _ = fetch_rendered_html(link)
+        if page_html is None:
+            continue
+        text = _extract_text(page_html)
+        if text:
+            pages.append((link, text))
+    return pages, third_party
+
+
+def scrape_menu_text(
+    url: str,
+    *,
+    timeout: float = 20.0,
+    use_headless: bool = True,
+    mock_html: str | None = None,
+) -> ScrapeResult:
+    """Scrape a restaurant site for menu text, following menu links one level.
+
+    Fast path: plain HTTP (landing + followed menu links), scored to keep the
+    best page. If that doesn't yield a real menu and use_headless is set, retry
+    the whole thing in a headless browser so JS-rendered menus (Toast/Square/
+    Clover and modern SPA sites) actually render before extraction.
+
+    Pass mock_html to skip the network entirely (no link-following, no headless).
+    """
+    if mock_html is not None:
+        return _finish(url, [(url, _extract_text(mock_html))], [], status_code=None)
+
+    pages, third_party, landing = _collect_http(url, timeout)
+
+    # If the landing page itself was fetchable, try scoring the HTTP result.
+    http_result = None
+    if pages is not None:
+        http_result = _finish(
+            url, pages, third_party, status_code=landing.status_code
+        )
+        if http_result.ok or not use_headless or not is_available():
+            return http_result
+
+    # Fast path failed to find a real menu (or landing was JS-blocked). Escalate
+    # to headless and keep whichever attempt scores as a menu / scores higher.
+    if not is_available():
+        return http_result or ScrapeResult(
+            url=url, ok=False, status_code=landing.status_code, error=landing.error
+        )
+
+    hl_pages, hl_third_party = _collect_headless(url)
+    if not hl_pages:
+        # Headless couldn't render anything; return the better failure we have.
+        return http_result or ScrapeResult(
+            url=url,
+            ok=False,
+            status_code=landing.status_code,
+            error=landing.error or "Headless render produced no content",
+        )
+
+    headless_result = _finish(
+        url, hl_pages, hl_third_party or third_party, status_code=200
+    )
+    # Prefer a real menu; otherwise keep the higher-scoring attempt.
+    if headless_result.ok:
+        return headless_result
+    if http_result and http_result.menu_score >= headless_result.menu_score:
+        return http_result
+    return headless_result
 
 
 def _finish(

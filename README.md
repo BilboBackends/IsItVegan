@@ -13,8 +13,13 @@ Phase 0 (discovery) is complete.
 
 ```bash
 python -m pip install -r requirements.txt
+python -m playwright install chromium   # headless browser for JS-rendered menus
 cp .env.example .env        # then edit .env and add your GOOGLE_PLACES_API_KEY
 ```
+
+The Chromium download is a one-time step Playwright needs on top of the pip
+install. Ingestion still runs without it (HTTP-only), just with lower menu
+coverage.
 
 The `.env` file is gitignored — never commit real keys, and keep placeholders
 only in `.env.example`.
@@ -87,10 +92,16 @@ structure. Only pages that clear the menu threshold are stored, so homepage
 marketing copy ("Authentic Cuisine · Reserve Your Table") is rejected rather
 than fed to Claude.
 
-Failures fall into: bot-blocked (403/409), JS-rendered / third-party menu host
-(Toast, Square, Clover — flagged by name), non-HTML (PDF/image), or
-homepage-only (no real menu found). All are photo-fallback candidates. In the
-current Maitland set, **22 of 51 sites yield a real menu**.
+When plain HTTP scraping finds no real menu, ingestion escalates to a headless
+browser (Playwright/Chromium) that runs the page's JavaScript, so JS-rendered
+menus (Toast/Square/Clover and modern SPA sites) render before extraction.
+Headless is a fallback only — sites that scrape fine over HTTP never pay its
+cost.
+
+Remaining failures: bot-blocked even in a browser, menus reachable only via a
+JS "Order" button we don't click, non-HTML (PDF/image), or genuinely
+homepage-only. All are photo-fallback candidates. In the current Maitland set,
+**35 of 51 sites yield a real menu** (~74% of the non-gas-station spots).
 
 ## Discovery configuration (`.env`)
 
@@ -110,6 +121,10 @@ config.py              # env / settings loader (single source of config)
 db.py                  # SQLite schema + read/upsert helpers
 places_client.py       # Google Places API (New) client (grid search + dedup)
 discover.py            # Phase 0 CLI: discover + persist restaurants
+scraper.py             # Phase 1: HTTP scrape + menu-link following + headless fallback
+headless.py            # Playwright headless-browser fetch (JS-rendered menus)
+menu_score.py          # Heuristic: is this text a real menu vs homepage copy?
+ingest.py              # Phase 1 CLI: scrape + persist menu text
 api.py                 # Flask JSON API for the local dashboard
 fixtures/              # mock data for running without live APIs
 frontend/              # React + Vite + Tailwind dashboard
