@@ -69,11 +69,14 @@ def run(
         result = scrape_menu_text(t["website_url"])
         if result.ok:
             succeeded += 1
-            print(f"  [ok]   {t['name']}  ({result.char_count} chars)")
+            print(
+                f"  [menu] {t['name']}  "
+                f"(score {result.menu_score:.2f}, {result.char_count} chars)"
+            )
             if not dry_run:
                 db.upsert_menu_text(
                     restaurant_id=t["id"],
-                    url=result.url,
+                    url=result.menu_url or result.url,
                     content=result.text,
                     fetched_at=now,
                 )

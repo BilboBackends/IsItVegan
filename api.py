@@ -19,6 +19,7 @@ import db
 import discover
 import ingest
 from config import settings
+from menu_score import score_menu_text
 
 app = Flask(__name__)
 # Allow the Vite dev server origin during local development.
@@ -114,10 +115,13 @@ def run_ingest() -> object:
 
 @app.get("/api/restaurants/<int:restaurant_id>/menu-text")
 def restaurant_menu_text(restaurant_id: int) -> object:
-    """Return the scraped menu text for a restaurant, or 404 if none yet."""
+    """Return the scraped menu text + its menu-likeness score, or 404."""
     source = db.get_menu_text(restaurant_id)
     if source is None:
         return jsonify({"error": "No menu text ingested for this restaurant."}), 404
+    score = score_menu_text(source["content"])
+    source["menu_score"] = score.score
+    source["menu_score_reason"] = score.reason
     return jsonify(source)
 
 

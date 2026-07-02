@@ -80,10 +80,17 @@ python ingest.py --restaurant-id 30
 python ingest.py --dry-run
 ```
 
-Sites that are bot-blocked (403/409), JS-rendered (no server-side text), or
-non-HTML are reported as failures and skipped — they're candidates for the
-photo-based fallback (a later phase). In the current Maitland set, ~32 of 51
-sites scrape successfully.
+The scraper follows menu-like links one level deep (same domain) so it finds
+menus that aren't on the landing page, and scores each page with a menu
+detector (`menu_score.py`) — prices, food words, menu-section headers, list
+structure. Only pages that clear the menu threshold are stored, so homepage
+marketing copy ("Authentic Cuisine · Reserve Your Table") is rejected rather
+than fed to Claude.
+
+Failures fall into: bot-blocked (403/409), JS-rendered / third-party menu host
+(Toast, Square, Clover — flagged by name), non-HTML (PDF/image), or
+homepage-only (no real menu found). All are photo-fallback candidates. In the
+current Maitland set, **22 of 51 sites yield a real menu**.
 
 ## Discovery configuration (`.env`)
 

@@ -25,6 +25,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [menuText, setMenuText] = useState(null);
+  const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
 
   async function loadData() {
@@ -106,7 +107,13 @@ export default function App() {
     try {
       const res = await fetch(`/api/restaurants/${r.id}/menu-text`);
       const data = await res.json();
-      setMenuText(res.ok ? data.content : `(${data.error || "no text"})`);
+      if (res.ok) {
+        setMenuText(data.content);
+        setMenuScore(data.menu_score);
+      } else {
+        setMenuText(`(${data.error || "no text"})`);
+        setMenuScore(null);
+      }
     } catch (e) {
       setMenuText(`(failed to load: ${e.message})`);
     } finally {
@@ -195,14 +202,14 @@ export default function App() {
             hint="scrapable"
           />
           <StatCard
-            label="Menu text scraped"
+            label="Real menus found"
             value={withMenuText}
-            hint="ready for classification"
+            hint="passed menu detection"
           />
           <StatCard
-            label="No menu text"
+            label="No usable menu"
             value={restaurants.length - withMenuText}
-            hint="no site / blocked / JS"
+            hint="blocked / JS / homepage-only"
           />
         </div>
 
@@ -290,7 +297,12 @@ export default function App() {
           >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <h2 className="font-semibold text-slate-900">
-                Scraped menu text — {menuFor.name}
+                Scraped menu — {menuFor.name}
+                {menuScore != null && (
+                  <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                    menu score {menuScore.toFixed(2)}
+                  </span>
+                )}
               </h2>
               <button
                 onClick={() => setMenuFor(null)}

@@ -5,21 +5,31 @@ for Claude's Phase 3 dish classification). It does NOT parse dishes here —
 menu HTML is too inconsistent for reliable heuristics, and Claude does that
 job better downstream. We just get clean text out.
 
+Coverage strategy: the actual menu often isn't on the landing page. So we
+scrape the landing page, find links that look like a menu ("menu", "food",
+"dinner", "order", ...), follow up to a handful of them one level deep (same
+domain only), and combine the text. This turns many "too little text" landing
+pages into real menu content.
+
 Returns a ScrapeResult so callers can distinguish success from the many ways
 a fetch can fail (timeout, 403, JS-only page, non-HTML) and log rather than
 silently drop, per CLAUDE.md.
 
-Known limitations (CLAUDE.md open questions), handled as failures for now:
-- JS-rendered menus (no server-side text) -> returns little/no text
-- PDF menus, third-party ordering iframes (Toast/Square) -> not followed
-These are candidates for the photo-only fallback, out of scope for now.
+Known limitations (CLAUDE.md open questions), still handled as failures:
+- JS-rendered menus (no server-side text, incl. many third-party ordering
+  hosts) -> too little text. Detected third-party hosts are flagged in the
+  error so they're clear photo-fallback candidates.
+- PDF menus -> non-HTML, not parsed here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+
+from menu_score import score_menu_text
 
 # A browser-ish UA; some sites 403 the default httpx agent.
 _USER_AGENT = (
@@ -30,9 +40,51 @@ _USER_AGENT = (
 # Tags whose text is never menu content.
 _STRIP_TAGS = ["script", "style", "noscript", "svg", "head", "nav", "footer"]
 
-# If extracted text is shorter than this, treat it as a failed scrape
+# If combined extracted text is shorter than this, treat it as a failed scrape
 # (usually a JS-only shell or a block page rather than real menu content).
 _MIN_USEFUL_CHARS = 200
+
+# Words that, in a link's text or href, suggest it points at a menu.
+_MENU_HINTS = (
+    "menu",
+    "menus",
+    "food",
+    "dinner",
+    "lunch",
+    "breakfast",
+    "brunch",
+    "dine",
+    "eat",
+    "order",
+    "our-food",
+    "carte",
+)
+
+# Links we never follow even if they look menu-ish (downloads / socials).
+_SKIP_HINTS = ("facebook.", "instagram.", "twitter.", "yelp.", "tel:", "mailto:")
+
+# Third-party menu/ordering hosts. If the menu link points here, the page is
+# almost always JS-rendered — we note it so the failure is clearly a
+# photo-fallback candidate rather than a mystery.
+_THIRD_PARTY_HOSTS = (
+    "toasttab.com",
+    "toast.site",
+    "square.site",
+    "squareup.com",
+    "clover.com",
+    "cloveronline.com",
+    "getsauce.com",
+    "grubhub.com",
+    "doordash.com",
+    "ubereats.com",
+    "chownow.com",
+    "popmenu.com",
+    "menufy.com",
+    "slicelife.com",
+)
+
+# Max menu-ish links to follow per site (bounds requests per restaurant).
+_MAX_FOLLOW = 5
 
 
 @dataclass
@@ -43,6 +95,15 @@ class ScrapeResult:
     error: str | None = None
     status_code: int | None = None
     char_count: int = 0
+    # URLs fetched while searching for the menu (landing + followed links).
+    scraped_urls: list[str] = field(default_factory=list)
+    # The single URL whose text we kept (the best-scoring page).
+    menu_url: str | None = None
+    # Third-party menu hosts we saw linked but couldn't scrape (JS-rendered).
+    third_party_hosts: list[str] = field(default_factory=list)
+    # Menu-likeness of the kept text (0..1) and whether it cleared threshold.
+    menu_score: float = 0.0
+    is_menu: bool = False
 
 
 def _extract_text(html: str) -> str:
@@ -56,68 +117,189 @@ def _extract_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+@dataclass
+class _Fetched:
+    html: str | None = None
+    error: str | None = None
+    status_code: int | None = None
+
+
+def _fetch(client: httpx.Client, url: str) -> _Fetched:
+    """Fetch one URL, returning HTML or a classified error (never raises)."""
+    try:
+        resp = client.get(url)
+    except httpx.HTTPError as exc:
+        return _Fetched(error=f"{type(exc).__name__}: {exc}")
+    if resp.status_code >= 400:
+        return _Fetched(status_code=resp.status_code, error=f"HTTP {resp.status_code}")
+    content_type = resp.headers.get("content-type", "")
+    if "html" not in content_type.lower():
+        return _Fetched(
+            status_code=resp.status_code,
+            error=f"Non-HTML content-type: {content_type or 'unknown'}",
+        )
+    return _Fetched(html=resp.text, status_code=resp.status_code)
+
+
+def _looks_menu_like(text: str, href: str) -> bool:
+    blob = f"{text} {href}".lower()
+    if any(skip in blob for skip in _SKIP_HINTS):
+        return False
+    return any(hint in blob for hint in _MENU_HINTS)
+
+
+def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
+    """Return (same-domain menu URLs to follow, third-party menu hosts seen).
+
+    Extracted from the full page (nav included) BEFORE _extract_text strips
+    nav — menu links very often live in the header/nav.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    base_host = urlparse(base_url).netloc.lower()
+
+    follow: list[str] = []
+    third_party: list[str] = []
+    seen: set[str] = set()
+
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith("#"):
+            continue
+        if not _looks_menu_like(a.get_text(" ", strip=True), href):
+            continue
+
+        absolute = urljoin(base_url, href)
+        host = urlparse(absolute).netloc.lower()
+
+        tp = next((h for h in _THIRD_PARTY_HOSTS if h in host), None)
+        if tp:
+            if tp not in third_party:
+                third_party.append(tp)
+            continue
+
+        # Same-domain only (incl. www/bare variants), dedup, and don't refetch
+        # the landing page itself.
+        if host.replace("www.", "") != base_host.replace("www.", ""):
+            continue
+        norm = absolute.split("#")[0].rstrip("/")
+        if norm in seen or norm == base_url.split("#")[0].rstrip("/"):
+            continue
+        seen.add(norm)
+        follow.append(absolute)
+
+    return follow[:_MAX_FOLLOW], third_party
+
+
 def scrape_menu_text(
     url: str,
     *,
     timeout: float = 20.0,
     mock_html: str | None = None,
 ) -> ScrapeResult:
-    """Fetch `url` and return extracted readable text.
+    """Scrape a restaurant site for menu text, following menu links one level.
 
-    Pass mock_html to skip the network (testing / fixtures).
+    Fetches the landing page, follows up to _MAX_FOLLOW same-domain menu-ish
+    links, and combines the text. Pass mock_html to skip the network entirely
+    (no link-following in mock mode).
     """
     if mock_html is not None:
         text = _extract_text(mock_html)
-        return _finish(url, text, status_code=None)
+        return _finish(url, [(url, text)], [], status_code=None)
 
-    try:
-        with httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": _USER_AGENT},
-        ) as client:
-            resp = client.get(url)
-    except httpx.HTTPError as exc:
-        return ScrapeResult(url=url, ok=False, error=f"{type(exc).__name__}: {exc}")
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": _USER_AGENT},
+    ) as client:
+        landing = _fetch(client, url)
+        if landing.html is None:
+            # Couldn't even get the landing page — report that failure directly.
+            return ScrapeResult(
+                url=url,
+                ok=False,
+                status_code=landing.status_code,
+                error=landing.error,
+            )
 
-    if resp.status_code >= 400:
-        return ScrapeResult(
-            url=url,
-            ok=False,
-            status_code=resp.status_code,
-            error=f"HTTP {resp.status_code}",
-        )
+        menu_links, third_party = _find_menu_links(landing.html, url)
 
-    content_type = resp.headers.get("content-type", "")
-    if "html" not in content_type.lower():
-        return ScrapeResult(
-            url=url,
-            ok=False,
-            status_code=resp.status_code,
-            error=f"Non-HTML content-type: {content_type or 'unknown'}",
-        )
+        # Collect (url, text) for the landing page and each followed menu link,
+        # so _finish can score them and keep the single most menu-like page.
+        pages: list[tuple[str, str]] = [(url, _extract_text(landing.html))]
+        for link in menu_links:
+            page = _fetch(client, link)
+            if page.html is None:
+                continue
+            page_text = _extract_text(page.html)
+            if page_text:
+                pages.append((link, page_text))
 
-    text = _extract_text(resp.text)
-    return _finish(url, text, status_code=resp.status_code)
+    return _finish(url, pages, third_party, status_code=landing.status_code)
 
 
-def _finish(url: str, text: str, status_code: int | None) -> ScrapeResult:
-    if len(text) < _MIN_USEFUL_CHARS:
+def _finish(
+    url: str,
+    pages: list[tuple[str, str]],
+    third_party_hosts: list[str],
+    status_code: int | None,
+) -> ScrapeResult:
+    """Score every fetched page, keep the most menu-like, decide ok/fail.
+
+    A scrape only succeeds if the best page both has enough text AND clears the
+    menu threshold — so homepage marketing copy no longer counts as a menu.
+    """
+    scraped_urls = [p[0] for p in pages]
+
+    # Score each page; pick the highest menu score.
+    scored = [(page_url, text, score_menu_text(text)) for page_url, text in pages]
+    best_url, best_text, best = max(scored, key=lambda t: t[2].score)
+
+    if len(best_text) < _MIN_USEFUL_CHARS:
+        hint = "likely JS-rendered or a block page"
+        if third_party_hosts:
+            hint = f"menu on third-party host ({', '.join(third_party_hosts)})"
         return ScrapeResult(
             url=url,
             ok=False,
             status_code=status_code,
-            text=text,
-            char_count=len(text),
-            error=(
-                f"Too little text ({len(text)} chars) — likely JS-rendered "
-                "or a block page. Photo fallback candidate."
-            ),
+            text=best_text,
+            char_count=len(best_text),
+            scraped_urls=scraped_urls,
+            menu_url=best_url,
+            third_party_hosts=third_party_hosts,
+            menu_score=best.score,
+            is_menu=False,
+            error=f"Too little text ({len(best_text)} chars) — {hint}. "
+            "Photo fallback candidate.",
         )
+
+    if not best.is_menu:
+        hint = ""
+        if third_party_hosts:
+            hint = f" Menu may be on third-party host ({', '.join(third_party_hosts)})."
+        return ScrapeResult(
+            url=url,
+            ok=False,
+            status_code=status_code,
+            text=best_text,
+            char_count=len(best_text),
+            scraped_urls=scraped_urls,
+            menu_url=best_url,
+            third_party_hosts=third_party_hosts,
+            menu_score=best.score,
+            is_menu=False,
+            error=f"No real menu found (score {best.score:.2f}): {best.reason}.{hint}",
+        )
+
     return ScrapeResult(
-        url=url,
+        url=best_url,
         ok=True,
         status_code=status_code,
-        text=text,
-        char_count=len(text),
+        menu_url=best_url,
+        scraped_urls=scraped_urls,
+        third_party_hosts=third_party_hosts,
+        menu_score=best.score,
+        is_menu=True,
+        text=best_text,
+        char_count=len(best_text),
     )
