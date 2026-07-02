@@ -1,0 +1,93 @@
+"""Local dashboard API for the VeganFind pipeline.
+
+A thin JSON backend the React UI talks to, so you can see discovered
+restaurants and trigger a discovery run from the browser. Read-only over the
+SQLite DB except for the /discover endpoint, which runs Phase 0.
+
+Run:
+    python api.py            # serves http://localhost:5000
+
+The Vite dev server proxies /api/* here (see frontend/vite.config.js), so the
+frontend only ever talks to our own backend — no keys client-side.
+"""
+from __future__ import annotations
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
+import db
+import discover
+from config import settings
+
+app = Flask(__name__)
+# Allow the Vite dev server origin during local development.
+CORS(app)
+
+
+@app.get("/api/health")
+def health() -> object:
+    return jsonify({"status": "ok"})
+
+
+@app.get("/api/config")
+def get_config() -> object:
+    """Non-secret discovery settings, so the UI can show what area it targets.
+
+    Never returns the API key.
+    """
+    return jsonify(
+        {
+            "city": settings.discovery_city,
+            "lat": settings.discovery_lat,
+            "lng": settings.discovery_lng,
+            "radius_meters": settings.discovery_radius_meters,
+            "cell_radius_meters": settings.discovery_cell_radius_meters,
+            "has_api_key": bool(settings.google_places_api_key),
+            "database_path": settings.database_path,
+        }
+    )
+
+
+@app.get("/api/restaurants")
+def get_restaurants() -> object:
+    db.init_db()
+    restaurants = db.list_restaurants()
+    return jsonify({"count": len(restaurants), "restaurants": restaurants})
+
+
+@app.post("/api/discover")
+def run_discovery() -> object:
+    """Trigger a Phase 0 discovery run and persist results.
+
+    Synchronous — a run is ~49 Places calls (~20s). Fine for a local tool.
+    Pass {"dry_run": true} to preview without writing to the DB.
+    """
+    if not settings.google_places_api_key:
+        return (
+            jsonify(
+                {
+                    "error": "GOOGLE_PLACES_API_KEY is not set. Add it to .env "
+                    "and restart the server."
+                }
+            ),
+            400,
+        )
+
+    dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
+    try:
+        found = discover.run(dry_run=dry_run)
+    except Exception as exc:  # surface the failure to the UI instead of a 500 blob
+        return jsonify({"error": str(exc)}), 502
+
+    return jsonify(
+        {
+            "dry_run": dry_run,
+            "discovered": len(found),
+            "total_in_db": db.count_restaurants(),
+        }
+    )
+
+
+if __name__ == "__main__":
+    # Local only. debug=True gives auto-reload while iterating on the pipeline.
+    app.run(host="127.0.0.1", port=5000, debug=True)

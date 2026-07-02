@@ -120,3 +120,17 @@ def upsert_restaurants(
 def count_restaurants(db_path: str | None = None) -> int:
     with connect(db_path) as conn:
         return conn.execute("SELECT COUNT(*) FROM restaurants").fetchone()[0]
+
+
+def list_restaurants(db_path: str | None = None) -> list[dict]:
+    """Return all restaurants as plain dicts, newest-scraped first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, address, place_id, website_url, lat, lng,
+                   last_scraped_at
+            FROM restaurants
+            ORDER BY last_scraped_at DESC, name ASC
+            """
+        ).fetchall()
+    return [dict(r) for r in rows]
