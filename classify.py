@@ -54,6 +54,7 @@ def run(
 
     now = datetime.now(timezone.utc).isoformat()
     ok_count = fail_count = dish_count = 0
+    total_cost = 0.0
     failures: list[tuple[str, str]] = []
 
     for r in targets:
@@ -84,9 +85,11 @@ def run(
         )
         ok_count += 1
         dish_count += len(result.dishes)
+        total_cost += result.cost_estimate
         print(
             f"  [ok]   {r['name']}: {len(result.dishes)} dishes, "
             f"{veganish} vegan/likely/adaptable (food, excl. drinks)"
+            f"  [~${result.cost_estimate:.2f}]"
         )
 
         if dry_run:
@@ -115,7 +118,7 @@ def run(
 
     print(
         f"\nDone. {ok_count} restaurants classified ({dish_count} dishes), "
-        f"{fail_count} failed."
+        f"{fail_count} failed. Estimated API cost: ~${total_cost:.2f}."
     )
     if failures:
         print("Failures:")
@@ -124,7 +127,7 @@ def run(
     if dry_run:
         print("[dry-run] Nothing written to the database.")
     return {"ok": ok_count, "failed": fail_count, "dishes": dish_count,
-            "failures": failures}
+            "cost": round(total_cost, 2), "failures": failures}
 
 
 def main() -> None:

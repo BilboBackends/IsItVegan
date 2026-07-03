@@ -23,9 +23,18 @@ from dataclasses import dataclass, field
 
 from config import settings
 
-# Accuracy matters most here (false positives are the product's worst failure
-# mode), so default to Opus. Override with CLASSIFIER_MODEL for cost tests.
-MODEL = os.environ.get("CLASSIFIER_MODEL", "claude-opus-4-8")
+# Sonnet gives near-Opus quality on structured extraction at a fraction of
+# the cost (output tokens dominate here — ~100/dish). Override with
+# CLASSIFIER_MODEL: claude-opus-4-8 for max accuracy, claude-haiku-4-5 for
+# cheapest (no thinking/effort support).
+MODEL = os.environ.get("CLASSIFIER_MODEL", "claude-sonnet-5")
+
+# $/MTok (input, output) for cost reporting. Approximate list prices.
+_PRICES = {
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
 
 # Bound per-restaurant cost: menus longer than this are truncated.
 _MAX_MENU_CHARS = 24_000
@@ -60,13 +69,15 @@ _SCHEMA = {
                     },
                     "reasoning": {
                         "type": "string",
-                        "description": "Short: why this verdict (ingredients, "
-                        "typical preparation, what's unknown).",
+                        "description": "ONE short sentence (max ~15 words): "
+                        "why this verdict. For vegan_adaptable, name the "
+                        "modification.",
                     },
                     "evidence": {
                         "type": "string",
-                        "description": "Verbatim excerpt from the menu text "
-                        "that supports the verdict.",
+                        "description": "Short verbatim phrase from the menu "
+                        "(max ~8 words) supporting the verdict. Empty string "
+                        "if the dish name itself is the evidence.",
                     },
                 },
                 "required": [
@@ -107,13 +118,17 @@ When preparation is genuinely unknown, prefer likely_vegan over vegan, and \
 unclear over likely_vegan. Drinks, sides, and desserts count as dishes.
 - Use cuisine knowledge: naan usually has dairy; pad thai usually has fish \
 sauce and egg; refried beans often have lard; pizza dough is usually vegan \
-but check toppings; miso soup usually uses fish dashi.
+but check toppings; miso soup usually uses fish dashi; yakitori/izakaya tare \
+glaze often contains chicken stock or bonito — grilled items with tare are \
+likely_vegan at best, never vegan.
 - Only extract real dishes (things a customer can order). Skip hours, \
 addresses, marketing copy.
 - Categorize each item: drink (any beverage — soda, juice, tea, coffee, \
 beer, wine, cocktails), dessert, or food. Users looking for vegan options \
 mean food; a vegan soda is not a "vegan option".
 - evidence must be a verbatim excerpt of the provided text, not paraphrase.
+- Be terse: reasoning is one short sentence, evidence a short phrase. No \
+elaboration — the verdict, a reason, done.
 - Extract every dish on the menu, not a sample."""
 
 
@@ -136,6 +151,9 @@ class ClassificationResult:
     error: str | None = None
     model: str = MODEL
     stop_reason: str | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_estimate: float = 0.0  # USD, approximate list price
 
 
 def classify_menu(
@@ -196,17 +214,28 @@ def classify_menu(
         # Stream so large menus can emit a full dish list — big izakaya/BBQ
         # menus overflow a non-streaming response cap (observed live), and a
         # truncated dish list must never be stored.
-        with client.messages.stream(
+        kwargs = dict(
             model=MODEL,
             max_tokens=64000,
-            thinking={"type": "adaptive"},
             system=_SYSTEM,
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
+        )
+        if "haiku" not in MODEL:
+            # Cap thinking/verbosity spend — output tokens dominate the cost
+            # of this task. (Haiku doesn't support adaptive thinking/effort.)
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"]["effort"] = "medium"
+        with client.messages.stream(**kwargs) as stream:
             resp = stream.get_final_message()
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+
+    usage = getattr(resp, "usage", None)
+    in_tok = getattr(usage, "input_tokens", 0) or 0
+    out_tok = getattr(usage, "output_tokens", 0) or 0
+    in_price, out_price = _PRICES.get(MODEL, (5.0, 25.0))
+    cost = (in_tok * in_price + out_tok * out_price) / 1_000_000
 
     if resp.stop_reason == "max_tokens":
         # Truncated output can't be trusted as complete JSON; log, don't store.
@@ -255,5 +284,18 @@ def classify_menu(
         )
 
     if not dishes:
-        return ClassificationResult(ok=False, error="No dishes extracted")
-    return ClassificationResult(ok=True, dishes=dishes, stop_reason=resp.stop_reason)
+        return ClassificationResult(
+            ok=False,
+            error="No dishes extracted",
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cost_estimate=cost,
+        )
+    return ClassificationResult(
+        ok=True,
+        dishes=dishes,
+        stop_reason=resp.stop_reason,
+        input_tokens=in_tok,
+        output_tokens=out_tok,
+        cost_estimate=cost,
+    )
