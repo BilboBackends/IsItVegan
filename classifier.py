@@ -46,6 +46,13 @@ _SCHEMA = {
                         "description": "The dish's menu description, if any.",
                     },
                     "price": {"type": ["string", "null"]},
+                    "category": {
+                        "type": "string",
+                        "enum": ["food", "drink", "dessert"],
+                        "description": "drink = any beverage (soda, juice, "
+                        "coffee, beer, wine, cocktails); dessert = sweets; "
+                        "food = everything else.",
+                    },
                     "verdict": {"type": "string", "enum": list(VERDICTS)},
                     "confidence": {
                         "type": "number",
@@ -66,6 +73,7 @@ _SCHEMA = {
                     "name",
                     "description",
                     "price",
+                    "category",
                     "verdict",
                     "confidence",
                     "reasoning",
@@ -102,6 +110,9 @@ sauce and egg; refried beans often have lard; pizza dough is usually vegan \
 but check toppings; miso soup usually uses fish dashi.
 - Only extract real dishes (things a customer can order). Skip hours, \
 addresses, marketing copy.
+- Categorize each item: drink (any beverage — soda, juice, tea, coffee, \
+beer, wine, cocktails), dessert, or food. Users looking for vegan options \
+mean food; a vegan soda is not a "vegan option".
 - evidence must be a verbatim excerpt of the provided text, not paraphrase.
 - Extract every dish on the menu, not a sample."""
 
@@ -111,6 +122,7 @@ class ClassifiedDish:
     name: str
     description: str | None
     price: str | None
+    category: str  # food | drink | dessert
     verdict: str
     confidence: float
     reasoning: str
@@ -144,6 +156,7 @@ def classify_menu(
                     name="Falafel Wrap",
                     description="chickpea, tahini, lettuce, tomato",
                     price="$9",
+                    category="food",
                     verdict="vegan",
                     confidence=0.9,
                     reasoning="All listed ingredients are plant-based; wrap "
@@ -218,11 +231,15 @@ def classify_menu(
         name = (d.get("name") or "").strip()
         if not name:
             continue
+        category = d.get("category")
+        if category not in ("food", "drink", "dessert"):
+            category = "food"
         dishes.append(
             ClassifiedDish(
                 name=name[:200],
                 description=(d.get("description") or None),
                 price=(d.get("price") or None),
+                category=category,
                 verdict=verdict,
                 confidence=conf,
                 reasoning=d.get("reasoning") or "",

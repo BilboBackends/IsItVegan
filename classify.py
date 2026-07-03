@@ -77,19 +77,23 @@ def run(
             print(f"  [fail] {r['name']} — {result.error}")
             continue
 
-        veganish = sum(1 for d in result.dishes if d.verdict in _VEGANISH)
+        veganish = sum(
+            1
+            for d in result.dishes
+            if d.verdict in _VEGANISH and d.category != "drink"
+        )
         ok_count += 1
         dish_count += len(result.dishes)
         print(
             f"  [ok]   {r['name']}: {len(result.dishes)} dishes, "
-            f"{veganish} vegan/likely/adaptable"
+            f"{veganish} vegan/likely/adaptable (food, excl. drinks)"
         )
 
         if dry_run:
             continue
         for d in result.dishes:
             dish_id = db.upsert_dish(
-                r["id"], d.name, d.description, d.price
+                r["id"], d.name, d.description, d.price, category=d.category
             )
             # Evidence lives in reasoning text; source_id links the verdict to
             # the scraped menu source it came from (explainability, CLAUDE.md).

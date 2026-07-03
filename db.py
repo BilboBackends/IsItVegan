@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS dishes (
     name            TEXT NOT NULL,
     raw_description TEXT,
     price           TEXT,
+    category        TEXT,   -- food | drink | dessert (NULL = assume food)
     UNIQUE (restaurant_id, name)
 );
 
@@ -104,6 +105,11 @@ _MIGRATIONS = {
         "primary_type": "TEXT",
         "editorial_summary": "TEXT",
         "enriched_at": "TEXT",
+    },
+    "dishes": {
+        # food | drink | dessert — drinks are excluded from the headline
+        # "vegan options" count (a list of vegan sodas isn't the product).
+        "category": "TEXT",
     },
 }
 
@@ -271,20 +277,28 @@ def upsert_dish(
     name: str,
     raw_description: str | None,
     price: str | None,
+    category: str | None = None,
     db_path: str | None = None,
 ) -> int:
     """Insert or update a dish keyed on (restaurant_id, name); return dish id."""
     with connect(db_path) as conn:
         row = conn.execute(
             """
-            INSERT INTO dishes (restaurant_id, name, raw_description, price)
-            VALUES (:rid, :name, :descr, :price)
+            INSERT INTO dishes (restaurant_id, name, raw_description, price, category)
+            VALUES (:rid, :name, :descr, :price, :category)
             ON CONFLICT (restaurant_id, name) DO UPDATE SET
                 raw_description = excluded.raw_description,
-                price           = excluded.price
+                price           = excluded.price,
+                category        = excluded.category
             RETURNING id
             """,
-            {"rid": restaurant_id, "name": name, "descr": raw_description, "price": price},
+            {
+                "rid": restaurant_id,
+                "name": name,
+                "descr": raw_description,
+                "price": price,
+                "category": category,
+            },
         ).fetchone()
     return row[0]
 
@@ -325,7 +339,7 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT d.id, d.name, d.raw_description, d.price,
+            SELECT d.id, d.name, d.raw_description, d.price, d.category,
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at
             FROM dishes d
@@ -352,11 +366,17 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
 
 
 def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
-    """Per restaurant: dish total + count per latest verdict."""
+    """Per restaurant: dish total (all) + per-verdict counts over FOOD only.
+
+    Drinks are excluded from by_verdict so "12 vegan options" can't mean
+    12 sodas. NULL category (pre-category rows) is treated as food.
+    """
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT d.restaurant_id, c.verdict, COUNT(*) AS n
+            SELECT d.restaurant_id, c.verdict,
+                   (d.category IS NULL OR d.category != 'drink') AS is_food,
+                   COUNT(*) AS n
             FROM dishes d
             JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -364,7 +384,7 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
             )
-            GROUP BY d.restaurant_id, c.verdict
+            GROUP BY d.restaurant_id, c.verdict, is_food
             """
         ).fetchall()
     out: dict[int, dict] = {}
@@ -373,7 +393,10 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
             r["restaurant_id"], {"total": 0, "by_verdict": {}}
         )
         entry["total"] += r["n"]
-        entry["by_verdict"][r["verdict"]] = r["n"]
+        if r["is_food"]:
+            entry["by_verdict"][r["verdict"]] = (
+                entry["by_verdict"].get(r["verdict"], 0) + r["n"]
+            )
     return out
 
 

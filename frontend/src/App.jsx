@@ -289,7 +289,7 @@ export default function App() {
           <StatCard
             label="Vegan options found"
             value={totalVeganOptions}
-            hint="vegan / likely / adaptable dishes"
+            hint="food only — drinks excluded"
           />
         </div>
 
@@ -448,6 +448,11 @@ export default function App() {
                           {d.price && (
                             <span className="ml-2 text-sm font-normal text-slate-400">
                               {d.price}
+                            </span>
+                          )}
+                          {d.category && d.category !== "food" && (
+                            <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+                              {d.category === "drink" ? "🥤 drink" : "🍰 dessert"}
                             </span>
                           )}
                         </div>
