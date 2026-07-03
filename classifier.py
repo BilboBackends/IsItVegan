@@ -28,7 +28,7 @@ from config import settings
 MODEL = os.environ.get("CLASSIFIER_MODEL", "claude-opus-4-8")
 
 # Bound per-restaurant cost: menus longer than this are truncated.
-_MAX_MENU_CHARS = 14_000
+_MAX_MENU_CHARS = 24_000
 
 VERDICTS = ("vegan", "likely_vegan", "vegan_adaptable", "not_vegan", "unclear")
 
@@ -173,8 +173,11 @@ def classify_menu(
     if serves_vegetarian is True:
         context_bits.append("Google says this restaurant serves vegetarian food.")
     elif serves_vegetarian is False:
+        # Google's negative flag is often missing/wrong (e.g. izakayas with
+        # plenty of vegetable dishes). Don't let it bias verdicts.
         context_bits.append(
-            "Google says this restaurant does NOT serve vegetarian food."
+            "Google's listing doesn't flag vegetarian options, but that signal "
+            "is unreliable — judge each dish purely from the menu itself."
         )
     if editorial_summary:
         context_bits.append(f"Google's summary: {editorial_summary}")
@@ -190,14 +193,18 @@ def classify_menu(
         import anthropic
 
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        resp = client.messages.create(
+        # Stream so large menus can emit a full dish list — big izakaya/BBQ
+        # menus overflow a non-streaming response cap (observed live), and a
+        # truncated dish list must never be stored.
+        with client.messages.stream(
             model=MODEL,
-            max_tokens=16000,
+            max_tokens=64000,
             thinking={"type": "adaptive"},
             system=_SYSTEM,
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            resp = stream.get_final_message()
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
