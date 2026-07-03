@@ -61,8 +61,11 @@ _MENU_HINTS = (
     "carte",
 )
 
-# Links we never follow even if they look menu-ish (downloads / socials).
-_SKIP_HINTS = ("facebook.", "instagram.", "twitter.", "yelp.", "tel:", "mailto:")
+# Links we never follow even if they look menu-ish (socials / maps / forms).
+_SKIP_HINTS = (
+    "facebook.", "instagram.", "twitter.", "yelp.", "tel:", "mailto:",
+    "maps.app.goo.gl", "google.com/maps", "forms.gle", "youtube.", "tiktok.",
+)
 
 # Third-party menu/ordering hosts. If the menu link points here, the page is
 # almost always JS-rendered — we note it so the failure is clearly a
@@ -195,19 +198,23 @@ def _find_menu_links(
         absolute = urljoin(base_url, href)
         host = urlparse(absolute).netloc.lower()
 
-        tp = next((h for h in _THIRD_PARTY_HOSTS if h in host), None)
-        if tp:
-            if tp not in third_party:
+        # Any cross-domain menu-looking link is a candidate for headless
+        # following — ordering platforms are endless (Toast, Clover, Sauce,
+        # MealKeyway, ...) so we don't gate on a known-host list. Known hosts
+        # are still named in third_party for failure messages.
+        base_bare = base_host.replace("www.", "")
+        if host.replace("www.", "") != base_bare:
+            tp = next((h for h in _THIRD_PARTY_HOSTS if h in host), None)
+            if tp and tp not in third_party:
                 third_party.append(tp)
+            # Keep the SPA fragment (#/main routes matter on ordering apps);
+            # dedupe on the fragment-less form.
             norm_tp = absolute.split("#")[0].rstrip("/")
-            if norm_tp not in third_party_urls:
-                third_party_urls.append(norm_tp)
+            if norm_tp not in {u.split("#")[0].rstrip("/") for u in third_party_urls}:
+                third_party_urls.append(absolute)
             continue
 
-        # Same-domain only (incl. www/bare variants), dedup, and don't refetch
-        # the landing page itself.
-        if host.replace("www.", "") != base_host.replace("www.", ""):
-            continue
+        # Same-domain: dedup, and don't refetch the landing page itself.
         norm = absolute.split("#")[0].rstrip("/")
         if norm in seen or norm == base_url.split("#")[0].rstrip("/"):
             continue
