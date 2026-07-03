@@ -31,29 +31,45 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import db
 from scraper import scrape_menu_text
+from venue_filter import is_consumer_food_venue
 
 
 def _targets(
     restaurant_id: int | None, do_all: bool, stale_days: int | None = None
 ) -> list[dict]:
-    """Pick which restaurants to ingest."""
+    """Pick which restaurants to ingest.
+
+    Bulk modes skip venues excluded from consumer views (gas stations,
+    convenience stores like 7-Eleven, manually hidden listings) — scraping
+    them produced junk "menus" from generic chain sites. An explicit
+    --restaurant-id still ingests anything, for debugging.
+    """
+    all_rows = db.list_restaurants()
     if restaurant_id is not None:
-        rows = [r for r in db.list_restaurants() if r["id"] == restaurant_id]
+        rows = [r for r in all_rows if r["id"] == restaurant_id]
         if not rows:
             raise SystemExit(f"No restaurant with id {restaurant_id}.")
         if not rows[0].get("website_url"):
             raise SystemExit(f"Restaurant {restaurant_id} has no website_url.")
         return [{"id": rows[0]["id"], "name": rows[0]["name"],
                  "website_url": rows[0]["website_url"]}]
+
+    eligible = {r["id"] for r in all_rows if is_consumer_food_venue(r)}
     if do_all:
-        return [
+        targets = [
             {"id": r["id"], "name": r["name"], "website_url": r["website_url"]}
-            for r in db.list_restaurants()
+            for r in all_rows
             if r.get("website_url")
         ]
-    if stale_days is not None:
-        return db.restaurants_needing_refresh(stale_days)
-    return db.restaurants_needing_ingest()
+    elif stale_days is not None:
+        targets = db.restaurants_needing_refresh(stale_days)
+    else:
+        targets = db.restaurants_needing_ingest()
+    skipped = [t for t in targets if t["id"] not in eligible]
+    if skipped:
+        print(f"Skipping {len(skipped)} non-consumer venue(s): "
+              + ", ".join(t["name"] for t in skipped))
+    return [t for t in targets if t["id"] in eligible]
 
 
 def run(
@@ -61,9 +77,19 @@ def run(
     do_all: bool = False,
     dry_run: bool = False,
     stale_days: int | None = None,
+    on_progress=None,
 ) -> dict:
+    """Scrape targets; on_progress (optional) receives event dicts so a live
+    caller (the Admin dashboard) can show progress: {"total": N} once targets
+    are known, {"current": name} before each scrape, {"result": {...}} after.
+    """
+    def _emit(event: dict) -> None:
+        if on_progress is not None:
+            on_progress(event)
+
     db.init_db()
     targets = _targets(restaurant_id, do_all, stale_days)
+    _emit({"total": len(targets)})
 
     print(f"Ingesting {len(targets)} restaurant(s)...\n")
     succeeded, failed = 0, 0
@@ -71,24 +97,32 @@ def run(
     now = datetime.now(timezone.utc).isoformat()
 
     for t in targets:
+        _emit({"current": t["name"]})
         result = scrape_menu_text(t["website_url"])
         if result.ok:
             succeeded += 1
+            pages = result.pages or [(result.menu_url or result.url, result.text)]
             print(
                 f"  [menu] {t['name']}  "
-                f"(score {result.menu_score:.2f}, {result.char_count} chars)"
+                f"(score {result.menu_score:.2f}, {len(pages)} page(s), "
+                f"{result.char_count} chars)"
             )
             if not dry_run:
-                db.upsert_menu_text(
-                    restaurant_id=t["id"],
-                    url=result.menu_url or result.url,
-                    content=result.text,
-                    fetched_at=now,
-                )
+                # One source row per kept page; stale pages from earlier
+                # scrapes are pruned so classification sees the current menu.
+                db.replace_menu_texts(t["id"], pages, fetched_at=now)
+            _emit({"result": {
+                "name": t["name"], "ok": True,
+                "pages": len(pages), "chars": result.char_count,
+                "score": result.menu_score,
+            }})
         else:
             failed += 1
             failures.append((t["name"], result.error or "unknown error"))
             print(f"  [fail] {t['name']}  — {result.error}")
+            _emit({"result": {
+                "name": t["name"], "ok": False, "error": result.error,
+            }})
 
     print(f"\nDone. {succeeded} succeeded, {failed} failed.")
     if failures:

@@ -36,8 +36,28 @@ _PRICES = {
     "claude-haiku-4-5": (1.0, 5.0),
 }
 
-# Bound per-restaurant cost: menus longer than this are truncated.
-_MAX_MENU_CHARS = 24_000
+# Bound per-restaurant cost: menus longer than this are truncated. Matches
+# the scraper's combined-pages cap (scraper._MAX_COMBINED_CHARS) — multi-page
+# menus routinely exceed the old 24k bound, and truncation silently dropped
+# whole menu sections from classification.
+_MAX_MENU_CHARS = 50_000
+
+
+def estimate_cost(menu_chars: int) -> float:
+    """Pre-run cost estimate ($) for classifying a menu of this size.
+
+    Calibrated against observed runs: input is prompt overhead plus the menu
+    at ~4 chars/token; output dominates at ~70 tokens per dish, with dishes
+    running ~1 per 120 chars of menu text. An estimate, not a quote — the
+    dashboard shows the actual cost after a run and keeps it per restaurant.
+    """
+    chars = min(max(menu_chars, 0), _MAX_MENU_CHARS)
+    in_price, out_price = _PRICES.get(MODEL, (3.0, 15.0))
+    input_tokens = 1_200 + chars / 4
+    output_tokens = 250 + (chars / 120) * 70
+    return round(
+        (input_tokens * in_price + output_tokens * out_price) / 1_000_000, 3
+    )
 
 VERDICTS = ("vegan", "likely_vegan", "vegan_adaptable", "not_vegan", "unclear")
 

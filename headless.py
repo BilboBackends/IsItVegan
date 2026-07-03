@@ -53,17 +53,91 @@ def _launch(p):
         return p.chromium.launch(headless=True, args=args)
 
 
+_TAB_SELECTOR = "button, [role='tab'], a, li"
+
+# Collect label/href of every tab candidate in ONE roundtrip; per-element
+# inner_text() calls would make each scan take seconds.
+_TAB_SCAN_JS = """
+els => els.map(e => ({
+    text: (e.innerText || '').trim().slice(0, 40),
+    href: e.getAttribute('href') || ''
+}))
+"""
+
+
+def _click_section_tabs(page, tab_words: tuple[str, ...]) -> list[str]:
+    """Click likely menu-section tabs and snapshot the DOM after each click.
+
+    Tabbed menu widgets (common on site-builder pages) keep only the ACTIVE
+    section's dishes in the DOM — a passive render sees one section of ten.
+
+    The tab strip is re-scanned after every click because clicking re-renders
+    it (mode toggles like Food/Drinks swap the whole tab set). Each round
+    clicks the LAST unclicked section label in DOM order: mode toggles sit
+    above the section tabs, so deepest-first exhausts every section of the
+    current mode before switching modes (which would make the current
+    sections disappear unvisited). Real links are skipped — navigating is the
+    link-crawler's job, not the tab-clicker's.
+    """
+    snapshots: list[str] = []
+    seen: set[str] = set()
+    start_url = page.url
+
+    for _ in range(20):  # bounds clicks on menus with many sections/modes
+        try:
+            candidates = page.eval_on_selector_all(_TAB_SELECTOR, _TAB_SCAN_JS)
+        except PlaywrightError:
+            break
+        target_index = None
+        target_label = None
+        for i, c in enumerate(candidates[:250]):
+            label = (c.get("text") or "").strip().lower()
+            href = c.get("href") or ""
+            if not label or len(label) > 28 or label in seen or label not in tab_words:
+                continue
+            if href and not href.startswith("#"):
+                continue
+            target_index, target_label = i, label  # keep last match (deepest)
+        if target_index is None:
+            break
+
+        seen.add(target_label)
+        try:
+            page.locator(_TAB_SELECTOR).nth(target_index).click(timeout=1_500)
+        except (PlaywrightError, PlaywrightTimeout):
+            continue  # hidden/covered; marked seen, move on
+        page.wait_for_timeout(800)
+        if page.url != start_url:
+            # The click navigated after all; back out and keep going.
+            try:
+                page.go_back()
+                page.wait_for_timeout(800)
+            except PlaywrightError:
+                break
+            continue
+        try:
+            snapshots.append(page.content())
+        except PlaywrightError:
+            continue
+    return snapshots
+
+
 def fetch_rendered_html(
     url: str,
     *,
     timeout_ms: int = 45_000,
     settle_ms: int = 3_000,
+    tab_words: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None]:
     """Load `url` in a headless browser and return (rendered_html, error).
 
     timeout_ms bounds navigation; settle_ms is an extra wait after load for
     late client-side rendering (menus often populate after the initial paint).
     Waits through Cloudflare bot-check interstitials when they auto-resolve.
+
+    If tab_words is given and the rendered page has little visible text, the
+    page's menu-section tabs are clicked one by one and every snapshot is
+    concatenated into the returned HTML (see _click_section_tabs).
     """
     if not _AVAILABLE:
         return None, "Playwright not installed"
@@ -113,6 +187,19 @@ def fetch_rendered_html(
                         page.wait_for_timeout(1_500)
                 if not html:
                     html = page.content()  # last attempt; let it raise if truly stuck
+
+                # Sparse page + tab words provided: likely a tabbed menu widget
+                # showing one section at a time — click through the sections
+                # and keep every snapshot.
+                if tab_words:
+                    try:
+                        body_text_len = len(page.inner_text("body"))
+                    except PlaywrightError:
+                        body_text_len = 0
+                    if body_text_len < 3_000:
+                        snapshots = _click_section_tabs(page, tab_words)
+                        if snapshots:
+                            html = "\n".join([html, *snapshots])
             finally:
                 browser.close()
     except PlaywrightTimeout:

@@ -23,6 +23,7 @@ Known limitations (CLAUDE.md open questions), still handled as failures:
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse
 
@@ -46,6 +47,8 @@ _STRIP_TAGS = ["script", "style", "noscript", "svg", "head", "nav", "footer"]
 _MIN_USEFUL_CHARS = 200
 
 # Words that, in a link's text or href, suggest it points at a menu.
+# Includes menu-section names: sites with JS/section-per-page menus label the
+# links "Sandwiches" / "Salads" / "Soups", never "menu".
 _MENU_HINTS = (
     "menu",
     "menus",
@@ -59,6 +62,50 @@ _MENU_HINTS = (
     "order",
     "our-food",
     "carte",
+    # section names
+    "appetizers",
+    "starters",
+    "entrees",
+    "sandwiches",
+    "salads",
+    "soups",
+    "sides",
+    "bowls",
+    "wraps",
+    "paninis",
+    "burgers",
+    "pizza",
+    "pizzas",
+    "pasta",
+    "tacos",
+    "sushi",
+    "desserts",
+    "deserts",  # a common menu misspelling
+    "beverages",
+    "drinks",
+    "specials",
+)
+
+# Visible labels of menu-section TABS to click in the headless browser when a
+# rendered menu page is sparse (tabbed widgets keep only the active section in
+# the DOM). Deliberately excludes "menu"/"order" — those are nav links, and
+# clicking them navigates away.
+_TAB_WORDS = (
+    "food", "drinks", "appetizers", "starters", "entrees", "entrées", "mains",
+    "sandwiches", "salads", "soups", "sides", "bowls", "wraps", "paninis",
+    "burgers", "pizza", "pizzas", "flatbreads", "pasta", "tacos", "sushi",
+    "desserts", "deserts", "beverages", "specials", "happy hour",
+    "lunch", "dinner", "breakfast", "brunch", "kids", "kids menu",
+    # drink-mode sub-tabs
+    "wine", "beer", "cocktails", "mocktails", "coffee",
+)
+
+# Words in a URL path that mark a page as ONE menu section — if such a page is
+# all we found, the rest of the menu probably exists behind JS-rendered nav.
+_SECTION_PATH_RE_WORDS = (
+    "breakfast", "lunch", "dinner", "brunch", "sandwiches", "salads", "soups",
+    "wraps", "desserts", "deserts", "burgers", "appetizers", "starters",
+    "sides", "beverages", "drinks", "specials",
 )
 
 # Links we never follow even if they look menu-ish (socials / maps / forms).
@@ -85,10 +132,27 @@ _THIRD_PARTY_HOSTS = (
     "popmenu.com",
     "menufy.com",
     "slicelife.com",
+    "activemenus.com",
+    "mealkeyway.com",
 )
 
-# Max menu-ish links to follow per site (bounds requests per restaurant).
-_MAX_FOLLOW = 5
+# Max menu-ish links to follow per page (bounds requests per restaurant).
+# Section-per-page menus commonly have 6-8 sections.
+_MAX_FOLLOW = 8
+
+# Max total link fetches per site over HTTP (landing excluded). Bounds the
+# two-hop expansion of menu index pages (/menu/ -> /menu/lunch, /menu/dinner).
+_MAX_HTTP_FETCHES = 12
+
+# Cap on combined kept text across pages — bounds classification cost.
+_MAX_COMBINED_CHARS = 50_000
+
+# Hosts that are social profiles, not restaurant websites. Google sometimes
+# lists these as the "website"; there is no menu to scrape behind them.
+_SOCIAL_HOSTS = (
+    "instagram.com", "facebook.com", "linktr.ee", "tiktok.com",
+    "twitter.com", "x.com", "youtube.com",
+)
 
 
 @dataclass
@@ -101,8 +165,12 @@ class ScrapeResult:
     char_count: int = 0
     # URLs fetched while searching for the menu (landing + followed links).
     scraped_urls: list[str] = field(default_factory=list)
-    # The single URL whose text we kept (the best-scoring page).
+    # The URL of the best-scoring page.
     menu_url: str | None = None
+    # Every kept (url, text) page. Menus are often split across pages
+    # (lunch/dinner/brunch/drinks) — all menu-like pages are kept, and `text`
+    # is their combination. Empty on failure.
+    pages: list[tuple[str, str]] = field(default_factory=list)
     # Third-party menu hosts we saw linked but couldn't scrape (JS-rendered).
     third_party_hosts: list[str] = field(default_factory=list)
     # Menu-likeness of the kept text (0..1) and whether it cleared threshold.
@@ -166,7 +234,24 @@ def _looks_menu_like(text: str, href: str) -> bool:
     blob = f"{text} {href}".lower()
     if any(skip in blob for skip in _SKIP_HINTS):
         return False
-    return any(hint in blob for hint in _MENU_HINTS)
+    # Word-boundary match, not substring — "eat" must not match "create".
+    return any(
+        re.search(rf"(?<![a-z]){re.escape(hint)}(?![a-z])", blob)
+        for hint in _MENU_HINTS
+    )
+
+
+def _is_single_section_url(url: str) -> bool:
+    """True when a URL path names one menu section (e.g. /breakfast).
+
+    If the only menu page found is a single section, the other sections are
+    probably behind JS-rendered navigation the plain-HTTP pass can't see —
+    a signal to escalate to the headless browser rather than stop early.
+    """
+    path = urlparse(url).path.lower()
+    return any(
+        re.search(rf"(?<![a-z]){w}(?![a-z])", path) for w in _SECTION_PATH_RE_WORDS
+    )
 
 
 def _find_menu_links(
@@ -271,10 +356,18 @@ def _llm_menu_link(html: str, base_url: str) -> str | None:
 
 def _collect_http(
     url: str, timeout: float
-) -> tuple[list[tuple[str, str]] | None, list[str], _Fetched]:
+) -> tuple[list[tuple[str, str]] | None, list[str], list[str], _Fetched]:
     """Collect (page_url, text) via plain HTTP: landing + followed menu links.
 
-    Returns (pages | None if landing failed, third_party_hosts, landing_meta).
+    Menu links are followed two hops deep: many sites use a menu index page
+    (/menu/) that only links out to per-section pages (/menu/lunch,
+    /menu/dinner), so a single hop captured just one section. Total fetches
+    are capped by _MAX_HTTP_FETCHES.
+
+    Returns (pages | None if landing failed, third_party_hosts,
+    third_party_menu_urls, landing_meta). Third-party menu URLs are collected
+    but NOT fetched here — they're JS-rendered ordering apps; the caller uses
+    their presence to decide whether to escalate to headless.
     """
     with httpx.Client(
         timeout=timeout,
@@ -283,9 +376,9 @@ def _collect_http(
     ) as client:
         landing = _fetch(client, url)
         if landing.html is None:
-            return None, [], landing
+            return None, [], [], landing
 
-        menu_links, third_party, _tp_urls = _find_menu_links(landing.html, url)
+        menu_links, third_party, tp_urls = _find_menu_links(landing.html, url)
         # If keyword matching found no menu link, let the cheap LLM pick one
         # from all page links (catches non-obvious labels).
         if not menu_links:
@@ -293,13 +386,33 @@ def _collect_http(
             if llm_link:
                 menu_links = [llm_link]
 
+        def _norm(u: str) -> str:
+            return u.split("#")[0].rstrip("/")
+
         pages: list[tuple[str, str]] = [(url, _extract_text(landing.html))]
-        for link in menu_links:
+        queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links]
+        seen = {_norm(url)} | {_norm(lk) for lk in menu_links}
+        fetches = 0
+        while queue and fetches < _MAX_HTTP_FETCHES:
+            link, hop = queue.pop(0)
             page = _fetch(client, link)
+            fetches += 1
             text = _fetched_to_text(page)
             if text:
                 pages.append((link, text))
-    return pages, third_party, landing
+            if hop == 1 and page.html is not None:
+                more_links, more_tp, more_tp_urls = _find_menu_links(page.html, link)
+                for host in more_tp:
+                    if host not in third_party:
+                        third_party.append(host)
+                for tp_url in more_tp_urls:
+                    if _norm(tp_url) not in {_norm(u) for u in tp_urls}:
+                        tp_urls.append(tp_url)
+                for nxt in more_links:
+                    if _norm(nxt) not in seen:
+                        seen.add(_norm(nxt))
+                        queue.append((nxt, 2))
+    return pages, third_party, tp_urls, landing
 
 
 def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
@@ -326,7 +439,7 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     def _norm(u: str) -> str:
         return u.split("#")[0].rstrip("/")
 
-    max_renders = 6
+    max_renders = 9
     pages: list[tuple[str, str]] = [(url, _extract_text(landing_html))]
     queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links + tp_urls[:2]]
     seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
@@ -335,8 +448,9 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     while queue and renders < max_renders:
         link, hop = queue.pop(0)
         # Ordering-platform SPAs can take several seconds to paint the menu;
-        # give followed pages a longer settle than the landing.
-        page_html, _ = fetch_rendered_html(link, settle_ms=6_000)
+        # give followed pages a longer settle than the landing. Followed pages
+        # are menu candidates, so sparse ones get their section tabs clicked.
+        page_html, _ = fetch_rendered_html(link, settle_ms=6_000, tab_words=_TAB_WORDS)
         renders += 1
         if page_html is None:
             continue
@@ -380,7 +494,19 @@ def scrape_menu_text(
     if mock_html is not None:
         return _finish(url, [(url, _extract_text(mock_html))], [], status_code=None)
 
-    pages, third_party, landing = _collect_http(url, timeout)
+    # Google sometimes lists a social profile as the "website". There is no
+    # menu behind these (and their text scores menu-ish enough to slip
+    # through) — fail fast and clearly instead of storing feed noise.
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    if any(host == s or host.endswith("." + s) for s in _SOCIAL_HOSTS):
+        return ScrapeResult(
+            url=url,
+            ok=False,
+            error=f"Website is a social profile ({host}) — no menu to scrape. "
+            "Photo fallback candidate.",
+        )
+
+    pages, third_party, tp_urls, landing = _collect_http(url, timeout)
 
     # If the landing page itself was fetchable, try scoring the HTTP result.
     http_result = None
@@ -389,11 +515,25 @@ def scrape_menu_text(
             url, pages, third_party, status_code=landing.status_code
         )
         # A merely-adequate score with third-party ordering links around is
-        # suspicious (often platform marketing copy, not the menu) — in that
-        # case still try headless, which follows the ordering links.
+        # suspicious (often homepage/marketing copy scoring on section names,
+        # not the menu) — still try headless, which renders the ordering
+        # links. ANY cross-domain menu link counts, not just known platforms:
+        # ordering hosts are endless (activemenus, MealKeyway, ...).
+        # A tiny "menu" isn't trusted either, whatever it scored — a real
+        # menu is rarely under ~1200 chars; it's usually a teaser with the
+        # full menu behind JS.
         confident = http_result.ok and (
-            http_result.menu_score >= 0.75 or not third_party
-        )
+            http_result.menu_score >= 0.75 or not (third_party or tp_urls)
+        ) and http_result.char_count >= 1200
+        # A single kept page whose URL names one menu section (/breakfast) is
+        # probably a partial menu with the other sections behind JS-rendered
+        # nav — escalate to headless to find them.
+        if (
+            confident
+            and len(http_result.pages) == 1
+            and _is_single_section_url(http_result.pages[0][0])
+        ):
+            confident = False
         if confident or not use_headless or not is_available():
             return http_result
 
@@ -417,7 +557,15 @@ def scrape_menu_text(
     headless_result = _finish(
         url, hl_pages, hl_third_party or third_party, status_code=200
     )
-    # Prefer a real menu; otherwise keep the higher-scoring attempt.
+    # Prefer a real menu; when both attempts found one, keep whichever
+    # captured more of it (headless often finds sections HTTP can't see,
+    # but HTTP sometimes reaches PDF menus headless doesn't).
+    if headless_result.ok and http_result and http_result.ok:
+        return (
+            headless_result
+            if headless_result.char_count > http_result.char_count
+            else http_result
+        )
     if headless_result.ok:
         return headless_result
     if http_result and http_result.menu_score >= headless_result.menu_score:
@@ -431,10 +579,13 @@ def _finish(
     third_party_hosts: list[str],
     status_code: int | None,
 ) -> ScrapeResult:
-    """Score every fetched page, keep the most menu-like, decide ok/fail.
+    """Score every fetched page, keep ALL menu-like ones, decide ok/fail.
 
     A scrape only succeeds if the best page both has enough text AND clears the
     menu threshold — so homepage marketing copy no longer counts as a menu.
+    Menus are frequently split across pages (breakfast/lunch/dinner/drinks), so
+    every page that independently clears the threshold is kept and combined —
+    keeping only the best page silently dropped the rest of the menu.
     """
     scraped_urls = [p[0] for p in pages]
 
@@ -479,6 +630,26 @@ def _finish(
             error=f"No real menu found (score {best.score:.2f}): {best.reason}.{hint}",
         )
 
+    # Keep every menu-like page, best first, deduped (identical or contained
+    # text — e.g. a landing page that embeds the same menu as /menu), capped
+    # so a sprawling site can't blow up classification cost.
+    kept: list[tuple[str, str]] = []
+    total = 0
+    for page_url, text, s in sorted(scored, key=lambda t: t[2].score, reverse=True):
+        if not s.is_menu or len(text) < _MIN_USEFUL_CHARS:
+            continue
+        if any(text in kept_text or kept_text in text for _, kept_text in kept):
+            continue
+        if kept and total + len(text) > _MAX_COMBINED_CHARS:
+            continue
+        kept.append((page_url, text))
+        total += len(text)
+
+    if len(kept) > 1:
+        combined = "\n\n".join(f"[page: {u}]\n{t}" for u, t in kept)
+    else:
+        combined = best_text
+
     return ScrapeResult(
         url=best_url,
         ok=True,
@@ -488,6 +659,7 @@ def _finish(
         third_party_hosts=third_party_hosts,
         menu_score=best.score,
         is_menu=True,
-        text=best_text,
-        char_count=len(best_text),
+        text=combined,
+        char_count=len(combined),
+        pages=kept,
     )

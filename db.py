@@ -134,6 +134,9 @@ _MIGRATIONS = {
         "opening_hours": "TEXT",
         "hours_enriched_at": "TEXT",
         "enriched_at": "TEXT",
+        # Actual $ cost of the last classification run (estimated from token
+        # usage) — shown next to the per-row reclassify button in Admin.
+        "last_classify_cost": "REAL",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -227,6 +230,12 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
                          AND (s.url IS NULL OR s.url != 'google:editorial_summary')
                    ) AS menu_fetched_at,
+                   (
+                       SELECT SUM(LENGTH(s.content)) FROM sources s
+                       WHERE s.restaurant_id = r.id AND s.type = 'text'
+                         AND (s.url IS NULL OR s.url != 'google:editorial_summary')
+                   ) AS menu_chars,
+                   r.last_classify_cost,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -289,6 +298,17 @@ def update_food_signals(
         )
 
 
+def record_classify_cost(
+    restaurant_id: int, cost: float, db_path: str | None = None
+) -> None:
+    """Remember what the last classification run actually cost ($)."""
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE restaurants SET last_classify_cost = ? WHERE id = ?",
+            (round(cost, 3), restaurant_id),
+        )
+
+
 def set_restaurant_hidden(
     restaurant_id: int, hidden: bool, db_path: str | None = None
 ) -> bool:
@@ -326,21 +346,84 @@ def upsert_menu_text(
         )
 
 
-def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None:
-    """Return the stored menu-text source for a restaurant, or None."""
+def replace_menu_texts(
+    restaurant_id: int,
+    pages: list[tuple[str, str]],
+    fetched_at: str,
+    db_path: str | None = None,
+) -> None:
+    """Fresh snapshot of a restaurant's menu-text sources, one row per page.
+
+    Upserts each kept (url, content) page, then prunes text sources from
+    earlier scrapes whose URL was not kept this time — otherwise a site whose
+    menu moved keeps feeding its old page to classification forever. Pruned
+    rows may be referenced by classifications from a previous run; those links
+    are nulled (the ingest → reclassify flow re-establishes them).
+    """
     with connect(db_path) as conn:
-        row = conn.execute(
+        for url, content in pages:
+            conn.execute(
+                """
+                INSERT INTO sources (restaurant_id, dish_id, type, content, url, fetched_at)
+                VALUES (:restaurant_id, NULL, 'text', :content, :url, :fetched_at)
+                ON CONFLICT (restaurant_id, url) WHERE restaurant_id IS NOT NULL
+                DO UPDATE SET content = excluded.content, fetched_at = excluded.fetched_at
+                """,
+                {
+                    "restaurant_id": restaurant_id,
+                    "url": url,
+                    "content": content,
+                    "fetched_at": fetched_at,
+                },
+            )
+        placeholders = ",".join("?" for _ in pages) or "''"
+        stale_predicate = f"""
+            restaurant_id = ? AND type = 'text'
+            AND (url IS NULL OR url != 'google:editorial_summary')
+            AND (url IS NULL OR url NOT IN ({placeholders}))
+        """
+        params = [restaurant_id, *[u for u, _ in pages]]
+        conn.execute(
+            f"""
+            UPDATE classifications SET source_id = NULL
+            WHERE source_id IN (SELECT id FROM sources WHERE {stale_predicate})
+            """,
+            params,
+        )
+        conn.execute(f"DELETE FROM sources WHERE {stale_predicate}", params)
+
+
+def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None:
+    """Return the stored menu text for a restaurant, or None.
+
+    A restaurant's menu may span several stored pages (breakfast/lunch/dinner
+    each a source row); they are combined with [page: url] headers so callers
+    (classification, Admin menu view) always see the whole menu. `id`/`url`
+    are the first page's — the scraper stores the best-scoring page first —
+    keeping classification source links valid.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
             """
             SELECT id, restaurant_id, content, url, fetched_at
             FROM sources
             WHERE restaurant_id = ? AND type = 'text'
               AND (url IS NULL OR url != 'google:editorial_summary')
-            ORDER BY fetched_at DESC
-            LIMIT 1
+            ORDER BY id ASC
             """,
             (restaurant_id,),
-        ).fetchone()
-    return dict(row) if row else None
+        ).fetchall()
+    if not rows:
+        return None
+    if len(rows) == 1:
+        return dict(rows[0])
+    combined = dict(rows[0])
+    combined["content"] = "\n\n".join(
+        f"[page: {r['url']}]\n{r['content']}" for r in rows
+    )
+    combined["fetched_at"] = max(r["fetched_at"] for r in rows)
+    combined["page_count"] = len(rows)
+    return combined
 
 
 def upsert_dish(

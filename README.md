@@ -130,12 +130,28 @@ python ingest.py --restaurant-id 30
 python ingest.py --dry-run
 ```
 
-The scraper follows menu-like links one level deep (same domain) so it finds
-menus that aren't on the landing page, and scores each page with a menu
-detector (`menu_score.py`) — prices, food words, menu-section headers, list
-structure. Only pages that clear the menu threshold are stored, so homepage
-marketing copy ("Authentic Cuisine · Reserve Your Table") is rejected rather
-than fed to Claude.
+The scraper follows menu-like links two hops deep (menu index pages link out
+to per-section pages), keeps EVERY page that scores as a menu (lunch, dinner,
+brunch, drinks — stored one source row per page and combined for
+classification), and scores each page with a menu detector (`menu_score.py`)
+— prices, food words, menu-section headers, list structure. Homepage
+marketing copy is rejected rather than fed to Claude. When plain HTTP finds
+nothing convincing — third-party ordering links present, only a single
+section captured, or a suspiciously tiny "menu" — it escalates to a headless
+browser, which also clicks through tabbed menu widgets that keep only the
+active section in the DOM.
+
+Quality is watched two ways so regressions surface without manual deep dives:
+
+- `python -m pytest tests/` — fast, network-free regression tests pinning
+  every scraper failure mode we've fixed (word-boundary link hints,
+  multi-page keeping, social-profile guard, marketing rejection, stale-page
+  pruning).
+- **Menu quality warnings** in Admin (`/api/menu-quality`) — an automated
+  audit of stored menus that flags likely-false or incomplete ones: tiny
+  text, no prices, weak menu score, a single captured section, identical
+  text shared across restaurants, or a website with nothing scraped. Each
+  finding has a one-click rescrape.
 
 When keyword matching finds no menu link, a cheap LLM navigator (Claude Haiku)
 picks the menu link from all the page's links — catching non-obvious labels

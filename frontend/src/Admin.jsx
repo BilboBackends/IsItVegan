@@ -17,6 +17,83 @@ function StatCard({ label, value, hint }) {
   );
 }
 
+// Live progress for a background pipeline job (bulk scrape / bulk classify).
+// `job` is the polled /api/<job>/status payload; classify jobs also carry a
+// running API-cost total and per-restaurant costs.
+function JobProgressPanel({ job, title }) {
+  if (!job?.running) return null;
+  return (
+    <section className="mb-6 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
+        <span className="font-semibold text-slate-900">
+          {title}…{" "}
+          {job.total != null ? `${job.done} of ${job.total}` : "preparing"}
+        </span>
+        <span className="text-slate-500">
+          <span className="font-semibold text-emerald-700">{job.succeeded} ok</span>
+          {" · "}
+          <span className={job.failed > 0 ? "font-semibold text-amber-700" : ""}>
+            {job.failed} failed
+          </span>
+          {job.cost != null && (
+            <>
+              {" · "}
+              <span className="font-semibold text-slate-700">
+                ~${job.cost.toFixed(2)} so far
+              </span>
+            </>
+          )}
+        </span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+        <div
+          className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+          style={{
+            width: job.total
+              ? `${Math.round((job.done / job.total) * 100)}%`
+              : "4%",
+          }}
+        />
+      </div>
+      {job.current && (
+        <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+          now: <span className="font-medium text-slate-700">{job.current}</span>
+        </div>
+      )}
+      {job.recent?.length > 0 && (
+        <ul className="mt-3 space-y-1 text-xs">
+          {job.recent.slice(0, 5).map((r) => (
+            <li key={r.name} className="flex items-baseline gap-2">
+              {r.ok ? (
+                <>
+                  <span className="text-emerald-600">✓</span>
+                  <span className="font-medium text-slate-700">{r.name}</span>
+                  <span className="text-slate-400">
+                    {r.dishes != null
+                      ? `${r.dishes} dishes` +
+                        (r.veganish != null ? `, ${r.veganish} veganish` : "") +
+                        (r.cost != null ? ` · ~$${r.cost.toFixed(2)}` : "")
+                      : `${r.pages} page${r.pages === 1 ? "" : "s"}, ${r.chars} chars, score ${r.score?.toFixed(2)}`}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="text-amber-600">✗</span>
+                  <span className="font-medium text-slate-700">{r.name}</span>
+                  <span className="truncate text-slate-400" title={r.error}>
+                    {r.error}
+                  </span>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [restaurants, setRestaurants] = useState([]);
   const [config, setConfig] = useState(null);
@@ -38,21 +115,28 @@ export default function Admin() {
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState(null);
   const [reports, setReports] = useState([]);
+  const [ingestJob, setIngestJob] = useState(null); // live bulk-scrape status
+  const [classifyJob, setClassifyJob] = useState(null); // live bulk-classify status
+  const [classifying, setClassifying] = useState(false);
+  const [menuQuality, setMenuQuality] = useState([]); // automated audit flags
+  const [qualityOpen, setQualityOpen] = useState(false);
 
   async function loadData() {
     setLoading(true);
     setError(null);
     try {
-      const [rRes, cRes, reportRes] = await Promise.all([
+      const [rRes, cRes, reportRes, qualityRes] = await Promise.all([
         fetch("/api/restaurants?include_excluded=true"),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
+        fetch("/api/menu-quality"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
       setRestaurants(rData.restaurants);
       if (cRes.ok) setConfig(await cRes.json());
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
+      if (qualityRes.ok) setMenuQuality((await qualityRes.json()).findings || []);
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
     } finally {
@@ -62,6 +146,26 @@ export default function Admin() {
 
   useEffect(() => {
     loadData();
+    // If a bulk scrape/classify is already running (e.g. the page was
+    // reloaded mid-run), pick the progress views back up.
+    (async () => {
+      try {
+        const res = await fetch("/api/ingest/status");
+        const data = await res.json();
+        if (data.running) {
+          setIngesting(true);
+          pollIngest();
+        }
+        const cRes = await fetch("/api/classify/status");
+        const cData = await cRes.json();
+        if (cData.running) {
+          setClassifying(true);
+          pollClassify();
+        }
+      } catch {
+        /* backend not up yet; loadData surfaces that */
+      }
+    })();
   }, []);
 
   async function runDiscovery() {
@@ -89,6 +193,84 @@ export default function Admin() {
     }
   }
 
+  // Bulk ingestion runs as a background job on the backend; poll its status
+  // so the dashboard shows live scrape-by-scrape progress.
+  async function pollIngest(label = "Menu ingestion") {
+    for (;;) {
+      let data;
+      try {
+        const res = await fetch("/api/ingest/status");
+        data = await res.json();
+      } catch {
+        break; // backend went away; stop polling quietly
+      }
+      setIngestJob(data);
+      if (!data.running) {
+        if (data.error) setError(data.error);
+        else if (data.summary) {
+          setNotice(
+            `${label}: ${data.summary.succeeded} scraped, ${data.summary.failed} failed ` +
+              `(blocked / JS-rendered — photo-fallback candidates).`
+          );
+        }
+        setIngestJob(null);
+        await loadData();
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    setIngesting(false);
+  }
+
+  async function pollClassify() {
+    for (;;) {
+      let data;
+      try {
+        const res = await fetch("/api/classify/status");
+        data = await res.json();
+      } catch {
+        break;
+      }
+      setClassifyJob(data);
+      if (!data.running) {
+        if (data.error) setError(data.error);
+        else if (data.summary) {
+          const s = data.summary;
+          setNotice(
+            `Classification: ${s.ok} restaurant(s), ${s.dishes} dishes, ` +
+              `~$${(s.cost ?? 0).toFixed(2)} API cost` +
+              (s.failed ? `, ${s.failed} failed` : "") +
+              "."
+          );
+        }
+        setClassifyJob(null);
+        await loadData();
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    setClassifying(false);
+  }
+
+  async function runClassify() {
+    setClassifying(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Classify failed (${res.status})`);
+      await pollClassify();
+    } catch (e) {
+      setError(e.message);
+      setClassifying(false);
+    }
+  }
+
   async function runIngest(staleOnly = false) {
     setIngesting(true);
     setNotice(null);
@@ -101,14 +283,9 @@ export default function Admin() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Ingest failed (${res.status})`);
-      setNotice(
-        `${staleOnly ? "Stale menu refresh" : "Menu ingestion"}: ${data.succeeded} scraped, ${data.failed} failed ` +
-          `(blocked / JS-rendered — photo-fallback candidates).`
-      );
-      await loadData();
+      await pollIngest(staleOnly ? "Stale menu refresh" : "Menu ingestion");
     } catch (e) {
       setError(e.message);
-    } finally {
       setIngesting(false);
     }
   }
@@ -211,7 +388,9 @@ export default function Admin() {
           ? `Rescraped ${r.name}: ${data.succeeded ? "menu found" : "no menu found"}${
               data.failures?.[0] ? ` — ${data.failures[0].error}` : ""
             }`
-          : `Reclassified ${r.name}: ${data.dishes} dishes.`
+          : `Reclassified ${r.name}: ${data.dishes} dishes` +
+            (data.cost != null ? ` (~$${data.cost.toFixed(2)} API cost)` : "") +
+            `.`
       );
       await loadData();
     } catch (e) {
@@ -253,6 +432,25 @@ export default function Admin() {
     () => restaurants.filter((restaurant) => isMenuStale(restaurant.menu_fetched_at)).length,
     [restaurants]
   );
+  const unclassified = useMemo(
+    () =>
+      restaurants.filter((r) => r.has_menu_text && (r.dish_count || 0) === 0)
+        .length,
+    [restaurants]
+  );
+  // Pre-run cost estimates (from menu size): everything vs. only-new.
+  const classifyCostAll = useMemo(
+    () =>
+      restaurants.reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
+    [restaurants]
+  );
+  const classifyCostNew = useMemo(
+    () =>
+      restaurants
+        .filter((r) => r.has_menu_text && (r.dish_count || 0) === 0)
+        .reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
+    [restaurants]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -266,7 +464,7 @@ export default function Admin() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-5xl px-4 py-8">
+      <div className="mx-auto max-w-screen-2xl px-4 py-8">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">VeganFind — Pipeline Dashboard</h1>
@@ -303,6 +501,18 @@ export default function Admin() {
               Refresh stale ({staleMenus})
             </button>
             <button
+              onClick={runClassify}
+              disabled={classifying || unclassified === 0}
+              className="rounded-lg border border-violet-400 px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              title={`Classify restaurants that have menu text but no dishes yet — est ~$${classifyCostNew.toFixed(2)} total, billed to your Anthropic API key`}
+            >
+              {classifying
+                ? "Classifying…"
+                : `⚡ Classify new (${unclassified}${
+                    unclassified > 0 ? ` · ~$${classifyCostNew.toFixed(2)}` : ""
+                  })`}
+            </button>
+            <button
               onClick={() => runIngest(false)}
               disabled={ingesting || discovering}
               className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
@@ -323,6 +533,14 @@ export default function Admin() {
               {discovering ? "Discovering…" : "Run discovery"}
             </button>
           </div>
+          <p
+            className="w-full text-right text-xs text-slate-400"
+            title="Sum of per-restaurant estimates based on each menu's size; hover a row's ⚡ reclassify for its individual estimate"
+          >
+            re-running all {withMenuText} classifications ≈ $
+            {classifyCostAll.toFixed(2)} · via{" "}
+            <code className="text-slate-500">python classify.py --all</code>
+          </p>
         </header>
 
         {config && !config.has_api_key && (
@@ -342,12 +560,15 @@ export default function Admin() {
           </div>
         )}
 
+        <JobProgressPanel job={ingestJob} title="Scraping menus" />
+        <JobProgressPanel job={classifyJob} title="Classifying dishes" />
+
         <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <StatCard label="Restaurants" value={restaurants.length} />
           <StatCard
             label="Real menus found"
-            value={withMenuText}
-            hint="passed menu detection"
+            value={`${withMenuText} / ${restaurants.length - noWebsite}`}
+            hint="of restaurants with a website"
           />
           <StatCard
             label="Vegetarian-friendly"
@@ -360,6 +581,56 @@ export default function Admin() {
             hint="food only — drinks excluded"
           />
         </div>
+
+        {menuQuality.length > 0 && (
+          <section className="mb-6 rounded-xl border border-orange-200 bg-orange-50 p-4">
+            <button
+              onClick={() => setQualityOpen((v) => !v)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <h2 className="font-bold text-orange-950">
+                Menu quality warnings
+                <span className="ml-2 text-xs font-medium text-orange-700">
+                  automated audit — likely false or incomplete menus
+                </span>
+              </h2>
+              <span className="rounded-full bg-orange-200 px-2 py-0.5 text-xs font-bold text-orange-900">
+                {menuQuality.length} {qualityOpen ? "▾" : "▸"}
+              </span>
+            </button>
+            {qualityOpen && (
+              <div className="mt-3 space-y-2">
+                {menuQuality.map((f) => (
+                  <div
+                    key={f.restaurant_id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white p-3 text-sm shadow-sm"
+                  >
+                    <div>
+                      <div className="font-bold text-slate-900">{f.name}</div>
+                      <ul className="mt-0.5 text-xs text-orange-800">
+                        {f.flags.map((flag) => (
+                          <li key={flag}>• {flag}</li>
+                        ))}
+                      </ul>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const r = restaurants.find((x) => x.id === f.restaurant_id);
+                        if (r) runRowAction(r, "ingest");
+                      }}
+                      disabled={rowBusy !== null}
+                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {rowBusy?.id === f.restaurant_id && rowBusy.action === "ingest"
+                        ? "scraping…"
+                        : "↻ rescrape"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {reports.length > 0 && (
           <section className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
@@ -514,7 +785,7 @@ export default function Admin() {
                           <span className="text-xs text-slate-300">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="whitespace-nowrap px-4 py-3">
                         <div className="flex gap-1.5">
                           <button
                             onClick={() => toggleVisibility(r)}
@@ -553,7 +824,9 @@ export default function Admin() {
                             disabled={rowBusy !== null || !r.has_menu_text}
                             title={
                               r.has_menu_text
-                                ? "Re-run Claude dish classification (~$0.10)"
+                                ? `Re-run Claude dish classification (est ~$${(
+                                    r.classify_estimate ?? 0.1
+                                  ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars of menu)`
                                 : "No menu text to classify"
                             }
                             className="rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -562,6 +835,20 @@ export default function Admin() {
                               ? "classifying…"
                               : "⚡ reclassify"}
                           </button>
+                          {r.has_menu_text && (
+                            <span
+                              className="self-center whitespace-nowrap text-[10px] text-slate-400"
+                              title={
+                                r.last_classify_cost != null
+                                  ? "Actual cost of the last classification run"
+                                  : "Estimate from menu size — updates to the actual cost after a run"
+                              }
+                            >
+                              {r.last_classify_cost != null
+                                ? `$${r.last_classify_cost.toFixed(2)}`
+                                : `~$${(r.classify_estimate ?? 0).toFixed(2)} est`}
+                            </span>
+                          )}
                         </div>
                       </td>
                     </tr>

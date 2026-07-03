@@ -47,9 +47,19 @@ def run(
     do_all: bool = False,
     dry_run: bool = False,
     mock: bool = False,
+    on_progress=None,
 ) -> dict:
+    """Classify targets; on_progress (optional) receives event dicts so a live
+    caller (the Admin dashboard) can show progress and per-restaurant cost:
+    {"total": N}, {"current": name}, {"result": {..., "cost": $}}.
+    """
+    def _emit(event: dict) -> None:
+        if on_progress is not None:
+            on_progress(event)
+
     db.init_db()
     targets = _targets(restaurant_id, do_all)
+    _emit({"total": len(targets)})
     print(f"Classifying {len(targets)} restaurant(s)...\n")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -58,8 +68,11 @@ def run(
     failures: list[tuple[str, str]] = []
 
     for r in targets:
+        _emit({"current": r["name"]})
         source = db.get_menu_text(r["id"])
         if source is None:
+            _emit({"result": {"name": r["name"], "ok": False,
+                              "error": "no menu text"}})
             continue
         result = classify_menu(
             source["content"],
@@ -76,6 +89,8 @@ def run(
             fail_count += 1
             failures.append((r["name"], result.error or "unknown"))
             print(f"  [fail] {r['name']} — {result.error}")
+            _emit({"result": {"name": r["name"], "ok": False,
+                              "error": result.error}})
             continue
 
         veganish = sum(
@@ -91,9 +106,14 @@ def run(
             f"{veganish} vegan/likely/adaptable (food, excl. drinks)"
             f"  [~${result.cost_estimate:.2f}]"
         )
+        _emit({"result": {
+            "name": r["name"], "ok": True, "dishes": len(result.dishes),
+            "veganish": veganish, "cost": round(result.cost_estimate, 3),
+        }})
 
         if dry_run:
             continue
+        db.record_classify_cost(r["id"], result.cost_estimate)
         # Fresh snapshot: drop old dishes so items that left the menu don't
         # linger with stale verdicts.
         db.delete_dishes_for_restaurant(r["id"])
