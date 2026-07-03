@@ -91,6 +91,9 @@ def run(
 
         if dry_run:
             continue
+        # Fresh snapshot: drop old dishes so items that left the menu don't
+        # linger with stale verdicts.
+        db.delete_dishes_for_restaurant(r["id"])
         for d in result.dishes:
             dish_id = db.upsert_dish(
                 r["id"], d.name, d.description, d.price, category=d.category

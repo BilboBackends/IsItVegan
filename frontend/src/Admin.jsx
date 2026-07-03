@@ -30,6 +30,7 @@ export default function Admin() {
   const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
   const [dishesFor, setDishesFor] = useState(null); // restaurant whose dishes are open
+  const [rowBusy, setRowBusy] = useState(null); // {id, action} while a per-row job runs
   const [addOpen, setAddOpen] = useState(false);
   const [addNames, setAddNames] = useState("");
   const [adding, setAdding] = useState(false);
@@ -174,6 +175,34 @@ export default function Admin() {
       setAddResult({ error: e.message });
     } finally {
       setAdding(false);
+    }
+  }
+
+  async function runRowAction(r, action) {
+    // action: "ingest" (rescrape menu) | "classify" (re-run Claude verdicts)
+    setRowBusy({ id: r.id, action });
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restaurant_id: r.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `${action} failed (${res.status})`);
+      setNotice(
+        action === "ingest"
+          ? `Rescraped ${r.name}: ${data.succeeded ? "menu found" : "no menu found"}${
+              data.failures?.[0] ? ` — ${data.failures[0].error}` : ""
+            }`
+          : `Reclassified ${r.name}: ${data.dishes} dishes.`
+      );
+      await loadData();
+    } catch (e) {
+      setError(`${r.name}: ${e.message}`);
+    } finally {
+      setRowBusy(null);
     }
   }
 
@@ -326,6 +355,7 @@ export default function Admin() {
                     <th className="px-4 py-3 font-medium">Website</th>
                     <th className="px-4 py-3 font-medium">Menu text</th>
                     <th className="px-4 py-3 font-medium">Vegan options</th>
+                    <th className="px-4 py-3 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -400,6 +430,38 @@ export default function Admin() {
                         ) : (
                           <span className="text-xs text-slate-300">—</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => runRowAction(r, "ingest")}
+                            disabled={rowBusy !== null || !r.website_url}
+                            title={
+                              r.website_url
+                                ? "Re-run the menu scraper for this restaurant"
+                                : "No website to scrape"
+                            }
+                            className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {rowBusy?.id === r.id && rowBusy.action === "ingest"
+                              ? "scraping…"
+                              : "↻ rescrape"}
+                          </button>
+                          <button
+                            onClick={() => runRowAction(r, "classify")}
+                            disabled={rowBusy !== null || !r.has_menu_text}
+                            title={
+                              r.has_menu_text
+                                ? "Re-run Claude dish classification (~$0.10)"
+                                : "No menu text to classify"
+                            }
+                            className="rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {rowBusy?.id === r.id && rowBusy.action === "classify"
+                              ? "classifying…"
+                              : "⚡ reclassify"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

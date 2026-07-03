@@ -334,6 +334,24 @@ def insert_classification(
         )
 
 
+def delete_dishes_for_restaurant(restaurant_id: int, db_path: str | None = None) -> int:
+    """Remove a restaurant's dishes (and their classifications).
+
+    Used before storing a fresh classification so dishes that left the menu
+    don't linger with stale verdicts. Returns the number of dishes removed.
+    """
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            DELETE FROM classifications WHERE dish_id IN
+                (SELECT id FROM dishes WHERE restaurant_id = ?)
+            """,
+            (restaurant_id,),
+        )
+        cur = conn.execute("DELETE FROM dishes WHERE restaurant_id = ?", (restaurant_id,))
+    return cur.rowcount
+
+
 def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
     """All dishes for a restaurant with their LATEST classification."""
     with connect(db_path) as conn:

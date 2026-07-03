@@ -87,7 +87,7 @@ def run_discovery() -> object:
     dry_run = bool((request.get_json(silent=True) or {}).get("dry_run"))
     try:
         found = discover.run(dry_run=dry_run)
-    except Exception as exc:  # surface the failure to the UI instead of a 500 blob
+    except Exception as exc:
         return jsonify({"error": str(exc)}), 502
 
     return jsonify(
@@ -103,12 +103,18 @@ def run_discovery() -> object:
 def run_ingest() -> object:
     """Trigger Phase 1 menu-text ingestion.
 
-    Scrapes websites for restaurants that don't have menu text yet (or all,
-    with {"all": true}). Synchronous; can take a minute across many sites.
+    Scrapes websites for restaurants that don't have menu text yet, all of
+    them with {"all": true}, or a single one with {"restaurant_id": N}.
+    Synchronous; a stubborn ordering-platform site can take ~a minute.
     """
     payload = request.get_json(silent=True) or {}
     try:
-        result = ingest.run(do_all=bool(payload.get("all")))
+        result = ingest.run(
+            restaurant_id=payload.get("restaurant_id"),
+            do_all=bool(payload.get("all")),
+        )
+    except SystemExit as exc:  # e.g. restaurant has no website
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(
@@ -184,6 +190,8 @@ def run_classify() -> object:
         result = classify.run(
             restaurant_id=payload.get("restaurant_id"),
         )
+    except SystemExit as exc:  # e.g. restaurant has no menu text yet
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(result)
