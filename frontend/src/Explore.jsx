@@ -71,7 +71,10 @@ export default function Explore() {
     () => window.matchMedia("(min-width: 1024px)").matches
   );
   const [dishesFor, setDishesFor] = useState(null);
-  const [focus, setFocus] = useState(null); // {id, ts} — card click zooms map
+  // {id, ts, source: "card" | "map"} — card click flies the map; pin click
+  // highlights + scrolls the card. Only card-sourced focus moves the map.
+  const [focus, setFocus] = useState(null);
+  const [viewBounds, setViewBounds] = useState(null); // map viewport {s,w,n,e}
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
@@ -193,6 +196,9 @@ export default function Explore() {
       const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
       markersRef.current[r.place_id] = marker;
       bounds.push([r.lat, r.lng]);
+      marker.on("click", () =>
+        setFocus({ id: r.place_id, ts: Date.now(), source: "map" })
+      );
 
       // Tooltip and popup content built as DOM nodes with textContent —
       // never innerHTML with API-sourced strings.
@@ -236,7 +242,22 @@ export default function Explore() {
     } else {
       map.setView([origin.lat, origin.lng], 13);
     }
-    setTimeout(() => map.invalidateSize(), 100);
+
+    // Keep the list's "On the map" section in sync with the viewport.
+    const syncBounds = () => {
+      const b = map.getBounds();
+      setViewBounds({
+        s: b.getSouth(),
+        w: b.getWest(),
+        n: b.getNorth(),
+        e: b.getEast(),
+      });
+    };
+    map.on("moveend", syncBounds);
+    setTimeout(() => {
+      map.invalidateSize();
+      syncBounds();
+    }, 100);
     return () => {
       map.remove();
       mapRef.current = null;
@@ -246,9 +267,16 @@ export default function Explore() {
 
   // Card click → fly the map to that restaurant and open its popup. Runs
   // after the build effect above (declaration order), so it also works on
-  // mobile where the click first flips the view to the map.
+  // mobile where the click first flips the view to the map. Pin clicks
+  // (source "map") don't move the map — they highlight + scroll the card.
   useEffect(() => {
     if (!focus) return;
+    if (focus.source === "map") {
+      document
+        .getElementById(`vf-card-${focus.id}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
     const map = mapRef.current;
     const marker = markersRef.current[focus.id];
     if (!map || !marker) return;
@@ -260,8 +288,99 @@ export default function Explore() {
   function focusRestaurant(r) {
     if (r.lat == null || r.lng == null) return;
     if (!isDesktop) setView("map");
-    setFocus({ id: r.place_id, ts: Date.now() });
+    setFocus({ id: r.place_id, ts: Date.now(), source: "card" });
   }
+
+  // Split the list by the map viewport: what you can see on the map sits on
+  // top; everything else drops to a "Not on the map" section below (never
+  // hidden). Before the map has ever reported bounds, show a single list.
+  const inBounds = (r) =>
+    viewBounds != null &&
+    r.lat != null &&
+    r.lng != null &&
+    r.lat >= viewBounds.s &&
+    r.lat <= viewBounds.n &&
+    r.lng >= viewBounds.w &&
+    r.lng <= viewBounds.e;
+  const onMap = viewBounds ? filtered.filter(inBounds) : filtered;
+  const offMap = viewBounds ? filtered.filter((r) => !inBounds(r)) : [];
+
+  const renderCard = (r) => (
+    <div
+      key={r.place_id}
+      id={`vf-card-${r.place_id}`}
+      onClick={() => focusRestaurant(r)}
+      title={r.lat != null ? "Show on map" : undefined}
+      className={`group flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+        focus?.id === r.place_id
+          ? "border-emerald-600 ring-1 ring-emerald-600"
+          : "border-stone-200/80"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="font-bold leading-snug text-stone-900">{r.name}</div>
+        {r.distance != null && (
+          <span className="shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
+            {r.distance.toFixed(1)} mi
+          </span>
+        )}
+      </div>
+      <div className="mt-0.5 text-xs capitalize text-stone-500">
+        {prettyType(r.primary_type) || "restaurant"}
+        {r.serves_vegetarian === 1 && (
+          <span className="ml-2 font-medium text-emerald-700">
+            ✓ veg-friendly
+          </span>
+        )}
+      </div>
+      {r.editorial_summary && (
+        <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
+          {r.editorial_summary}
+        </div>
+      )}
+      <div className="mt-3 flex items-center justify-between border-t border-stone-100 pt-3">
+        {r.dish_count > 0 ? (
+          <span
+            className={`rounded-full px-2.5 py-1 text-xs font-bold ${
+              r.vegan_options > 0
+                ? "bg-emerald-700 text-white"
+                : "bg-stone-100 text-stone-500"
+            }`}
+          >
+            {r.vegan_options} vegan option{r.vegan_options === 1 ? "" : "s"}
+          </span>
+        ) : (
+          <span className="text-xs italic text-stone-400">
+            menu not analyzed yet
+          </span>
+        )}
+        <div className="flex items-center gap-3">
+          {r.website_url && (
+            <a
+              href={r.website_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs font-semibold text-stone-400 transition hover:text-emerald-700 hover:underline"
+            >
+              Website ↗
+            </a>
+          )}
+          {r.dish_count > 0 && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDishesFor(r);
+              }}
+              className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
+            >
+              See dishes →
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   const analyzed = restaurants.filter((r) => r.dish_count > 0).length;
   const totalVegan = restaurants.reduce((s, r) => s + (r.vegan_options || 0), 0);
@@ -361,88 +480,29 @@ export default function Explore() {
           ) : (
             <>
               <div className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
-                {filtered.length} restaurant{filtered.length === 1 ? "" : "s"}
+                {viewBounds
+                  ? `🗺 On the map (${onMap.length})`
+                  : `${filtered.length} restaurant${filtered.length === 1 ? "" : "s"}`}
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                {filtered.map((r) => (
-                  <div
-                    key={r.place_id}
-                    onClick={() => focusRestaurant(r)}
-                    title={r.lat != null ? "Show on map" : undefined}
-                    className={`group flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-                      focus?.id === r.place_id
-                        ? "border-emerald-600 ring-1 ring-emerald-600"
-                        : "border-stone-200/80"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="font-bold leading-snug text-stone-900">
-                        {r.name}
-                      </div>
-                      {r.distance != null && (
-                        <span className="shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
-                          {r.distance.toFixed(1)} mi
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-xs capitalize text-stone-500">
-                      {prettyType(r.primary_type) || "restaurant"}
-                      {r.serves_vegetarian === 1 && (
-                        <span className="ml-2 font-medium text-emerald-700">
-                          ✓ veg-friendly
-                        </span>
-                      )}
-                    </div>
-                    {r.editorial_summary && (
-                      <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
-                        {r.editorial_summary}
-                      </div>
-                    )}
-                    <div className="mt-3 flex items-center justify-between border-t border-stone-100 pt-3">
-                      {r.dish_count > 0 ? (
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-xs font-bold ${
-                            r.vegan_options > 0
-                              ? "bg-emerald-700 text-white"
-                              : "bg-stone-100 text-stone-500"
-                          }`}
-                        >
-                          {r.vegan_options} vegan option
-                          {r.vegan_options === 1 ? "" : "s"}
-                        </span>
-                      ) : (
-                        <span className="text-xs italic text-stone-400">
-                          menu not analyzed yet
-                        </span>
-                      )}
-                      <div className="flex items-center gap-3">
-                        {r.website_url && (
-                          <a
-                            href={r.website_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-xs font-semibold text-stone-400 transition hover:text-emerald-700 hover:underline"
-                          >
-                            Website ↗
-                          </a>
-                        )}
-                        {r.dish_count > 0 && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDishesFor(r);
-                            }}
-                            className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
-                          >
-                            See dishes →
-                          </button>
-                        )}
-                      </div>
-                    </div>
+              {onMap.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-stone-300 p-6 text-center text-sm text-stone-400">
+                  Nothing in the current map view — pan or zoom out.
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                  {onMap.map(renderCard)}
+                </div>
+              )}
+              {offMap.length > 0 && (
+                <>
+                  <div className="mb-2 mt-8 text-xs font-medium uppercase tracking-wide text-stone-400">
+                    Not on the map ({offMap.length})
                   </div>
-                ))}
-              </div>
+                  <div className="grid gap-3 opacity-90 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                    {offMap.map(renderCard)}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
