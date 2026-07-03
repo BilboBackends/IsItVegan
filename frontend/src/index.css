@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+/* Map pin markers (Leaflet divIcon). Small numbered badges instead of big
+   translucent circles — the number is the restaurant's vegan-option count. */
+.vf-pin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.35);
+  color: #fff;
+  font-family: "Outfit", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.vf-pin--dot {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+}
+
+.leaflet-tooltip.vf-tooltip {
+  border-radius: 8px;
+  border: 1px solid #e7e5e4;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  font-family: "Outfit", system-ui, sans-serif;
+  font-weight: 600;
+  color: #1c1917;
+}

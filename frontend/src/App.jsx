@@ -17,29 +17,32 @@ export default function App() {
   const isAdmin = hash === "#admin";
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <nav className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <a href="#" className="text-lg font-bold text-emerald-700">
-            🌱 VeganFind
+    <div className="min-h-screen bg-[#faf8f4] text-stone-900">
+      <nav className="sticky top-0 z-20 border-b border-stone-200/80 bg-[#faf8f4]/90 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
+          <a href="#" className="flex items-center gap-2 text-lg font-extrabold tracking-tight text-emerald-800">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-base text-white">
+              🌱
+            </span>
+            VeganFind
           </a>
-          <div className="flex gap-1 text-sm">
+          <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-sm shadow-sm">
             <a
               href="#"
-              className={`rounded-lg px-3 py-1.5 font-medium ${
+              className={`rounded-full px-4 py-1.5 font-semibold transition ${
                 !isAdmin
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "text-slate-500 hover:text-slate-800"
+                  ? "bg-emerald-700 text-white"
+                  : "text-stone-500 hover:text-stone-800"
               }`}
             >
               Explore
             </a>
             <a
               href="#admin"
-              className={`rounded-lg px-3 py-1.5 font-medium ${
+              className={`rounded-full px-4 py-1.5 font-semibold transition ${
                 isAdmin
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "text-slate-500 hover:text-slate-800"
+                  ? "bg-emerald-700 text-white"
+                  : "text-stone-500 hover:text-stone-800"
               }`}
             >
               Admin
