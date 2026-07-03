@@ -65,6 +65,26 @@ python discover.py --mock fixtures/maitland_sample.json
 python discover.py --mock fixtures/maitland_sample.json --dry-run
 ```
 
+### Adding specific restaurants by name
+
+Instead of (or on top of) area discovery, give a list of names. Each resolves
+via Places Text Search (biased toward the configured area; a match is only
+accepted if its name actually overlaps the query), then runs enrichment and
+menu ingestion automatically. Upserts on place_id, so re-adding an existing
+restaurant updates it rather than duplicating. Also available in the dashboard
+via the "+ Add restaurants" button.
+
+```bash
+python add_restaurants.py "Ethos Vegan Kitchen" "4Rivers Smokehouse"
+python add_restaurants.py --file names.txt        # one name per line
+python add_restaurants.py --file names.txt --dry-run   # show matches only
+python add_restaurants.py "Some Place" --classify # also run Claude verdicts
+```
+
+Always spot-check the printed match (name + address) — a wrong match poisons
+everything downstream, so unmatchable names are reported as not-found rather
+than guessed.
+
 ### Phase 1 — menu-text ingestion
 
 Scrapes each restaurant's website for readable menu text (stored as a

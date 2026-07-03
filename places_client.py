@@ -74,6 +74,66 @@ _DETAILS_FIELD_MASK = ",".join(
 
 PLACE_DETAILS_URL = "https://places.googleapis.com/v1/places/"
 
+TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+
+
+def search_place_by_name(
+    name: str,
+    *,
+    api_key: str,
+    bias_lat: float | None = None,
+    bias_lng: float | None = None,
+    bias_radius_meters: float = 50_000.0,
+    timeout: float = 30.0,
+) -> dict | None:
+    """Resolve a restaurant name to a place via Text Search. Top match or None.
+
+    The bias circle nudges results toward our area ("Antonio's" finds the
+    Maitland one) without restricting — an explicit query like "Antonio's
+    Orlando" still wins. Returns the same normalized shape as discovery.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": FIELD_MASK,
+    }
+    body: dict = {
+        "textQuery": name,
+        "maxResultCount": 3,
+    }
+    if bias_lat is not None and bias_lng is not None:
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": bias_lat, "longitude": bias_lng},
+                "radius": bias_radius_meters,
+            }
+        }
+
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(TEXT_SEARCH_URL, headers=headers, json=body)
+        resp.raise_for_status()
+        places = resp.json().get("places", [])
+
+    # Text Search happily returns a semantically-similar place when the exact
+    # one isn't nearby (e.g. a different vegan restaurant). Require real name
+    # overlap with the query before trusting a candidate.
+    candidates = [_normalize_place(p) for p in places]
+    for cand in candidates:
+        if _names_overlap(name, cand["name"]):
+            return cand
+    return None
+
+
+def _names_overlap(query: str, result_name: str) -> bool:
+    """True if the result's name plausibly IS the queried restaurant."""
+    q = query.lower()
+    r = result_name.lower()
+    if q in r or r in q:
+        return True
+    q_tokens = {t for t in q.replace("'", " ").split() if len(t) > 3}
+    r_tokens = {t for t in r.replace("'", " ").split() if len(t) > 3}
+    return bool(q_tokens & r_tokens)
+
 
 def fetch_place_details(
     place_id: str, *, api_key: str, timeout: float = 30.0

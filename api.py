@@ -135,6 +135,32 @@ def run_enrich() -> object:
     return jsonify(result)
 
 
+@app.post("/api/restaurants/add")
+def add_restaurants_endpoint() -> object:
+    """Add restaurants by name: resolve via Places, enrich + ingest each.
+
+    Body: {"names": ["...", ...]}. Synchronous — each added restaurant runs
+    the scrape pipeline (~30-60s for ordering-platform sites); fine for a
+    handful of names in a local tool. Classification is NOT run here (costs
+    credits) — use classify.py or POST /api/classify.
+    """
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+    names = [n.strip() for n in payload.get("names", []) if isinstance(n, str) and n.strip()]
+    if not names:
+        return jsonify({"error": "Provide names: [\"...\"]"}), 400
+    if len(names) > 15:
+        return jsonify({"error": "Max 15 names per request."}), 400
+    try:
+        import add_restaurants
+
+        result = add_restaurants.run(names)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(result)
+
+
 @app.get("/api/restaurants/<int:restaurant_id>/dishes")
 def restaurant_dishes(restaurant_id: int) -> object:
     """All dishes for a restaurant with their latest vegan verdicts."""

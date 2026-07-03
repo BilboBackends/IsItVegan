@@ -52,6 +52,10 @@ export default function App() {
   const [dishesFor, setDishesFor] = useState(null); // restaurant whose dishes are open
   const [dishes, setDishes] = useState([]);
   const [dishesLoading, setDishesLoading] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addNames, setAddNames] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addResult, setAddResult] = useState(null);
 
   async function loadData() {
     setLoading(true);
@@ -170,6 +174,31 @@ export default function App() {
     }
   }
 
+  async function submitAddNames() {
+    const names = addNames
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length === 0) return;
+    setAdding(true);
+    setAddResult(null);
+    try {
+      const res = await fetch("/api/restaurants/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
+      setAddResult(data);
+      await loadData();
+    } catch (e) {
+      setAddResult({ error: e.message });
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function openDishes(r) {
     setDishesFor(r);
     setDishes([]);
@@ -226,6 +255,16 @@ export default function App() {
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setAddOpen(true);
+                setAddResult(null);
+              }}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              title="Add restaurants by name — resolves via Google, then scrapes"
+            >
+              + Add restaurants
+            </button>
             <button
               onClick={runEnrich}
               disabled={enriching || !config?.has_api_key}
@@ -407,6 +446,73 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {addOpen && (
+        <div
+          className="fixed inset-0 z-10 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => !adding && setAddOpen(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <h2 className="font-semibold text-slate-900">Add restaurants by name</h2>
+              <button
+                onClick={() => !adding && setAddOpen(false)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="space-y-3 overflow-y-auto p-4">
+              <p className="text-sm text-slate-500">
+                One name per line. Each is resolved via Google Places, then
+                enriched and scraped (~30–60s each). Check the matched
+                addresses below — a wrong match is worse than no match.
+              </p>
+              <textarea
+                value={addNames}
+                onChange={(e) => setAddNames(e.target.value)}
+                rows={5}
+                placeholder={"Ethos Vegan Kitchen\n4Rivers Smokehouse Winter Park"}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+              />
+              <button
+                onClick={submitAddNames}
+                disabled={adding || !addNames.trim()}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {adding ? "Adding (this can take a minute per restaurant)…" : "Add & scrape"}
+              </button>
+              {addResult?.error && (
+                <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {addResult.error}
+                </div>
+              )}
+              {addResult?.matches?.length > 0 && (
+                <ul className="space-y-1 text-sm">
+                  {addResult.matches.map((m) => (
+                    <li key={m.query} className="rounded bg-emerald-50 px-3 py-1.5">
+                      <span className="font-medium text-emerald-800">{m.matched}</span>
+                      <span className="ml-1 text-emerald-700/70">— {m.address}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {addResult?.not_found?.length > 0 && (
+                <ul className="space-y-1 text-sm">
+                  {addResult.not_found.map((n) => (
+                    <li key={n} className="rounded bg-amber-50 px-3 py-1.5 text-amber-800">
+                      not found: {n}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {dishesFor && (
         <div
