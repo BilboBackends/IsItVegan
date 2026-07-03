@@ -277,6 +277,7 @@ def restaurants_needing_ingest(db_path: str | None = None) -> list[dict]:
               AND NOT EXISTS (
                   SELECT 1 FROM sources s
                   WHERE s.restaurant_id = r.id AND s.type = 'text'
+                    AND (s.url IS NULL OR s.url != 'google:editorial_summary')
               )
             ORDER BY r.name ASC
             """

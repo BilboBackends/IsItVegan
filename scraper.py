@@ -121,25 +121,42 @@ def _extract_text(html: str) -> str:
 @dataclass
 class _Fetched:
     html: str | None = None
+    pdf_bytes: bytes | None = None  # set when the response is a PDF
     error: str | None = None
     status_code: int | None = None
 
 
 def _fetch(client: httpx.Client, url: str) -> _Fetched:
-    """Fetch one URL, returning HTML or a classified error (never raises)."""
+    """Fetch one URL: HTML, PDF bytes, or a classified error (never raises)."""
     try:
         resp = client.get(url)
     except httpx.HTTPError as exc:
         return _Fetched(error=f"{type(exc).__name__}: {exc}")
     if resp.status_code >= 400:
         return _Fetched(status_code=resp.status_code, error=f"HTTP {resp.status_code}")
-    content_type = resp.headers.get("content-type", "")
-    if "html" not in content_type.lower():
+    content_type = resp.headers.get("content-type", "").lower()
+    if "pdf" in content_type:
+        # Menus are often PDFs — keep the bytes so a follower can extract them.
+        return _Fetched(pdf_bytes=resp.content, status_code=resp.status_code)
+    if "html" not in content_type:
         return _Fetched(
             status_code=resp.status_code,
             error=f"Non-HTML content-type: {content_type or 'unknown'}",
         )
     return _Fetched(html=resp.text, status_code=resp.status_code)
+
+
+def _fetched_to_text(page: "_Fetched") -> str:
+    """Turn a fetched page into text — HTML via BeautifulSoup, PDF via pdf_menu."""
+    if page.html is not None:
+        return _extract_text(page.html)
+    if page.pdf_bytes is not None:
+        try:
+            from pdf_menu import extract_pdf_menu_text
+        except Exception:
+            return ""
+        return extract_pdf_menu_text(page.pdf_bytes)
+    return ""
 
 
 def _looks_menu_like(text: str, href: str) -> bool:
@@ -191,6 +208,51 @@ def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
     return follow[:_MAX_FOLLOW], third_party
 
 
+def _all_internal_links(html: str, base_url: str) -> list[dict]:
+    """Every same-domain link as {text, url}, deduped — candidates for the LLM.
+
+    Used when keyword matching finds no menu link: hand the whole set to a cheap
+    model to pick the menu (catches labels like "Bill of Fare", "See our food").
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    base_host = urlparse(base_url).netloc.lower().replace("www.", "")
+    landing = base_url.split("#")[0].rstrip("/")
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith("#"):
+            continue
+        absolute = urljoin(base_url, href)
+        host = urlparse(absolute).netloc.lower().replace("www.", "")
+        if host != base_host:
+            continue
+        norm = absolute.split("#")[0].rstrip("/")
+        if norm in seen or norm == landing:
+            continue
+        seen.add(norm)
+        out.append({"text": a.get_text(" ", strip=True)[:80], "url": absolute})
+    return out
+
+
+def _llm_menu_link(html: str, base_url: str) -> str | None:
+    """Ask the cheap LLM navigator to pick a menu link from all page links.
+
+    Returns a same-domain URL or None. No key / SDK error -> None (caller falls
+    back). Imported lazily so the scraper works without the anthropic SDK.
+    """
+    candidates = _all_internal_links(html, base_url)
+    if not candidates:
+        return None
+    try:
+        from llm_nav import choose_menu_link_from_text
+    except Exception:
+        return None
+    choice = choose_menu_link_from_text(candidates)
+    return choice.url
+
+
 def _collect_http(
     url: str, timeout: float
 ) -> tuple[list[tuple[str, str]] | None, list[str], _Fetched]:
@@ -208,12 +270,17 @@ def _collect_http(
             return None, [], landing
 
         menu_links, third_party = _find_menu_links(landing.html, url)
+        # If keyword matching found no menu link, let the cheap LLM pick one
+        # from all page links (catches non-obvious labels).
+        if not menu_links:
+            llm_link = _llm_menu_link(landing.html, url)
+            if llm_link:
+                menu_links = [llm_link]
+
         pages: list[tuple[str, str]] = [(url, _extract_text(landing.html))]
         for link in menu_links:
             page = _fetch(client, link)
-            if page.html is None:
-                continue
-            text = _extract_text(page.html)
+            text = _fetched_to_text(page)
             if text:
                 pages.append((link, text))
     return pages, third_party, landing
@@ -230,6 +297,11 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
         return [], []
 
     menu_links, third_party = _find_menu_links(landing_html, url)
+    if not menu_links:
+        llm_link = _llm_menu_link(landing_html, url)
+        if llm_link:
+            menu_links = [llm_link]
+
     pages: list[tuple[str, str]] = [(url, _extract_text(landing_html))]
     for link in menu_links:
         page_html, _ = fetch_rendered_html(link)

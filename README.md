@@ -92,11 +92,15 @@ structure. Only pages that clear the menu threshold are stored, so homepage
 marketing copy ("Authentic Cuisine · Reserve Your Table") is rejected rather
 than fed to Claude.
 
-When plain HTTP scraping finds no real menu, ingestion escalates to a headless
-browser (Playwright/Chromium) that runs the page's JavaScript, so JS-rendered
-menus (Toast/Square/Clover and modern SPA sites) render before extraction.
-Headless is a fallback only — sites that scrape fine over HTTP never pay its
-cost.
+When keyword matching finds no menu link, a cheap LLM navigator (Claude Haiku)
+picks the menu link from all the page's links — catching non-obvious labels
+("Bill of Fare", "View Our Menu") the keyword list misses. Menu links that
+resolve to a **PDF** are extracted too (pypdf locally; Claude's native PDF
+reading as a fallback for image/scanned PDFs). When plain HTTP finds no real
+menu, ingestion escalates to a headless browser (Playwright/Chromium) that runs
+the page's JavaScript so JS-rendered menus (Toast/Square/Clover, SPA sites)
+render before extraction. Each fallback fires only when the cheaper path fails,
+so sites that scrape fine over HTTP never pay for the LLM, PDF, or browser step.
 
 Remaining failures: bot-blocked even in a browser, menus reachable only via a
 JS "Order" button we don't click, non-HTML (PDF/image), or genuinely
@@ -125,6 +129,8 @@ scraper.py             # Phase 1: HTTP scrape + menu-link following + headless f
 headless.py            # Playwright headless-browser fetch (JS-rendered menus)
 menu_score.py          # Heuristic: is this text a real menu vs homepage copy?
 ingest.py              # Phase 1 CLI: scrape + persist menu text
+llm_nav.py             # Cheap LLM (Haiku) menu-link chooser + vision fallback
+pdf_menu.py            # PDF menu extraction (pypdf local + Claude PDF fallback)
 enrich.py              # Pull Google food signals (vegetarian, editorial, type)
 api.py                 # Flask JSON API for the local dashboard
 fixtures/              # mock data for running without live APIs

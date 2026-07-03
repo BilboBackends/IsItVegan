@@ -19,6 +19,7 @@ load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     google_places_api_key: str | None
+    anthropic_api_key: str | None
     discovery_lat: float
     discovery_lng: float
     discovery_radius_meters: float
@@ -40,6 +41,7 @@ def _get_float(name: str, default: float) -> float:
 def load_settings() -> Settings:
     return Settings(
         google_places_api_key=os.environ.get("GOOGLE_PLACES_API_KEY"),
+        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         # Maitland, FL center as the MVP default.
         discovery_lat=_get_float("DISCOVERY_LAT", 28.6278),
         discovery_lng=_get_float("DISCOVERY_LNG", -81.3631),
