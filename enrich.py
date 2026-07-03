@@ -43,7 +43,16 @@ def _targets(restaurant_id: int | None, do_all: bool) -> list[dict]:
         return rows
     if do_all:
         return rows
-    return [r for r in rows if not r.get("enriched_at")]
+    # Existing databases gain user_rating_count through a migration. NULL
+    # means ratings have not been fetched yet, so the next normal enrichment
+    # run backfills them once without requiring --all.
+    return [
+        r
+        for r in rows
+        if not r.get("enriched_at")
+        or r.get("user_rating_count") is None
+        or not r.get("hours_enriched_at")
+    ]
 
 
 def run(
@@ -59,7 +68,7 @@ def run(
     print(f"Enriching {len(targets)} restaurant(s)...\n")
 
     now = datetime.now(timezone.utc).isoformat()
-    veg_yes = veg_no = veg_unknown = with_editorial = 0
+    veg_yes = veg_no = veg_unknown = with_editorial = with_rating = 0
 
     for t in targets:
         details = fetch_place_details(
@@ -77,6 +86,8 @@ def run(
         editorial = details["editorial_summary"]
         if editorial:
             with_editorial += 1
+        if details["rating"] is not None:
+            with_rating += 1
 
         print(f"  [{veg_str}] {t['name']}  ({details['primary_type'] or '—'})")
         if editorial:
@@ -89,6 +100,10 @@ def run(
                 price_level=details["price_level"],
                 primary_type=details["primary_type"],
                 editorial_summary=editorial,
+                rating=details["rating"],
+                user_rating_count=details["user_rating_count"],
+                open_now=details["open_now"],
+                opening_hours=details["opening_hours"],
                 enriched_at=now,
             )
             # Persist the blurb as citable evidence alongside scraped menu text.
@@ -102,7 +117,7 @@ def run(
 
     print(
         f"\nDone. vegetarian: {veg_yes} yes / {veg_no} no / {veg_unknown} unknown. "
-        f"{with_editorial} have an editorial summary."
+        f"{with_editorial} have an editorial summary; {with_rating} have ratings."
     )
     if dry_run:
         print("[dry-run] Nothing written to the database.")
@@ -111,6 +126,7 @@ def run(
         "veg_no": veg_no,
         "veg_unknown": veg_unknown,
         "with_editorial": with_editorial,
+        "with_rating": with_rating,
     }
 
 

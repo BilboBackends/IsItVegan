@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import Explore from "./Explore.jsx";
+import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
 
-// Shell: hash-routed views. Default is the consumer-facing Explore view;
-// #admin is the pipeline dashboard (discovery/ingest/enrich controls).
+// Shell: hash-routed views. Consumers can browse restaurants or search the
+// cross-menu dish index; #admin holds discovery/ingest/enrich controls.
 
 export default function App() {
   const [hash, setHash] = useState(window.location.hash);
@@ -14,7 +14,12 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const isAdmin = hash === "#admin";
+  const isAdmin = hash.startsWith("#admin");
+  const exploreView = hash.startsWith("#dishes")
+    ? "food"
+    : hash.startsWith("#saved")
+      ? "saved"
+      : "restaurants";
 
   return (
     <div className="min-h-screen bg-[#faf8f4] text-stone-900">
@@ -24,12 +29,12 @@ export default function App() {
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-base text-white">
               🌱
             </span>
-            VeganFind
+            <span className="hidden sm:inline">VeganFind</span>
           </a>
-          <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-sm shadow-sm">
+          <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-xs shadow-sm sm:text-sm">
             <a
-              href="#"
-              className={`rounded-full px-4 py-1.5 font-semibold transition ${
+              href="#restaurants"
+              className={`rounded-full px-2.5 py-1.5 font-semibold transition sm:px-4 ${
                 !isAdmin
                   ? "bg-emerald-700 text-white"
                   : "text-stone-500 hover:text-stone-800"
@@ -39,7 +44,7 @@ export default function App() {
             </a>
             <a
               href="#admin"
-              className={`rounded-full px-4 py-1.5 font-semibold transition ${
+              className={`rounded-full px-2.5 py-1.5 font-semibold transition sm:px-4 ${
                 isAdmin
                   ? "bg-emerald-700 text-white"
                   : "text-stone-500 hover:text-stone-800"
@@ -50,7 +55,7 @@ export default function App() {
           </div>
         </div>
       </nav>
-      {isAdmin ? <Admin /> : <Explore />}
+      {isAdmin ? <Admin /> : <ExploreHub view={exploreView} />}
     </div>
   );
 }

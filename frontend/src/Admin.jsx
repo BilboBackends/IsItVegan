@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import DishModal from "./DishModal.jsx";
+import RatingBadge from "./RatingBadge.jsx";
+import { FreshnessBadge, OpenStatusBadge, isMenuStale } from "./RestaurantMeta.jsx";
 
 // The pipeline dashboard (admin view). Talks only to our own backend
 // (proxied /api/*), so no keys ever reach the browser. The consumer-facing
@@ -35,19 +37,22 @@ export default function Admin() {
   const [addNames, setAddNames] = useState("");
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState(null);
+  const [reports, setReports] = useState([]);
 
   async function loadData() {
     setLoading(true);
     setError(null);
     try {
-      const [rRes, cRes] = await Promise.all([
-        fetch("/api/restaurants"),
+      const [rRes, cRes, reportRes] = await Promise.all([
+        fetch("/api/restaurants?include_excluded=true"),
         fetch("/api/config"),
+        fetch("/api/reports?status=open"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
       setRestaurants(rData.restaurants);
       if (cRes.ok) setConfig(await cRes.json());
+      if (reportRes.ok) setReports((await reportRes.json()).reports || []);
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
     } finally {
@@ -84,7 +89,7 @@ export default function Admin() {
     }
   }
 
-  async function runIngest() {
+  async function runIngest(staleOnly = false) {
     setIngesting(true);
     setNotice(null);
     setError(null);
@@ -92,12 +97,12 @@ export default function Admin() {
       const res = await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(staleOnly ? { stale_days: 30 } : {}),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Ingest failed (${res.status})`);
       setNotice(
-        `Menu ingestion: ${data.succeeded} scraped, ${data.failed} failed ` +
+        `${staleOnly ? "Stale menu refresh" : "Menu ingestion"}: ${data.succeeded} scraped, ${data.failed} failed ` +
           `(blocked / JS-rendered — photo-fallback candidates).`
       );
       await loadData();
@@ -108,6 +113,15 @@ export default function Admin() {
     }
   }
 
+  async function resolveReport(id) {
+    const response = await fetch(`/api/reports/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "resolved" }),
+    });
+    if (response.ok) setReports((current) => current.filter((report) => report.id !== id));
+  }
+
   async function runEnrich() {
     setEnriching(true);
     setNotice(null);
@@ -116,13 +130,14 @@ export default function Admin() {
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ all: true }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Enrich failed (${res.status})`);
       setNotice(
         `Google enrichment: ${data.veg_yes} vegetarian-friendly, ` +
-          `${data.veg_unknown} unknown; ${data.with_editorial} editorial summaries.`
+          `${data.veg_unknown} unknown; ${data.with_editorial} editorial summaries; ` +
+          `${data.with_rating} ratings.`
       );
       await loadData();
     } catch (e) {
@@ -206,6 +221,16 @@ export default function Admin() {
     }
   }
 
+  async function toggleVisibility(restaurant) {
+    const hidden = !Boolean(restaurant.consumer_hidden);
+    const response = await fetch(`/api/restaurants/${restaurant.id}/visibility`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hidden }),
+    });
+    if (response.ok) await loadData();
+  }
+
   // Data-quality flags: places with no website (scraping fallback needed)
   // and how many have menu text scraped so far.
   const noWebsite = useMemo(
@@ -222,6 +247,10 @@ export default function Admin() {
   );
   const totalVeganOptions = useMemo(
     () => restaurants.reduce((sum, r) => sum + (r.vegan_options || 0), 0),
+    [restaurants]
+  );
+  const staleMenus = useMemo(
+    () => restaurants.filter((restaurant) => isMenuStale(restaurant.menu_fetched_at)).length,
     [restaurants]
   );
 
@@ -261,12 +290,20 @@ export default function Admin() {
               onClick={runEnrich}
               disabled={enriching || !config?.has_api_key}
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              title="Pull Google's food signals (vegetarian-friendly, editorial summary)"
+              title="Refresh ratings, current opening status, and Google food signals for every restaurant"
             >
-              {enriching ? "Enriching…" : "Enrich (Google)"}
+              {enriching ? "Refreshing…" : "Refresh Google data"}
             </button>
             <button
-              onClick={runIngest}
+              onClick={() => runIngest(true)}
+              disabled={ingesting || staleMenus === 0}
+              className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-800 shadow-sm transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+              title="Re-scrape menus last checked more than 30 days ago"
+            >
+              Refresh stale ({staleMenus})
+            </button>
+            <button
+              onClick={() => runIngest(false)}
               disabled={ingesting || discovering}
               className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
               title="Scrapes menu text for restaurants that don't have it yet"
@@ -324,6 +361,33 @@ export default function Admin() {
           />
         </div>
 
+        {reports.length > 0 && (
+          <section className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-bold text-amber-950">Correction reports</h2>
+              <span className="rounded-full bg-amber-200 px-2 py-0.5 text-xs font-bold text-amber-900">{reports.length} open</span>
+            </div>
+            <div className="space-y-2">
+              {reports.map((report) => (
+                <div key={report.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white p-3 text-sm shadow-sm">
+                  <div>
+                    <div className="font-bold text-slate-900">
+                      {report.dish_name || "Restaurant report"} · {report.restaurant_name}
+                    </div>
+                    <div className="mt-0.5 text-xs capitalize text-amber-800">
+                      {report.issue_type.replaceAll("_", " ")}
+                      {report.note && ` — ${report.note}`}
+                    </div>
+                  </div>
+                  <button onClick={() => resolveReport(report.id)} className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50">
+                    Mark resolved
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <div className="mb-3 flex items-center justify-between gap-3">
           <input
             type="text"
@@ -350,6 +414,8 @@ export default function Admin() {
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3 font-medium">Name</th>
+                    <th className="px-4 py-3 font-medium">Rating</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 font-medium">Veg?</th>
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
@@ -366,11 +432,28 @@ export default function Admin() {
                         title={r.editorial_summary || ""}
                       >
                         {r.name}
+                        {!r.is_consumer_venue && (
+                          <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                            {r.consumer_hidden ? "hidden from Explore" : "non-restaurant"}
+                          </span>
+                        )}
                         {r.editorial_summary && (
                           <span className="ml-1 text-slate-300" title={r.editorial_summary}>
                             ⓘ
                           </span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <RatingBadge
+                          rating={r.rating}
+                          userRatingCount={r.user_rating_count}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col items-start gap-1">
+                          <OpenStatusBadge openNow={r.open_now} enrichedAt={r.enriched_at} />
+                          <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         {r.serves_vegetarian === 1 ? (
@@ -433,6 +516,24 @@ export default function Admin() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1.5">
+                          <button
+                            onClick={() => toggleVisibility(r)}
+                            disabled={!r.is_consumer_venue && !r.consumer_hidden}
+                            title={
+                              !r.is_consumer_venue && !r.consumer_hidden
+                                ? "Automatically excluded by its Google place type"
+                                : r.consumer_hidden
+                                  ? "Restore this listing to Explore"
+                                  : "Hide this listing from Explore"
+                            }
+                            className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                          >
+                            {!r.is_consumer_venue && !r.consumer_hidden
+                              ? "excluded"
+                              : r.consumer_hidden
+                                ? "show"
+                                : "hide"}
+                          </button>
                           <button
                             onClick={() => runRowAction(r, "ingest")}
                             disabled={rowBusy !== null || !r.website_url}

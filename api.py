@@ -21,6 +21,7 @@ import enrich
 import ingest
 from config import settings
 from menu_score import score_menu_text
+from venue_filter import is_consumer_food_venue
 
 app = Flask(__name__)
 # Allow the Vite dev server origin during local development.
@@ -55,6 +56,11 @@ def get_config() -> object:
 def get_restaurants() -> object:
     db.init_db()
     restaurants = db.list_restaurants()
+    include_excluded = request.args.get("include_excluded") == "true"
+    for restaurant in restaurants:
+        restaurant["is_consumer_venue"] = is_consumer_food_venue(restaurant)
+    if not include_excluded:
+        restaurants = [r for r in restaurants if r["is_consumer_venue"]]
     counts = db.verdict_counts_by_restaurant()
     veganish = ("vegan", "likely_vegan", "vegan_adaptable")
     for r in restaurants:
@@ -108,10 +114,16 @@ def run_ingest() -> object:
     Synchronous; a stubborn ordering-platform site can take ~a minute.
     """
     payload = request.get_json(silent=True) or {}
+    stale_days = payload.get("stale_days")
+    if stale_days is not None and (
+        not isinstance(stale_days, int) or isinstance(stale_days, bool) or stale_days < 1
+    ):
+        return jsonify({"error": "stale_days must be a positive integer."}), 400
     try:
         result = ingest.run(
             restaurant_id=payload.get("restaurant_id"),
             do_all=bool(payload.get("all")),
+            stale_days=stale_days,
         )
     except SystemExit as exc:  # e.g. restaurant has no website
         return jsonify({"error": str(exc)}), 400
@@ -167,11 +179,81 @@ def add_restaurants_endpoint() -> object:
     return jsonify(result)
 
 
+@app.patch("/api/restaurants/<int:restaurant_id>/visibility")
+def update_restaurant_visibility(restaurant_id: int) -> object:
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("hidden"), bool):
+        return jsonify({"error": "hidden must be true or false."}), 400
+    if not db.set_restaurant_hidden(restaurant_id, payload["hidden"]):
+        return jsonify({"error": "Restaurant not found."}), 404
+    return jsonify({"id": restaurant_id, "hidden": payload["hidden"]})
+
+
 @app.get("/api/restaurants/<int:restaurant_id>/dishes")
 def restaurant_dishes(restaurant_id: int) -> object:
     """All dishes for a restaurant with their latest vegan verdicts."""
     dishes = db.list_dishes(restaurant_id)
     return jsonify({"count": len(dishes), "dishes": dishes})
+
+
+@app.get("/api/dishes")
+def all_dishes() -> object:
+    """All classified menu items with their restaurant metadata."""
+    db.init_db()
+    dishes = db.list_all_dishes()
+    dishes = [dish for dish in dishes if is_consumer_food_venue(dish)]
+    return jsonify({"count": len(dishes), "dishes": dishes})
+
+
+_REPORT_TYPES = {
+    "animal_ingredient",
+    "dish_removed",
+    "wrong_restaurant",
+    "other",
+}
+
+
+@app.post("/api/reports")
+def create_report() -> object:
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    issue_type = payload.get("issue_type")
+    restaurant_id = payload.get("restaurant_id")
+    dish_id = payload.get("dish_id")
+    note = str(payload.get("note") or "").strip()[:1000] or None
+    if issue_type not in _REPORT_TYPES:
+        return jsonify({"error": "Choose a valid issue type."}), 400
+    if not isinstance(restaurant_id, int):
+        return jsonify({"error": "restaurant_id is required."}), 400
+    try:
+        report_id = db.create_report(
+            restaurant_id, issue_type, dish_id=dish_id, note=note
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"id": report_id, "status": "open"}), 201
+
+
+@app.get("/api/reports")
+def get_reports() -> object:
+    db.init_db()
+    status = request.args.get("status", "open")
+    if status not in ("open", "resolved", "all"):
+        return jsonify({"error": "Invalid status."}), 400
+    reports = db.list_reports(None if status == "all" else status)
+    return jsonify({"count": len(reports), "reports": reports})
+
+
+@app.patch("/api/reports/<int:report_id>")
+def update_report(report_id: int) -> object:
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    if payload.get("status") != "resolved":
+        return jsonify({"error": "Only resolution is supported."}), 400
+    if not db.resolve_report(report_id):
+        return jsonify({"error": "Open report not found."}), 404
+    return jsonify({"id": report_id, "status": "resolved"})
 
 
 @app.post("/api/classify")

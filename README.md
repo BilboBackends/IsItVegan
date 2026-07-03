@@ -47,14 +47,29 @@ Open **http://localhost:5173**. The Vite dev server proxies `/api/*` to the
 Flask backend, so the browser only ever talks to our own backend — no API keys
 reach the client.
 
-Two views:
+Two top-level views:
 
-- **Explore** (default) — the consumer-facing view: restaurant cards sorted by
-  vegan options / distance / name, search, distance ranges with browser
-  geolocation, and a map (Leaflet + OpenStreetMap — keyless). Each restaurant
-  opens a dish list with verdict chips, confidence, and the menu evidence.
+- **Explore** — one consumer-facing page that opens on **Restaurants & map**
+  (`#restaurants`) and switches quickly to **Food items & map** (`#dishes`).
+  Food items is a searchable index across every analyzed restaurant, with
+  separate food, dessert, and drink sections plus verdict and restaurant
+  filters; its map pins show matching-item counts. The restaurant view keeps
+  search, distance/geolocation controls, synchronized cards and map pins, and
+  dish-detail modals. Google ratings and rating counts appear on restaurant
+  cards, map popups, food results, and dish modals after enrichment.
+  Food search also supports distance ranges / nearest-first sorting, shareable
+  dish details, correction reports, and map popups that preview matching dish
+  names. Hearts save dishes and restaurants locally in the browser under the
+  **Saved** tab—no account required. Menu freshness and current opening status
+  are shown wherever that restaurant context is useful.
 - **Admin** (`#admin`) — the pipeline dashboard: run discovery / enrichment /
-  ingestion, add restaurants by name, inspect scraped menu text and scores.
+  ingestion, refresh stale menus and Google opening data, review correction
+  reports, add restaurants by name, and inspect scraped menu text and scores.
+
+Consumer views automatically exclude Google place types that are not food
+venues (for example convenience stores, gas stations, and supermarkets).
+Excluded records remain visible and labeled in Admin, where any additional
+false-positive listing can be hidden from Explore without deleting its data.
 
 ## Running the pipeline from the command line
 
@@ -104,6 +119,9 @@ python ingest.py
 
 # Re-scrape everything:
 python ingest.py --all
+
+# Re-scrape only menus older than 30 days:
+python ingest.py --stale-days 30
 
 # One restaurant (debug a single site):
 python ingest.py --restaurant-id 30

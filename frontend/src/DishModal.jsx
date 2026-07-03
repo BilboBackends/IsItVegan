@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import RatingBadge from "./RatingBadge.jsx";
+import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
 // dishes for the given restaurant; every verdict shows confidence, reasoning,
@@ -100,13 +102,24 @@ export default function DishModal({ restaurant, onClose }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-          <h2 className="font-semibold text-slate-900">
-            {restaurant.name}
-            <span className="ml-2 text-sm font-normal text-slate-400">
-              {restaurant.vegan_options} vegan food option
-              {restaurant.vegan_options === 1 ? "" : "s"}
-            </span>
-          </h2>
+          <div>
+            <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2">
+              <span className="text-sm font-normal text-slate-400">
+                {restaurant.vegan_options} vegan food option
+                {restaurant.vegan_options === 1 ? "" : "s"}
+              </span>
+              <RatingBadge
+                rating={restaurant.rating}
+                userRatingCount={restaurant.user_rating_count}
+              />
+              <OpenStatusBadge
+                openNow={restaurant.open_now}
+                enrichedAt={restaurant.enriched_at}
+              />
+              <FreshnessBadge fetchedAt={restaurant.menu_fetched_at} compact />
+            </div>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
             ✕
           </button>
@@ -198,6 +211,12 @@ export default function DishModal({ restaurant, onClose }) {
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}
+                  <a
+                    href={`#dishes?dish=${d.id}`}
+                    className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
+                  >
+                    Details, share, or report →
+                  </a>
                 </li>
               ))}
             </ul>

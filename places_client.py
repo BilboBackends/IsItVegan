@@ -20,6 +20,8 @@ from pathlib import Path
 
 import httpx
 
+from venue_filter import is_consumer_food_venue
+
 # Max results a single Nearby Search (New) call can return.
 _PER_CALL_CAP = 20
 
@@ -41,6 +43,7 @@ FIELD_MASK = ",".join(
         "places.formattedAddress",
         "places.websiteUri",
         "places.location",
+        "places.primaryType",
     ]
 )
 
@@ -56,6 +59,7 @@ def _normalize_place(place: dict) -> dict:
         "website_url": place.get("websiteUri"),
         "lat": location.get("latitude"),
         "lng": location.get("longitude"),
+        "primary_type": place.get("primaryType"),
     }
 
 
@@ -69,6 +73,9 @@ _DETAILS_FIELD_MASK = ",".join(
         "primaryType",
         "editorialSummary",
         "servesVegetarianFood",
+        "rating",
+        "userRatingCount",
+        "currentOpeningHours",
     ]
 )
 
@@ -140,7 +147,7 @@ def fetch_place_details(
 ) -> dict:
     """Fetch structured food signals for one place. Missing fields -> None.
 
-    Returns: {serves_vegetarian, price_level, primary_type, editorial_summary}.
+    Returns food signals plus Google rating and rating count.
     """
     headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": _DETAILS_FIELD_MASK}
     with httpx.Client(timeout=timeout) as client:
@@ -149,11 +156,18 @@ def fetch_place_details(
         data = resp.json()
 
     editorial = (data.get("editorialSummary") or {}).get("text")
+    hours = data.get("currentOpeningHours") or {}
     return {
         "serves_vegetarian": data.get("servesVegetarianFood"),  # True/False/None
         "price_level": data.get("priceLevel"),
         "primary_type": data.get("primaryType"),
         "editorial_summary": editorial,
+        "rating": data.get("rating"),
+        # Treat a missing count as zero so enrichment records that ratings
+        # were checked; otherwise unrated places would be fetched every run.
+        "user_rating_count": data.get("userRatingCount", 0),
+        "open_now": hours.get("openNow"),
+        "opening_hours": hours.get("weekdayDescriptions") or [],
     }
 
 
@@ -268,6 +282,7 @@ def discover_restaurants(
         found = _dedup(normalized)
 
     raw_count = len(found)
+    found = [place for place in found if is_consumer_food_venue(place)]
     if city_filter:
         kept = [r for r in found if _in_city(r, city_filter)]
     else:

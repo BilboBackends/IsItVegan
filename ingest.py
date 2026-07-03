@@ -33,7 +33,9 @@ import db
 from scraper import scrape_menu_text
 
 
-def _targets(restaurant_id: int | None, do_all: bool) -> list[dict]:
+def _targets(
+    restaurant_id: int | None, do_all: bool, stale_days: int | None = None
+) -> list[dict]:
     """Pick which restaurants to ingest."""
     if restaurant_id is not None:
         rows = [r for r in db.list_restaurants() if r["id"] == restaurant_id]
@@ -49,6 +51,8 @@ def _targets(restaurant_id: int | None, do_all: bool) -> list[dict]:
             for r in db.list_restaurants()
             if r.get("website_url")
         ]
+    if stale_days is not None:
+        return db.restaurants_needing_refresh(stale_days)
     return db.restaurants_needing_ingest()
 
 
@@ -56,9 +60,10 @@ def run(
     restaurant_id: int | None = None,
     do_all: bool = False,
     dry_run: bool = False,
+    stale_days: int | None = None,
 ) -> dict:
     db.init_db()
-    targets = _targets(restaurant_id, do_all)
+    targets = _targets(restaurant_id, do_all, stale_days)
 
     print(f"Ingesting {len(targets)} restaurant(s)...\n")
     succeeded, failed = 0, 0
@@ -107,11 +112,20 @@ def main() -> None:
         help="Re-scrape all restaurants with a website, even if already ingested.",
     )
     parser.add_argument(
+        "--stale-days", type=int, default=None,
+        help="Re-scrape menus older than this many days.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Report results without writing to the database.",
     )
     args = parser.parse_args()
-    run(restaurant_id=args.restaurant_id, do_all=args.all, dry_run=args.dry_run)
+    run(
+        restaurant_id=args.restaurant_id,
+        do_all=args.all,
+        dry_run=args.dry_run,
+        stale_days=args.stale_days,
+    )
 
 
 if __name__ == "__main__":

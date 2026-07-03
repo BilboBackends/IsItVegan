@@ -9,8 +9,10 @@ created up front so the schema is stable across later stages.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator
 
 from config import settings
@@ -25,12 +27,18 @@ CREATE TABLE IF NOT EXISTS restaurants (
     lat             REAL,
     lng             REAL,
     last_scraped_at TEXT,
+    consumer_hidden INTEGER NOT NULL DEFAULT 0,
     -- Structured food signals from Google Places (New) Place Details.
     -- Nullable: Google doesn't populate these for every restaurant.
     serves_vegetarian INTEGER,   -- 1 / 0 / NULL (unknown)
     price_level       TEXT,      -- e.g. PRICE_LEVEL_MODERATE
     primary_type      TEXT,      -- e.g. thai_restaurant
     editorial_summary TEXT,      -- Google's short blurb (often names dishes)
+    rating            REAL,      -- Google user rating, 1.0â€“5.0
+    user_rating_count INTEGER,   -- number of Google ratings behind `rating`
+    open_now          INTEGER,   -- Google currentOpeningHours.openNow
+    opening_hours     TEXT,      -- JSON weekday descriptions
+    hours_enriched_at TEXT,      -- tracks one-time opening-hours backfill
     enriched_at       TEXT       -- when food signals were last fetched
 );
 
@@ -79,6 +87,21 @@ CREATE TABLE IF NOT EXISTS classifications (
     model_version TEXT,
     created_at    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS reports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER NOT NULL REFERENCES restaurants(id),
+    dish_id       INTEGER REFERENCES dishes(id),
+    dish_name     TEXT,
+    issue_type    TEXT NOT NULL CHECK (issue_type IN (
+                      'animal_ingredient', 'dish_removed',
+                      'wrong_restaurant', 'other')),
+    note          TEXT,
+    status        TEXT NOT NULL DEFAULT 'open'
+                  CHECK (status IN ('open', 'resolved')),
+    created_at    TEXT NOT NULL,
+    resolved_at   TEXT
+);
 """
 
 
@@ -100,16 +123,25 @@ def connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
 # won't add them to an existing DB, so we ALTER any that are missing.
 _MIGRATIONS = {
     "restaurants": {
+        "consumer_hidden": "INTEGER NOT NULL DEFAULT 0",
         "serves_vegetarian": "INTEGER",
         "price_level": "TEXT",
         "primary_type": "TEXT",
         "editorial_summary": "TEXT",
+        "rating": "REAL",
+        "user_rating_count": "INTEGER",
+        "open_now": "INTEGER",
+        "opening_hours": "TEXT",
+        "hours_enriched_at": "TEXT",
         "enriched_at": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
         # "vegan options" count (a list of vegan sodas isn't the product).
         "category": "TEXT",
+    },
+    "reports": {
+        "dish_name": "TEXT",
     },
 }
 
@@ -143,15 +175,18 @@ def upsert_restaurants(
             conn.execute(
                 """
                 INSERT INTO restaurants
-                    (name, address, place_id, website_url, lat, lng, last_scraped_at)
+                    (name, address, place_id, website_url, lat, lng,
+                     primary_type, last_scraped_at)
                 VALUES
-                    (:name, :address, :place_id, :website_url, :lat, :lng, :last_scraped_at)
+                    (:name, :address, :place_id, :website_url, :lat, :lng,
+                     :primary_type, :last_scraped_at)
                 ON CONFLICT(place_id) DO UPDATE SET
                     name            = excluded.name,
                     address         = excluded.address,
                     website_url     = excluded.website_url,
                     lat             = excluded.lat,
                     lng             = excluded.lng,
+                    primary_type    = COALESCE(excluded.primary_type, restaurants.primary_type),
                     last_scraped_at = excluded.last_scraped_at
                 """,
                 {
@@ -161,6 +196,7 @@ def upsert_restaurants(
                     "website_url": r.get("website_url"),
                     "lat": r.get("lat"),
                     "lng": r.get("lng"),
+                    "primary_type": r.get("primary_type"),
                     "last_scraped_at": r.get("last_scraped_at"),
                 },
             )
@@ -181,9 +217,16 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
         rows = conn.execute(
             """
             SELECT r.id, r.name, r.address, r.place_id, r.website_url,
-                   r.lat, r.lng, r.last_scraped_at,
+                   r.lat, r.lng, r.last_scraped_at, r.consumer_hidden,
                    r.serves_vegetarian, r.price_level, r.primary_type,
-                   r.editorial_summary, r.enriched_at,
+                   r.editorial_summary, r.rating, r.user_rating_count,
+                   r.open_now, r.opening_hours, r.hours_enriched_at,
+                   r.enriched_at,
+                   (
+                       SELECT MAX(s.fetched_at) FROM sources s
+                       WHERE s.restaurant_id = r.id AND s.type = 'text'
+                         AND (s.url IS NULL OR s.url != 'google:editorial_summary')
+                   ) AS menu_fetched_at,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -193,7 +236,10 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
             ORDER BY r.last_scraped_at DESC, r.name ASC
             """
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for row in out:
+        row["opening_hours"] = _decode_json_list(row.get("opening_hours"))
+    return out
 
 
 def update_food_signals(
@@ -203,6 +249,10 @@ def update_food_signals(
     price_level: str | None,
     primary_type: str | None,
     editorial_summary: str | None,
+    rating: float | None,
+    user_rating_count: int | None,
+    open_now: bool | None,
+    opening_hours: list[str],
     enriched_at: str,
     db_path: str | None = None,
 ) -> None:
@@ -215,6 +265,11 @@ def update_food_signals(
                 price_level       = :price,
                 primary_type      = :ptype,
                 editorial_summary = :editorial,
+                rating            = :rating,
+                user_rating_count = :rating_count,
+                open_now          = :open_now,
+                opening_hours     = :opening_hours,
+                hours_enriched_at = :enriched,
                 enriched_at       = :enriched
             WHERE id = :id
             """,
@@ -225,9 +280,25 @@ def update_food_signals(
                 "price": price_level,
                 "ptype": primary_type,
                 "editorial": editorial_summary,
+                "rating": rating,
+                "rating_count": user_rating_count,
+                "open_now": None if open_now is None else int(open_now),
+                "opening_hours": json.dumps(opening_hours),
                 "enriched": enriched_at,
             },
         )
+
+
+def set_restaurant_hidden(
+    restaurant_id: int, hidden: bool, db_path: str | None = None
+) -> bool:
+    """Manually hide/show a listing in consumer views without deleting data."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE restaurants SET consumer_hidden = ? WHERE id = ?",
+            (int(hidden), restaurant_id),
+        )
+    return cur.rowcount > 0
 
 
 def upsert_menu_text(
@@ -341,6 +412,15 @@ def delete_dishes_for_restaurant(restaurant_id: int, db_path: str | None = None)
     don't linger with stale verdicts. Returns the number of dishes removed.
     """
     with connect(db_path) as conn:
+        # Preserve reports while allowing the classified dish snapshot to be
+        # replaced. dish_name is stored on the report for Admin context.
+        conn.execute(
+            """
+            UPDATE reports SET dish_id = NULL
+            WHERE dish_id IN (SELECT id FROM dishes WHERE restaurant_id = ?)
+            """,
+            (restaurant_id,),
+        )
         conn.execute(
             """
             DELETE FROM classifications WHERE dish_id IN
@@ -381,6 +461,145 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
             (restaurant_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_all_dishes(db_path: str | None = None) -> list[dict]:
+    """Every dish with its latest classification and restaurant context.
+
+    This is the read model for cross-restaurant dish search. Keep search and
+    filtering in the frontend for the local MVP so typing is instant and a
+    single response can power result counts/facets without repeated queries.
+    """
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT d.id, d.restaurant_id, d.name, d.raw_description,
+                   d.price, d.category,
+                   c.verdict, c.confidence, c.reasoning, c.model_version,
+                   c.created_at AS classified_at,
+                   r.name AS restaurant_name, r.address,
+                   r.website_url, r.lat, r.lng, r.consumer_hidden,
+                   r.serves_vegetarian,
+                   r.price_level, r.primary_type, r.rating,
+                   r.user_rating_count, r.open_now, r.opening_hours,
+                   r.enriched_at,
+                   (
+                       SELECT MAX(ms.fetched_at) FROM sources ms
+                       WHERE ms.restaurant_id = r.id AND ms.type = 'text'
+                         AND (ms.url IS NULL OR ms.url != 'google:editorial_summary')
+                   ) AS menu_fetched_at,
+                   s.url AS menu_url
+            FROM dishes d
+            JOIN restaurants r ON r.id = d.restaurant_id
+            LEFT JOIN classifications c ON c.id = (
+                SELECT id FROM classifications
+                WHERE dish_id = d.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            LEFT JOIN sources s ON s.id = c.source_id
+            ORDER BY d.name COLLATE NOCASE ASC, r.name COLLATE NOCASE ASC
+            """
+        ).fetchall()
+    out = [dict(r) for r in rows]
+    for row in out:
+        row["opening_hours"] = _decode_json_list(row.get("opening_hours"))
+    return out
+
+
+def _decode_json_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        decoded = json.loads(value)
+        return decoded if isinstance(decoded, list) else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+
+def restaurants_needing_refresh(
+    stale_days: int = 30, db_path: str | None = None
+) -> list[dict]:
+    """Restaurants whose latest real menu source is older than stale_days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, stale_days))
+    targets = []
+    for row in list_restaurants(db_path):
+        fetched = row.get("menu_fetched_at")
+        if not row.get("website_url") or not fetched:
+            continue
+        try:
+            timestamp = datetime.fromisoformat(fetched).astimezone(timezone.utc)
+        except ValueError:
+            continue
+        if timestamp < cutoff:
+            targets.append(
+                {"id": row["id"], "name": row["name"], "website_url": row["website_url"]}
+            )
+    return targets
+
+
+def create_report(
+    restaurant_id: int,
+    issue_type: str,
+    *,
+    dish_id: int | None = None,
+    note: str | None = None,
+    db_path: str | None = None,
+) -> int:
+    """Store a user-submitted data-quality report and return its id."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            INSERT INTO reports
+                (restaurant_id, dish_id, dish_name, issue_type, note, status, created_at)
+            VALUES (?, ?, (SELECT name FROM dishes WHERE id = ?), ?, ?, 'open', ?)
+            RETURNING id
+            """,
+            (
+                restaurant_id,
+                dish_id,
+                dish_id,
+                issue_type,
+                note,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        ).fetchone()
+    return row[0]
+
+
+def list_reports(
+    status: str | None = "open", db_path: str | None = None
+) -> list[dict]:
+    """Reports with restaurant/dish labels for the Admin review queue."""
+    where = "WHERE p.status = ?" if status else ""
+    params = (status,) if status else ()
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT p.id, p.restaurant_id, p.dish_id, p.issue_type, p.note,
+                   p.status, p.created_at, p.resolved_at,
+                   r.name AS restaurant_name, COALESCE(p.dish_name, d.name) AS dish_name
+            FROM reports p
+            JOIN restaurants r ON r.id = p.restaurant_id
+            LEFT JOIN dishes d ON d.id = p.dish_id
+            {where}
+            ORDER BY p.created_at DESC, p.id DESC
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def resolve_report(report_id: int, db_path: str | None = None) -> bool:
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE reports SET status = 'resolved', resolved_at = ?
+            WHERE id = ? AND status = 'open'
+            """,
+            (datetime.now(timezone.utc).isoformat(), report_id),
+        )
+    return cur.rowcount > 0
 
 
 def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:

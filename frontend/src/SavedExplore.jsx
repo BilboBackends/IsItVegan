@@ -1,0 +1,117 @@
+import { useEffect, useMemo, useState } from "react";
+import FavoriteButton from "./FavoriteButton.jsx";
+import RatingBadge from "./RatingBadge.jsx";
+import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
+import { VerdictChip } from "./DishModal.jsx";
+
+export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }) {
+  const [restaurants, setRestaurants] = useState([]);
+  const [dishes, setDishes] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/restaurants").then((response) => response.json()),
+      fetch("/api/dishes").then((response) => response.json()),
+    ])
+      .then(([restaurantData, dishData]) => {
+        setRestaurants(restaurantData.restaurants || []);
+        setDishes(dishData.dishes || []);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const savedRestaurants = useMemo(
+    () => restaurants.filter((item) => favorites.restaurants.includes(item.id)),
+    [restaurants, favorites.restaurants]
+  );
+  const savedDishes = useMemo(
+    () => dishes.filter((item) => favorites.dishes.includes(item.id)),
+    [dishes, favorites.dishes]
+  );
+
+  if (loading) {
+    return <div className="mx-auto max-w-5xl p-12 text-center text-stone-400">Loading Saved…</div>;
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl px-4 pb-10 pt-5">
+      {savedRestaurants.length === 0 && savedDishes.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-stone-300 p-12 text-center">
+          <div className="text-lg font-bold text-stone-700">Nothing saved yet</div>
+          <p className="mt-1 text-sm text-stone-500">
+            Tap the heart on a restaurant or food item to keep it here.
+          </p>
+          <a href="#dishes" className="mt-4 inline-block font-bold text-emerald-700 hover:underline">
+            Browse food items →
+          </a>
+        </div>
+      ) : (
+        <div className="space-y-8">
+          <section>
+            <h2 className="mb-3 text-lg font-extrabold text-stone-900">
+              Restaurants <span className="text-sm font-normal text-stone-400">{savedRestaurants.length}</span>
+            </h2>
+            {savedRestaurants.length === 0 ? (
+              <p className="text-sm text-stone-400">No saved restaurants.</p>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {savedRestaurants.map((restaurant) => (
+                  <div key={restaurant.id} className="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-bold text-stone-900">{restaurant.name}</div>
+                        <div className="mt-0.5 text-xs text-stone-500">{restaurant.address}</div>
+                      </div>
+                      <FavoriteButton active onClick={() => toggleRestaurant(restaurant.id)} label="restaurant" />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <RatingBadge rating={restaurant.rating} userRatingCount={restaurant.user_rating_count} />
+                      <OpenStatusBadge openNow={restaurant.open_now} enrichedAt={restaurant.enriched_at} />
+                      <FreshnessBadge fetchedAt={restaurant.menu_fetched_at} compact />
+                    </div>
+                    <div className="mt-3 flex gap-3 text-xs font-bold">
+                      <a href={`#restaurants?restaurant=${restaurant.id}`} className="text-emerald-700 hover:underline">View on map</a>
+                      {restaurant.website_url && (
+                        <a href={restaurant.website_url} target="_blank" rel="noreferrer" className="text-stone-500 hover:underline">
+                          Website ↗
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <h2 className="mb-3 text-lg font-extrabold text-stone-900">
+              Food items <span className="text-sm font-normal text-stone-400">{savedDishes.length}</span>
+            </h2>
+            {savedDishes.length === 0 ? (
+              <p className="text-sm text-stone-400">No saved food items.</p>
+            ) : (
+              <div className="divide-y divide-stone-100 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+                {savedDishes.map((dish) => (
+                  <div key={dish.id} className="flex items-start justify-between gap-4 p-4">
+                    <div className="min-w-0">
+                      <a href={`#dishes?dish=${dish.id}`} className="font-bold text-stone-900 hover:text-emerald-700 hover:underline">
+                        {dish.name}
+                      </a>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+                        <span>{dish.restaurant_name}</span>
+                        <VerdictChip verdict={dish.verdict} />
+                        {dish.price && <span>{dish.price}</span>}
+                      </div>
+                    </div>
+                    <FavoriteButton active onClick={() => toggleDish(dish.id)} label="dish" />
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishModal from "./DishModal.jsx";
+import FavoriteButton from "./FavoriteButton.jsx";
+import RatingBadge, { ratingText } from "./RatingBadge.jsx";
+import {
+  FreshnessBadge,
+  OpenStatusBadge,
+  relativeDate,
+} from "./RestaurantMeta.jsx";
+import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
 // distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
@@ -37,6 +45,7 @@ function pinColor(r) {
 
 const SORTS = [
   { key: "vegan", label: "Most vegan options" },
+  { key: "rating", label: "Top rated" },
   { key: "distance", label: "Closest" },
   { key: "name", label: "Name A–Z" },
 ];
@@ -56,11 +65,16 @@ const LEGEND = [
   { color: "#a8a29e", label: "Menu not analyzed" },
 ];
 
-export default function Explore() {
+export default function Explore({
+  embedded = false,
+  favorites = { restaurants: [] },
+  toggleRestaurant = () => {},
+}) {
   const [restaurants, setRestaurants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
+  const [cuisine, setCuisine] = useState("all");
   const [sortBy, setSortBy] = useState("vegan");
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
@@ -97,6 +111,15 @@ export default function Explore() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    const match = window.location.hash.match(/^#restaurants\?restaurant=(\d+)/);
+    if (!match || restaurants.length === 0) return;
+    const target = restaurants.find((item) => item.id === Number(match[1]));
+    if (!target) return;
+    if (!isDesktop) setView("map");
+    setFocus({ id: target.place_id, ts: Date.now(), source: "card" });
+  }, [restaurants, isDesktop]);
+
   function useMyLocation() {
     if (!navigator.geolocation) return;
     setLocating(true);
@@ -123,6 +146,8 @@ export default function Explore() {
     [restaurants, origin]
   );
 
+  const cuisines = useMemo(() => cuisineOptions(restaurants), [restaurants]);
+
   const filtered = useMemo(() => {
     let out = enriched;
     const q = query.trim().toLowerCase();
@@ -134,6 +159,9 @@ export default function Explore() {
           r.address?.toLowerCase().includes(q)
       );
     }
+    if (cuisine !== "all") {
+      out = out.filter((restaurant) => cuisineLabel(restaurant.primary_type) === cuisine);
+    }
     if (maxMiles > 0) {
       out = out.filter((r) => r.distance != null && r.distance <= maxMiles);
     }
@@ -144,9 +172,15 @@ export default function Explore() {
         return (a.distance ?? 1e9) - (b.distance ?? 1e9);
       }
       if (sortBy === "distance") return (a.distance ?? 1e9) - (b.distance ?? 1e9);
+      if (sortBy === "rating") {
+        return (
+          (b.rating ?? -1) - (a.rating ?? -1) ||
+          (b.user_rating_count ?? 0) - (a.user_rating_count ?? 0)
+        );
+      }
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enriched, query, maxMiles, sortBy]);
+  }, [enriched, query, cuisine, maxMiles, sortBy]);
 
   const showMap = isDesktop || view === "map";
 
@@ -226,6 +260,31 @@ export default function Explore() {
         ? `${r.vegan_options || 0} vegan food option${r.vegan_options === 1 ? "" : "s"}`
         : "Menu not analyzed yet";
       el.append(title, sub, count);
+      const googleRating = ratingText(r.rating, r.user_rating_count);
+      if (googleRating) {
+        const rating = document.createElement("div");
+        rating.style.cssText =
+          "margin-top:4px;color:#78716c;font-size:12px;font-weight:600";
+        rating.textContent = `${googleRating} Google`;
+        el.append(rating);
+      }
+      const hoursFresh =
+        r.enriched_at && Date.now() - new Date(r.enriched_at).getTime() < 86_400_000;
+      if (r.open_now != null && hoursFresh) {
+        const status = document.createElement("div");
+        status.style.cssText = `margin-top:3px;font-size:12px;font-weight:700;color:${
+          r.open_now ? "#047857" : "#be123c"
+        }`;
+        status.textContent = r.open_now ? "Open now" : "Closed";
+        el.append(status);
+      }
+      const checked = relativeDate(r.menu_fetched_at);
+      if (checked) {
+        const freshness = document.createElement("div");
+        freshness.style.cssText = "margin-top:3px;color:#a8a29e;font-size:11px";
+        freshness.textContent = `Menu checked ${checked}`;
+        el.append(freshness);
+      }
       if (analyzed) {
         const btn = document.createElement("button");
         btn.textContent = "See dishes →";
@@ -254,11 +313,13 @@ export default function Explore() {
       });
     };
     map.on("moveend", syncBounds);
-    setTimeout(() => {
+    const resizeTimer = setTimeout(() => {
       map.invalidateSize();
       syncBounds();
     }, 100);
     return () => {
+      clearTimeout(resizeTimer);
+      map.off("moveend", syncBounds);
       map.remove();
       mapRef.current = null;
       markersRef.current = {};
@@ -319,11 +380,18 @@ export default function Explore() {
     >
       <div className="flex items-start justify-between gap-2">
         <div className="font-bold leading-snug text-stone-900">{r.name}</div>
-        {r.distance != null && (
-          <span className="shrink-0 rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
-            {r.distance.toFixed(1)} mi
-          </span>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {r.distance != null && (
+            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
+              {r.distance.toFixed(1)} mi
+            </span>
+          )}
+          <FavoriteButton
+            active={favorites.restaurants.includes(r.id)}
+            onClick={() => toggleRestaurant(r.id)}
+            label="restaurant"
+          />
+        </div>
       </div>
       <div className="mt-0.5 text-xs capitalize text-stone-500">
         {prettyType(r.primary_type) || "restaurant"}
@@ -332,6 +400,15 @@ export default function Explore() {
             ✓ veg-friendly
           </span>
         )}
+      </div>
+      <RatingBadge
+        rating={r.rating}
+        userRatingCount={r.user_rating_count}
+        className="mt-1"
+      />
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <OpenStatusBadge openNow={r.open_now} enrichedAt={r.enriched_at} />
+        <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
       </div>
       {r.editorial_summary && (
         <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
@@ -386,9 +463,9 @@ export default function Explore() {
   const totalVegan = restaurants.reduce((s, r) => s + (r.vegan_options || 0), 0);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8">
+    <div className={`mx-auto max-w-7xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
       {/* Hero */}
-      <div className="mb-6">
+      {!embedded && <div className="mb-6">
         <h1 className="text-3xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
           Find <span className="text-emerald-700">vegan-friendly</span> dishes
           near you
@@ -400,10 +477,10 @@ export default function Explore() {
           analyzed menus — every verdict backed by menu evidence, even when the
           restaurant never says "vegan".
         </p>
-      </div>
+      </div>}
 
       {/* Filter bar */}
-      <div className="sticky top-[60px] z-10 -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
+      <div className="sticky top-[113px] z-10 -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
           <input
             type="text"
@@ -412,6 +489,17 @@ export default function Explore() {
             placeholder="Search name, cuisine, address…"
             className="w-full max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
           />
+          <select
+            value={cuisine}
+            onChange={(event) => setCuisine(event.target.value)}
+            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            aria-label="Filter by cuisine"
+          >
+            <option value="all">All cuisines</option>
+            {cuisines.map((label) => (
+              <option key={label} value={label}>{label}</option>
+            ))}
+          </select>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
