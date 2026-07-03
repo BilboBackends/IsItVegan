@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - only when playwright not installed
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 
@@ -38,25 +38,44 @@ def is_available() -> bool:
     return _AVAILABLE
 
 
+def _launch(p):
+    """Launch a browser that passes common bot checks.
+
+    Prefer the system Chrome channel with automation markers hidden — this
+    gets through Cloudflare's "Just a moment..." wall on ordering platforms
+    (Toast etc.), which blocks the bundled headless Chromium outright. Fall
+    back to bundled Chromium if Chrome isn't installed.
+    """
+    args = ["--disable-blink-features=AutomationControlled"]
+    try:
+        return p.chromium.launch(headless=True, channel="chrome", args=args)
+    except Exception:
+        return p.chromium.launch(headless=True, args=args)
+
+
 def fetch_rendered_html(
     url: str,
     *,
-    timeout_ms: int = 25_000,
-    settle_ms: int = 2_000,
+    timeout_ms: int = 45_000,
+    settle_ms: int = 3_000,
 ) -> tuple[str | None, str | None]:
-    """Load `url` in headless Chromium and return (rendered_html, error).
+    """Load `url` in a headless browser and return (rendered_html, error).
 
     timeout_ms bounds navigation; settle_ms is an extra wait after load for
     late client-side rendering (menus often populate after the initial paint).
+    Waits through Cloudflare bot-check interstitials when they auto-resolve.
     """
     if not _AVAILABLE:
         return None, "Playwright not installed"
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = _launch(p)
             try:
-                page = browser.new_page(user_agent=_USER_AGENT)
+                page = browser.new_page(
+                    user_agent=_USER_AGENT,
+                    viewport={"width": 1366, "height": 768},
+                )
                 # "domcontentloaded" then a settle wait is more reliable than
                 # "networkidle", which some ad/analytics-heavy sites never hit.
                 page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
@@ -65,6 +84,24 @@ def fetch_rendered_html(
                 except PlaywrightTimeout:
                     pass  # good enough; grab what rendered
                 page.wait_for_timeout(settle_ms)
+
+                # Cloudflare-style interstitial: give the JS challenge time to
+                # auto-resolve (it usually does with a real Chrome channel).
+                for _ in range(5):
+                    try:
+                        title = (page.title() or "").lower()
+                    except PlaywrightError:
+                        break
+                    if "just a moment" not in title and "attention required" not in title:
+                        break
+                    page.wait_for_timeout(3_000)
+
+                # Nudge lazy-loaded content (long menus often render on scroll).
+                try:
+                    page.mouse.wheel(0, 4_000)
+                    page.wait_for_timeout(1_500)
+                except PlaywrightError:
+                    pass
                 # Sites that redirect (e.g. Clover) may still be navigating when
                 # we ask for content; retry a couple times after a short wait.
                 html = ""

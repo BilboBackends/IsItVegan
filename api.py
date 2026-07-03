@@ -55,6 +55,14 @@ def get_config() -> object:
 def get_restaurants() -> object:
     db.init_db()
     restaurants = db.list_restaurants()
+    counts = db.verdict_counts_by_restaurant()
+    veganish = ("vegan", "likely_vegan", "vegan_adaptable")
+    for r in restaurants:
+        c = counts.get(r["id"])
+        r["dish_count"] = c["total"] if c else 0
+        r["vegan_options"] = (
+            sum(c["by_verdict"].get(v, 0) for v in veganish) if c else 0
+        )
     return jsonify({"count": len(restaurants), "restaurants": restaurants})
 
 
@@ -122,6 +130,34 @@ def run_enrich() -> object:
     payload = request.get_json(silent=True) or {}
     try:
         result = enrich.run(do_all=bool(payload.get("all")))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(result)
+
+
+@app.get("/api/restaurants/<int:restaurant_id>/dishes")
+def restaurant_dishes(restaurant_id: int) -> object:
+    """All dishes for a restaurant with their latest vegan verdicts."""
+    dishes = db.list_dishes(restaurant_id)
+    return jsonify({"count": len(dishes), "dishes": dishes})
+
+
+@app.post("/api/classify")
+def run_classify() -> object:
+    """Classify dishes for restaurants that have menu text but no dishes yet.
+
+    Synchronous — fine when only a few restaurants remain; the initial bulk
+    run should use the CLI (python classify.py).
+    """
+    if not settings.anthropic_api_key:
+        return jsonify({"error": "ANTHROPIC_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+    try:
+        import classify
+
+        result = classify.run(
+            restaurant_id=payload.get("restaurant_id"),
+        )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(result)

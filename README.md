@@ -4,8 +4,8 @@ Finds vegan-friendly dishes at restaurants by analyzing menu text and photos,
 even when a restaurant doesn't market itself as vegan. See [CLAUDE.md](CLAUDE.md)
 for the full product spec and pipeline design.
 
-**Current phase: Phase 1 — menu-text ingestion (Maitland, FL).**
-Phase 0 (discovery) is complete.
+**Current phase: Phase 3 — dish classification (Maitland, FL).**
+Phase 0 (discovery) and Phase 1 (menu-text ingestion) are complete.
 
 ## Setup
 
@@ -107,6 +107,29 @@ JS "Order" button we don't click, non-HTML (PDF/image), or genuinely
 homepage-only. All are photo-fallback candidates. In the current Maitland set,
 **35 of 51 sites yield a real menu** (~74% of the non-gas-station spots).
 
+### Phase 3 — dish classification
+
+Sends each scraped menu (plus Google's editorial summary and vegetarian flag
+as context) to Claude, which extracts every dish and classifies it into the
+CLAUDE.md verdict taxonomy — `vegan` / `likely_vegan` / `vegan_adaptable` /
+`not_vegan` / `unclear` — with a confidence score, reasoning, and a verbatim
+menu excerpt as evidence. Structured outputs guarantee valid JSON; truncated
+or refused responses are logged as failures, never stored. False positives
+(calling a dish vegan when it isn't) are treated as the worst failure mode.
+
+```bash
+python classify.py                     # classify restaurants not yet done
+python classify.py --all               # re-classify everyone with a menu
+python classify.py --restaurant-id 14  # one restaurant (debugging)
+python classify.py --mock --dry-run    # no API call, canned result
+```
+
+Dishes upsert on (restaurant_id, name); each run adds a new classification row
+(model version + timestamp), and reads always use the latest verdict. The
+dashboard shows per-restaurant vegan-option counts and a per-dish verdict view.
+Model defaults to Claude Opus (accuracy-critical); override with
+`CLASSIFIER_MODEL`.
+
 ## Discovery configuration (`.env`)
 
 | Var | Default | Purpose |
@@ -132,6 +155,8 @@ ingest.py              # Phase 1 CLI: scrape + persist menu text
 llm_nav.py             # Cheap LLM (Haiku) menu-link chooser + vision fallback
 pdf_menu.py            # PDF menu extraction (pypdf local + Claude PDF fallback)
 enrich.py              # Pull Google food signals (vegetarian, editorial, type)
+classifier.py          # Phase 3: Claude dish extraction + vegan verdicts
+classify.py            # Phase 3 CLI: classify + persist dishes/verdicts
 api.py                 # Flask JSON API for the local dashboard
 fixtures/              # mock data for running without live APIs
 frontend/              # React + Vite + Tailwind dashboard

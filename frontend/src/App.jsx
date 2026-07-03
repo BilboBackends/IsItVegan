@@ -14,6 +14,27 @@ function StatCard({ label, value, hint }) {
   );
 }
 
+const VERDICT_STYLES = {
+  vegan: "bg-emerald-100 text-emerald-800",
+  likely_vegan: "bg-lime-100 text-lime-800",
+  vegan_adaptable: "bg-amber-100 text-amber-800",
+  unclear: "bg-slate-100 text-slate-500",
+  not_vegan: "bg-rose-50 text-rose-700",
+};
+
+function VerdictChip({ verdict }) {
+  if (!verdict) return <span className="text-xs text-slate-300">—</span>;
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+        VERDICT_STYLES[verdict] || VERDICT_STYLES.unclear
+      }`}
+    >
+      {verdict.replaceAll("_", " ")}
+    </span>
+  );
+}
+
 export default function App() {
   const [restaurants, setRestaurants] = useState([]);
   const [config, setConfig] = useState(null);
@@ -28,6 +49,9 @@ export default function App() {
   const [menuText, setMenuText] = useState(null);
   const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
+  const [dishesFor, setDishesFor] = useState(null); // restaurant whose dishes are open
+  const [dishes, setDishes] = useState([]);
+  const [dishesLoading, setDishesLoading] = useState(false);
 
   async function loadData() {
     setLoading(true);
@@ -146,6 +170,21 @@ export default function App() {
     }
   }
 
+  async function openDishes(r) {
+    setDishesFor(r);
+    setDishes([]);
+    setDishesLoading(true);
+    try {
+      const res = await fetch(`/api/restaurants/${r.id}/dishes`);
+      const data = await res.json();
+      setDishes(res.ok ? data.dishes : []);
+    } catch {
+      setDishes([]);
+    } finally {
+      setDishesLoading(false);
+    }
+  }
+
   // Data-quality flags: places with no website (scraping fallback needed)
   // and how many have menu text scraped so far.
   const noWebsite = useMemo(
@@ -158,6 +197,10 @@ export default function App() {
   );
   const vegFriendly = useMemo(
     () => restaurants.filter((r) => r.serves_vegetarian === 1).length,
+    [restaurants]
+  );
+  const totalVeganOptions = useMemo(
+    () => restaurants.reduce((sum, r) => sum + (r.vegan_options || 0), 0),
     [restaurants]
   );
 
@@ -244,9 +287,9 @@ export default function App() {
             hint="per Google"
           />
           <StatCard
-            label="No usable menu"
-            value={restaurants.length - withMenuText}
-            hint="blocked / JS / homepage-only"
+            label="Vegan options found"
+            value={totalVeganOptions}
+            hint="vegan / likely / adaptable dishes"
           />
         </div>
 
@@ -280,6 +323,7 @@ export default function App() {
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
                     <th className="px-4 py-3 font-medium">Menu text</th>
+                    <th className="px-4 py-3 font-medium">Vegan options</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -338,6 +382,23 @@ export default function App() {
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
+                      <td className="px-4 py-3">
+                        {r.dish_count > 0 ? (
+                          <button
+                            onClick={() => openDishes(r)}
+                            className={`rounded px-2 py-0.5 text-xs font-medium hover:opacity-80 ${
+                              r.vegan_options > 0
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-slate-100 text-slate-500"
+                            }`}
+                            title="View dishes and verdicts"
+                          >
+                            {r.vegan_options} of {r.dish_count}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -346,6 +407,81 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {dishesFor && (
+        <div
+          className="fixed inset-0 z-10 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setDishesFor(null)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <h2 className="font-semibold text-slate-900">
+                Dishes — {dishesFor.name}
+                <span className="ml-2 text-sm font-normal text-slate-400">
+                  {dishesFor.vegan_options} vegan option
+                  {dishesFor.vegan_options === 1 ? "" : "s"} of{" "}
+                  {dishesFor.dish_count}
+                </span>
+              </h2>
+              <button
+                onClick={() => setDishesFor(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="overflow-y-auto p-4">
+              {dishesLoading ? (
+                <div className="text-slate-400">Loading…</div>
+              ) : dishes.length === 0 ? (
+                <div className="text-slate-400">No dishes classified yet.</div>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {dishes.map((d) => (
+                    <li key={d.id} className="py-3">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <div className="font-medium text-slate-900">
+                          {d.name}
+                          {d.price && (
+                            <span className="ml-2 text-sm font-normal text-slate-400">
+                              {d.price}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <VerdictChip verdict={d.verdict} />
+                          {d.confidence != null && (
+                            <span className="text-xs text-slate-400">
+                              {Math.round(d.confidence * 100)}%
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {d.raw_description && (
+                        <div className="mt-0.5 text-sm text-slate-500">
+                          {d.raw_description}
+                        </div>
+                      )}
+                      {d.reasoning && (
+                        <div className="mt-1 text-xs text-slate-400">
+                          {d.reasoning}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
+              Verdicts are model-inferred from menu text — evidence shown under
+              each dish. {dishes[0]?.model_version && `Model: ${dishes[0].model_version}`}
+            </div>
+          </div>
+        </div>
+      )}
 
       {menuFor && (
         <div

@@ -266,6 +266,134 @@ def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None
     return dict(row) if row else None
 
 
+def upsert_dish(
+    restaurant_id: int,
+    name: str,
+    raw_description: str | None,
+    price: str | None,
+    db_path: str | None = None,
+) -> int:
+    """Insert or update a dish keyed on (restaurant_id, name); return dish id."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            """
+            INSERT INTO dishes (restaurant_id, name, raw_description, price)
+            VALUES (:rid, :name, :descr, :price)
+            ON CONFLICT (restaurant_id, name) DO UPDATE SET
+                raw_description = excluded.raw_description,
+                price           = excluded.price
+            RETURNING id
+            """,
+            {"rid": restaurant_id, "name": name, "descr": raw_description, "price": price},
+        ).fetchone()
+    return row[0]
+
+
+def insert_classification(
+    dish_id: int,
+    verdict: str,
+    confidence: float,
+    reasoning: str,
+    source_id: int | None,
+    model_version: str,
+    created_at: str,
+    db_path: str | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO classifications
+                (dish_id, verdict, confidence, reasoning, source_id,
+                 model_version, created_at)
+            VALUES (:dish_id, :verdict, :confidence, :reasoning, :source_id,
+                    :model_version, :created_at)
+            """,
+            {
+                "dish_id": dish_id,
+                "verdict": verdict,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "source_id": source_id,
+                "model_version": model_version,
+                "created_at": created_at,
+            },
+        )
+
+
+def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
+    """All dishes for a restaurant with their LATEST classification."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT d.id, d.name, d.raw_description, d.price,
+                   c.verdict, c.confidence, c.reasoning, c.model_version,
+                   c.created_at AS classified_at
+            FROM dishes d
+            LEFT JOIN classifications c ON c.id = (
+                SELECT id FROM classifications
+                WHERE dish_id = d.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            WHERE d.restaurant_id = ?
+            ORDER BY
+                CASE c.verdict
+                    WHEN 'vegan' THEN 0
+                    WHEN 'likely_vegan' THEN 1
+                    WHEN 'vegan_adaptable' THEN 2
+                    WHEN 'unclear' THEN 3
+                    ELSE 4
+                END,
+                d.name ASC
+            """,
+            (restaurant_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
+    """Per restaurant: dish total + count per latest verdict."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT d.restaurant_id, c.verdict, COUNT(*) AS n
+            FROM dishes d
+            JOIN classifications c ON c.id = (
+                SELECT id FROM classifications
+                WHERE dish_id = d.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            GROUP BY d.restaurant_id, c.verdict
+            """
+        ).fetchall()
+    out: dict[int, dict] = {}
+    for r in rows:
+        entry = out.setdefault(
+            r["restaurant_id"], {"total": 0, "by_verdict": {}}
+        )
+        entry["total"] += r["n"]
+        entry["by_verdict"][r["verdict"]] = r["n"]
+    return out
+
+
+def restaurants_needing_classification(db_path: str | None = None) -> list[int]:
+    """Restaurant ids that have real menu text but no classified dishes yet."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT s.restaurant_id
+            FROM sources s
+            WHERE s.type = 'text'
+              AND (s.url IS NULL OR s.url != 'google:editorial_summary')
+              AND NOT EXISTS (
+                  SELECT 1 FROM dishes d WHERE d.restaurant_id = s.restaurant_id
+              )
+            """
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def restaurants_needing_ingest(db_path: str | None = None) -> list[dict]:
     """Restaurants that have a website but no menu-text source yet."""
     with connect(db_path) as conn:

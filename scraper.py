@@ -30,7 +30,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from headless import fetch_rendered_html, is_available
-from menu_score import score_menu_text
+from menu_score import MENU_THRESHOLD, score_menu_text
 
 # A browser-ish UA; some sites 403 the default httpx agent.
 _USER_AGENT = (
@@ -166,17 +166,23 @@ def _looks_menu_like(text: str, href: str) -> bool:
     return any(hint in blob for hint in _MENU_HINTS)
 
 
-def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
-    """Return (same-domain menu URLs to follow, third-party menu hosts seen).
+def _find_menu_links(
+    html: str, base_url: str
+) -> tuple[list[str], list[str], list[str]]:
+    """Return (same-domain menu URLs, third-party hosts seen, third-party URLs).
 
     Extracted from the full page (nav included) BEFORE _extract_text strips
-    nav — menu links very often live in the header/nav.
+    nav — menu links very often live in the header/nav. Third-party ordering
+    URLs (Toast/Clover/Sauce...) are returned so the headless path can render
+    them — with a real-Chrome launch they get past the bot walls and the menu
+    is in the DOM.
     """
     soup = BeautifulSoup(html, "html.parser")
     base_host = urlparse(base_url).netloc.lower()
 
     follow: list[str] = []
     third_party: list[str] = []
+    third_party_urls: list[str] = []
     seen: set[str] = set()
 
     for a in soup.find_all("a", href=True):
@@ -193,6 +199,9 @@ def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
         if tp:
             if tp not in third_party:
                 third_party.append(tp)
+            norm_tp = absolute.split("#")[0].rstrip("/")
+            if norm_tp not in third_party_urls:
+                third_party_urls.append(norm_tp)
             continue
 
         # Same-domain only (incl. www/bare variants), dedup, and don't refetch
@@ -205,7 +214,7 @@ def _find_menu_links(html: str, base_url: str) -> tuple[list[str], list[str]]:
         seen.add(norm)
         follow.append(absolute)
 
-    return follow[:_MAX_FOLLOW], third_party
+    return follow[:_MAX_FOLLOW], third_party, third_party_urls
 
 
 def _all_internal_links(html: str, base_url: str) -> list[dict]:
@@ -269,7 +278,7 @@ def _collect_http(
         if landing.html is None:
             return None, [], landing
 
-        menu_links, third_party = _find_menu_links(landing.html, url)
+        menu_links, third_party, _tp_urls = _find_menu_links(landing.html, url)
         # If keyword matching found no menu link, let the cheap LLM pick one
         # from all page links (catches non-obvious labels).
         if not menu_links:
@@ -296,20 +305,52 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     if landing_html is None:
         return [], []
 
-    menu_links, third_party = _find_menu_links(landing_html, url)
-    if not menu_links:
+    menu_links, third_party, tp_urls = _find_menu_links(landing_html, url)
+    if not menu_links and not tp_urls:
         llm_link = _llm_menu_link(landing_html, url)
         if llm_link:
             menu_links = [llm_link]
 
+    # Third-party ordering pages (Toast/Clover/Sauce...) render their menu in
+    # the DOM once the real-Chrome launch clears their bot wall — follow them
+    # like any other menu link (capped: they're slow). Ordering platforms often
+    # interpose a marketing page before the actual menu, so pages that still
+    # don't look like a menu get ONE more hop of menu-like links.
+    def _norm(u: str) -> str:
+        return u.split("#")[0].rstrip("/")
+
+    max_renders = 6
     pages: list[tuple[str, str]] = [(url, _extract_text(landing_html))]
-    for link in menu_links:
-        page_html, _ = fetch_rendered_html(link)
+    queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links + tp_urls[:2]]
+    seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
+    renders = 0
+
+    while queue and renders < max_renders:
+        link, hop = queue.pop(0)
+        # Ordering-platform SPAs can take several seconds to paint the menu;
+        # give followed pages a longer settle than the landing.
+        page_html, _ = fetch_rendered_html(link, settle_ms=6_000)
+        renders += 1
         if page_html is None:
             continue
         text = _extract_text(page_html)
         if text:
             pages.append((link, text))
+        # Expand another hop unless this page already looks confidently like a
+        # menu (ordering platforms often score mid-range on marketing copy).
+        if hop == 1 and score_menu_text(text).score < 0.75:
+            more_menu, _tp, more_tp_urls = _find_menu_links(page_html, link)
+            # Links literally containing "menu" first — on ordering sites every
+            # URL contains /order/, so the generic hint matches everything.
+            candidates = sorted(
+                more_menu + more_tp_urls,
+                key=lambda u: 0 if "menu" in u.lower() else 1,
+            )
+            for nxt in candidates[:2]:
+                if _norm(nxt) not in seen:
+                    seen.add(_norm(nxt))
+                    queue.append((nxt, 2))
+
     return pages, third_party
 
 
@@ -340,7 +381,13 @@ def scrape_menu_text(
         http_result = _finish(
             url, pages, third_party, status_code=landing.status_code
         )
-        if http_result.ok or not use_headless or not is_available():
+        # A merely-adequate score with third-party ordering links around is
+        # suspicious (often platform marketing copy, not the menu) — in that
+        # case still try headless, which follows the ordering links.
+        confident = http_result.ok and (
+            http_result.menu_score >= 0.75 or not third_party
+        )
+        if confident or not use_headless or not is_available():
             return http_result
 
     # Fast path failed to find a real menu (or landing was JS-blocked). Escalate
