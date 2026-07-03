@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
 // dishes for the given restaurant; every verdict shows confidence, reasoning,
 // and the verbatim menu evidence — no verdict without evidence (CLAUDE.md).
+// Items are split into category tabs so a long bar list never buries the food.
 
 export const VERDICT_STYLES = {
   vegan: "bg-emerald-100 text-emerald-800",
@@ -12,13 +13,19 @@ export const VERDICT_STYLES = {
   not_vegan: "bg-rose-50 text-rose-700",
 };
 
+const VEGANISH = new Set(["vegan", "likely_vegan", "vegan_adaptable"]);
+
+const CATEGORIES = [
+  { key: "food", label: "Food", icon: "🍽" },
+  { key: "dessert", label: "Desserts", icon: "🍰" },
+  { key: "drink", label: "Drinks", icon: "🥤" },
+];
+
 const FILTERS = [
   { key: "all", label: "All" },
   { key: "veganish", label: "Vegan options" },
   { key: "not_vegan", label: "Not vegan" },
 ];
-
-const VEGANISH = new Set(["vegan", "likely_vegan", "vegan_adaptable"]);
 
 export function VerdictChip({ verdict }) {
   if (!verdict) return <span className="text-xs text-slate-300">—</span>;
@@ -33,80 +40,55 @@ export function VerdictChip({ verdict }) {
   );
 }
 
-function DishList({ items }) {
-  return (
-    <ul className="divide-y divide-slate-100">
-      {items.map((d) => (
-        <li key={d.id} className="py-3">
-          <div className="flex items-baseline justify-between gap-3">
-            <div className="font-medium text-slate-900">
-              {d.name}
-              {d.price && (
-                <span className="ml-2 text-sm font-normal text-slate-400">
-                  {d.price}
-                </span>
-              )}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <VerdictChip verdict={d.verdict} />
-              {d.confidence != null && (
-                <span className="text-xs text-slate-400">
-                  {Math.round(d.confidence * 100)}%
-                </span>
-              )}
-            </div>
-          </div>
-          {d.raw_description && (
-            <div className="mt-0.5 text-sm text-slate-500">
-              {d.raw_description}
-            </div>
-          )}
-          {d.reasoning && (
-            <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function SectionHeading({ children }) {
-  return (
-    <h3 className="mb-1 border-b border-slate-200 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
-      {children}
-    </h3>
-  );
+function dishCategory(d) {
+  return d.category === "drink" || d.category === "dessert"
+    ? d.category
+    : "food";
 }
 
 export default function DishModal({ restaurant, onClose }) {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("food");
   const [filter, setFilter] = useState("all");
-  const [showDrinks, setShowDrinks] = useState(false);
 
   useEffect(() => {
     if (!restaurant) return;
     setLoading(true);
     setDishes([]);
+    setFilter("all");
     fetch(`/api/restaurants/${restaurant.id}/dishes`)
       .then((res) => (res.ok ? res.json() : { dishes: [] }))
-      .then((data) => setDishes(data.dishes || []))
+      .then((data) => {
+        const list = data.dishes || [];
+        setDishes(list);
+        // Open on the first category that actually has items.
+        const first = CATEGORIES.find((c) =>
+          list.some((d) => dishCategory(d) === c.key)
+        );
+        setTab(first ? first.key : "food");
+      })
       .catch(() => setDishes([]))
       .finally(() => setLoading(false));
   }, [restaurant]);
 
+  const byCategory = useMemo(() => {
+    const groups = { food: [], dessert: [], drink: [] };
+    for (const d of dishes) groups[dishCategory(d)].push(d);
+    return groups;
+  }, [dishes]);
+
+  const veganishIn = (items) =>
+    items.filter((d) => VEGANISH.has(d.verdict)).length;
+
   if (!restaurant) return null;
 
-  const shown = dishes.filter((d) => {
+  const active = byCategory[tab] || [];
+  const shown = active.filter((d) => {
     if (filter === "veganish") return VEGANISH.has(d.verdict);
     if (filter === "not_vegan") return !VEGANISH.has(d.verdict);
     return true;
   });
-
-  // Group by category so a long cocktail list never buries the food.
-  const food = shown.filter((d) => !d.category || d.category === "food");
-  const desserts = shown.filter((d) => d.category === "dessert");
-  const drinks = shown.filter((d) => d.category === "drink");
 
   return (
     <div
@@ -121,9 +103,8 @@ export default function DishModal({ restaurant, onClose }) {
           <h2 className="font-semibold text-slate-900">
             {restaurant.name}
             <span className="ml-2 text-sm font-normal text-slate-400">
-              {restaurant.vegan_options} vegan option
-              {restaurant.vegan_options === 1 ? "" : "s"} of{" "}
-              {restaurant.dish_count} items
+              {restaurant.vegan_options} vegan food option
+              {restaurant.vegan_options === 1 ? "" : "s"}
             </span>
           </h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
@@ -131,6 +112,37 @@ export default function DishModal({ restaurant, onClose }) {
           </button>
         </div>
 
+        {/* Category tabs */}
+        <div className="flex gap-1 border-b border-slate-200 px-4 pt-2">
+          {CATEGORIES.map((c) => {
+            const items = byCategory[c.key];
+            if (!items || items.length === 0) return null;
+            const veg = veganishIn(items);
+            return (
+              <button
+                key={c.key}
+                onClick={() => setTab(c.key)}
+                className={`relative -mb-px rounded-t-lg border px-3 py-2 text-sm font-medium transition ${
+                  tab === c.key
+                    ? "border-slate-200 border-b-white bg-white text-slate-900"
+                    : "border-transparent text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {c.icon} {c.label}
+                <span className="ml-1.5 text-xs text-slate-400">
+                  {items.length}
+                </span>
+                {veg > 0 && (
+                  <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 text-xs font-semibold text-emerald-700">
+                    {veg}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Verdict filter */}
         <div className="flex gap-2 border-b border-slate-100 px-4 py-2">
           {FILTERS.map((f) => (
             <button
@@ -150,50 +162,45 @@ export default function DishModal({ restaurant, onClose }) {
         <div className="overflow-y-auto p-4">
           {loading ? (
             <div className="text-slate-400">Loading…</div>
+          ) : dishes.length === 0 ? (
+            <div className="text-slate-400">No dishes classified yet.</div>
           ) : shown.length === 0 ? (
             <div className="text-slate-400">
-              {dishes.length === 0
-                ? "No dishes classified yet."
-                : "No dishes match this filter."}
+              No {tab === "food" ? "food items" : tab + "s"} match this filter.
             </div>
           ) : (
-            <div className="space-y-5">
-              {food.length > 0 && (
-                <section>
-                  <SectionHeading>🍽 Food ({food.length})</SectionHeading>
-                  <DishList items={food} />
-                </section>
-              )}
-              {desserts.length > 0 && (
-                <section>
-                  <SectionHeading>🍰 Desserts ({desserts.length})</SectionHeading>
-                  <DishList items={desserts} />
-                </section>
-              )}
-              {drinks.length > 0 && (
-                <section>
-                  <SectionHeading>🥤 Drinks ({drinks.length})</SectionHeading>
-                  {showDrinks ? (
-                    <>
-                      <DishList items={drinks} />
-                      <button
-                        onClick={() => setShowDrinks(false)}
-                        className="mt-1 text-xs font-medium text-slate-500 hover:text-slate-700"
-                      >
-                        Hide drinks
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={() => setShowDrinks(true)}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      Show {drinks.length} drink{drinks.length === 1 ? "" : "s"}
-                    </button>
+            <ul className="divide-y divide-slate-100">
+              {shown.map((d) => (
+                <li key={d.id} className="py-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="font-medium text-slate-900">
+                      {d.name}
+                      {d.price && (
+                        <span className="ml-2 text-sm font-normal text-slate-400">
+                          {d.price}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <VerdictChip verdict={d.verdict} />
+                      {d.confidence != null && (
+                        <span className="text-xs text-slate-400">
+                          {Math.round(d.confidence * 100)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {d.raw_description && (
+                    <div className="mt-0.5 text-sm text-slate-500">
+                      {d.raw_description}
+                    </div>
                   )}
-                </section>
-              )}
-            </div>
+                  {d.reasoning && (
+                    <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
         <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
