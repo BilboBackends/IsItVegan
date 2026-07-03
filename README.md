@@ -47,8 +47,14 @@ Open **http://localhost:5173**. The Vite dev server proxies `/api/*` to the
 Flask backend, so the browser only ever talks to our own backend — no API keys
 reach the client.
 
-From the dashboard you can browse discovered restaurants and click **Run
-discovery** to (re-)pull the Maitland restaurant list from Google Places.
+Two views:
+
+- **Explore** (default) — the consumer-facing view: restaurant cards sorted by
+  vegan options / distance / name, search, distance ranges with browser
+  geolocation, and a map (Leaflet + OpenStreetMap — keyless). Each restaurant
+  opens a dish list with verdict chips, confidence, and the menu evidence.
+- **Admin** (`#admin`) — the pipeline dashboard: run discovery / enrichment /
+  ingestion, add restaurants by name, inspect scraped menu text and scores.
 
 ## Running the pipeline from the command line
 
