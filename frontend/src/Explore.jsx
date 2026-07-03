@@ -71,7 +71,10 @@ export default function Explore() {
     () => window.matchMedia("(min-width: 1024px)").matches
   );
   const [dishesFor, setDishesFor] = useState(null);
+  const [focus, setFocus] = useState(null); // {id, ts} — card click zooms map
   const mapEl = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({});
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -149,6 +152,8 @@ export default function Explore() {
   useEffect(() => {
     if (!showMap || !mapEl.current) return;
     const map = L.map(mapEl.current, { zoomControl: true });
+    mapRef.current = map;
+    markersRef.current = {};
     L.tileLayer(
       "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
       {
@@ -186,6 +191,7 @@ export default function Explore() {
         iconAnchor: analyzed ? [13, 13] : [6, 6],
       });
       const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
+      markersRef.current[r.place_id] = marker;
       bounds.push([r.lat, r.lng]);
 
       // Tooltip and popup content built as DOM nodes with textContent —
@@ -231,8 +237,31 @@ export default function Explore() {
       map.setView([origin.lat, origin.lng], 13);
     }
     setTimeout(() => map.invalidateSize(), 100);
-    return () => map.remove();
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      markersRef.current = {};
+    };
   }, [showMap, filtered, origin, originLabel]);
+
+  // Card click → fly the map to that restaurant and open its popup. Runs
+  // after the build effect above (declaration order), so it also works on
+  // mobile where the click first flips the view to the map.
+  useEffect(() => {
+    if (!focus) return;
+    const map = mapRef.current;
+    const marker = markersRef.current[focus.id];
+    if (!map || !marker) return;
+    map.flyTo(marker.getLatLng(), 16, { duration: 0.8 });
+    const t = setTimeout(() => marker.openPopup(), 850);
+    return () => clearTimeout(t);
+  }, [focus, showMap]);
+
+  function focusRestaurant(r) {
+    if (r.lat == null || r.lng == null) return;
+    if (!isDesktop) setView("map");
+    setFocus({ id: r.place_id, ts: Date.now() });
+  }
 
   const analyzed = restaurants.filter((r) => r.dish_count > 0).length;
   const totalVegan = restaurants.reduce((s, r) => s + (r.vegan_options || 0), 0);
@@ -338,7 +367,13 @@ export default function Explore() {
                 {filtered.map((r) => (
                   <div
                     key={r.place_id}
-                    className="group flex flex-col rounded-2xl border border-stone-200/80 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                    onClick={() => focusRestaurant(r)}
+                    title={r.lat != null ? "Show on map" : undefined}
+                    className={`group flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+                      focus?.id === r.place_id
+                        ? "border-emerald-600 ring-1 ring-emerald-600"
+                        : "border-stone-200/80"
+                    }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="font-bold leading-snug text-stone-900">
@@ -380,14 +415,30 @@ export default function Explore() {
                           menu not analyzed yet
                         </span>
                       )}
-                      {r.dish_count > 0 && (
-                        <button
-                          onClick={() => setDishesFor(r)}
-                          className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
-                        >
-                          See dishes →
-                        </button>
-                      )}
+                      <div className="flex items-center gap-3">
+                        {r.website_url && (
+                          <a
+                            href={r.website_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-xs font-semibold text-stone-400 transition hover:text-emerald-700 hover:underline"
+                          >
+                            Website ↗
+                          </a>
+                        )}
+                        {r.dish_count > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDishesFor(r);
+                            }}
+                            className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
+                          >
+                            See dishes →
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
