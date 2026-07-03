@@ -137,12 +137,12 @@ def run_enrich() -> object:
 
 @app.post("/api/restaurants/add")
 def add_restaurants_endpoint() -> object:
-    """Add restaurants by name: resolve via Places, enrich + ingest each.
+    """Add restaurants by name: resolve, enrich, ingest, and classify each.
 
     Body: {"names": ["...", ...]}. Synchronous — each added restaurant runs
-    the scrape pipeline (~30-60s for ordering-platform sites); fine for a
-    handful of names in a local tool. Classification is NOT run here (costs
-    credits) — use classify.py or POST /api/classify.
+    the full pipeline including Claude classification (~$0.10 and up to a
+    couple of minutes per restaurant); fine for a handful of names in a
+    local tool.
     """
     if not settings.google_places_api_key:
         return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400

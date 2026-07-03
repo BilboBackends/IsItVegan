@@ -468,8 +468,9 @@ export default function App() {
             <div className="space-y-3 overflow-y-auto p-4">
               <p className="text-sm text-slate-500">
                 One name per line. Each is resolved via Google Places, then
-                enriched and scraped (~30–60s each). Check the matched
-                addresses below — a wrong match is worse than no match.
+                enriched, scraped, and classified with Claude (~1–2 min and
+                ~$0.10 of API credits each). Check the matched addresses
+                below — a wrong match is worse than no match.
               </p>
               <textarea
                 value={addNames}

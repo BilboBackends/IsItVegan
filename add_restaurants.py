@@ -3,8 +3,9 @@
 Instead of (or on top of) area discovery, give a list of restaurant names.
 Each name is resolved via Google Places Text Search (biased toward the
 configured area, but an explicit "Antonio's Orlando" still wins), upserted
-into the DB, then enriched (Google food signals) and ingested (menu scrape).
-Classification is opt-in via --classify since it spends Claude credits.
+into the DB, then enriched (Google food signals), ingested (menu scrape),
+and classified (Claude dish verdicts — ~$0.10/restaurant; skip with
+--no-classify).
 
 The resolved match (name + address) is always printed — spot-check it! A
 wrong match here poisons everything downstream.
@@ -12,7 +13,7 @@ wrong match here poisons everything downstream.
     python add_restaurants.py "4 Rivers Smokehouse" "Ethos Vegan Kitchen"
     python add_restaurants.py --file names.txt          # one name per line
     python add_restaurants.py --file names.txt --dry-run  # resolve only
-    python add_restaurants.py "Some Place" --classify   # incl. Claude verdicts
+    python add_restaurants.py "Some Place" --no-classify  # scrape only
 
 No city filter is applied: an explicitly named restaurant is explicit intent.
 """
@@ -42,7 +43,7 @@ def _resolve(name: str) -> dict | None:
     )
 
 
-def run(names: list[str], dry_run: bool = False, classify_too: bool = False) -> dict:
+def run(names: list[str], dry_run: bool = False, classify_too: bool = True) -> dict:
     if not settings.google_places_api_key:
         raise SystemExit("GOOGLE_PLACES_API_KEY not set in .env.")
     db.init_db()
@@ -94,6 +95,9 @@ def run(names: list[str], dry_run: bool = False, classify_too: bool = False) -> 
                 import classify
 
                 classify.run(restaurant_id=rid)
+            except SystemExit as exc:
+                # No menu text (scrape failed) — nothing to classify.
+                print(f"  classify skipped: {exc}")
             except Exception as exc:
                 print(f"  classify failed: {exc}")
 
@@ -112,8 +116,9 @@ def main() -> None:
     parser.add_argument("--file", default=None, help="File with one name per line.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Resolve and show matches only; write nothing.")
-    parser.add_argument("--classify", action="store_true",
-                        help="Also run Claude dish classification (costs credits).")
+    parser.add_argument("--no-classify", action="store_true",
+                        help="Skip Claude dish classification (it runs by "
+                        "default for each added restaurant; ~$0.10 each).")
     args = parser.parse_args()
 
     names = list(args.names)
@@ -125,7 +130,7 @@ def main() -> None:
         ]
     if not names:
         raise SystemExit("Give names as arguments or via --file.")
-    run(names, dry_run=args.dry_run, classify_too=args.classify)
+    run(names, dry_run=args.dry_run, classify_too=not args.no_classify)
 
 
 if __name__ == "__main__":

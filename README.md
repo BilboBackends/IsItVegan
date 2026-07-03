@@ -69,16 +69,17 @@ python discover.py --mock fixtures/maitland_sample.json --dry-run
 
 Instead of (or on top of) area discovery, give a list of names. Each resolves
 via Places Text Search (biased toward the configured area; a match is only
-accepted if its name actually overlaps the query), then runs enrichment and
-menu ingestion automatically. Upserts on place_id, so re-adding an existing
-restaurant updates it rather than duplicating. Also available in the dashboard
-via the "+ Add restaurants" button.
+accepted if its name actually overlaps the query), then runs the full
+pipeline automatically: enrichment, menu ingestion, and Claude dish
+classification (~$0.10/restaurant; skip with --no-classify). Upserts on
+place_id, so re-adding an existing restaurant refreshes it rather than
+duplicating. Also available in the dashboard via "+ Add restaurants".
 
 ```bash
 python add_restaurants.py "Ethos Vegan Kitchen" "4Rivers Smokehouse"
 python add_restaurants.py --file names.txt        # one name per line
 python add_restaurants.py --file names.txt --dry-run   # show matches only
-python add_restaurants.py "Some Place" --classify # also run Claude verdicts
+python add_restaurants.py "Some Place" --no-classify   # scrape only
 ```
 
 Always spot-check the printed match (name + address) — a wrong match poisons
