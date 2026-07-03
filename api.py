@@ -17,6 +17,7 @@ from flask_cors import CORS
 
 import db
 import discover
+import enrich
 import ingest
 from config import settings
 from menu_score import score_menu_text
@@ -111,6 +112,19 @@ def run_ingest() -> object:
             ],
         }
     )
+
+
+@app.post("/api/enrich")
+def run_enrich() -> object:
+    """Trigger Google food-signal enrichment (servesVegetarianFood, etc.)."""
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = enrich.run(do_all=bool(payload.get("all")))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(result)
 
 
 @app.get("/api/restaurants/<int:restaurant_id>/menu-text")

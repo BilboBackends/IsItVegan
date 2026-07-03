@@ -125,6 +125,7 @@ scraper.py             # Phase 1: HTTP scrape + menu-link following + headless f
 headless.py            # Playwright headless-browser fetch (JS-rendered menus)
 menu_score.py          # Heuristic: is this text a real menu vs homepage copy?
 ingest.py              # Phase 1 CLI: scrape + persist menu text
+enrich.py              # Pull Google food signals (vegetarian, editorial, type)
 api.py                 # Flask JSON API for the local dashboard
 fixtures/              # mock data for running without live APIs
 frontend/              # React + Vite + Tailwind dashboard

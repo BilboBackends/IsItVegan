@@ -24,7 +24,14 @@ CREATE TABLE IF NOT EXISTS restaurants (
     website_url     TEXT,
     lat             REAL,
     lng             REAL,
-    last_scraped_at TEXT
+    last_scraped_at TEXT,
+    -- Structured food signals from Google Places (New) Place Details.
+    -- Nullable: Google doesn't populate these for every restaurant.
+    serves_vegetarian INTEGER,   -- 1 / 0 / NULL (unknown)
+    price_level       TEXT,      -- e.g. PRICE_LEVEL_MODERATE
+    primary_type      TEXT,      -- e.g. thai_restaurant
+    editorial_summary TEXT,      -- Google's short blurb (often names dishes)
+    enriched_at       TEXT       -- when food signals were last fetched
 );
 
 CREATE TABLE IF NOT EXISTS dishes (
@@ -88,10 +95,32 @@ def connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added after the initial schema shipped. CREATE TABLE IF NOT EXISTS
+# won't add them to an existing DB, so we ALTER any that are missing.
+_MIGRATIONS = {
+    "restaurants": {
+        "serves_vegetarian": "INTEGER",
+        "price_level": "TEXT",
+        "primary_type": "TEXT",
+        "editorial_summary": "TEXT",
+        "enriched_at": "TEXT",
+    },
+}
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _MIGRATIONS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, coltype in columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+
+
 def init_db(db_path: str | None = None) -> None:
-    """Create tables if they don't exist. Safe to run repeatedly."""
+    """Create tables if they don't exist and add any new columns. Idempotent."""
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _apply_migrations(conn)
 
 
 def upsert_restaurants(
@@ -147,15 +176,52 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
             """
             SELECT r.id, r.name, r.address, r.place_id, r.website_url,
                    r.lat, r.lng, r.last_scraped_at,
+                   r.serves_vegetarian, r.price_level, r.primary_type,
+                   r.editorial_summary, r.enriched_at,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
+                         AND (s.url IS NULL OR s.url != 'google:editorial_summary')
                    ) AS has_menu_text
             FROM restaurants r
             ORDER BY r.last_scraped_at DESC, r.name ASC
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def update_food_signals(
+    restaurant_id: int,
+    *,
+    serves_vegetarian: bool | None,
+    price_level: str | None,
+    primary_type: str | None,
+    editorial_summary: str | None,
+    enriched_at: str,
+    db_path: str | None = None,
+) -> None:
+    """Store Google-sourced structured food signals on a restaurant."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE restaurants SET
+                serves_vegetarian = :veg,
+                price_level       = :price,
+                primary_type      = :ptype,
+                editorial_summary = :editorial,
+                enriched_at       = :enriched
+            WHERE id = :id
+            """,
+            {
+                "id": restaurant_id,
+                # store bool as 1/0, leave NULL when unknown
+                "veg": None if serves_vegetarian is None else int(serves_vegetarian),
+                "price": price_level,
+                "ptype": primary_type,
+                "editorial": editorial_summary,
+                "enriched": enriched_at,
+            },
+        )
 
 
 def upsert_menu_text(
@@ -191,6 +257,7 @@ def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None
             SELECT id, restaurant_id, content, url, fetched_at
             FROM sources
             WHERE restaurant_id = ? AND type = 'text'
+              AND (url IS NULL OR url != 'google:editorial_summary')
             ORDER BY fetched_at DESC
             LIMIT 1
             """,

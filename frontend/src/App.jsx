@@ -21,6 +21,7 @@ export default function App() {
   const [error, setError] = useState(null);
   const [discovering, setDiscovering] = useState(false);
   const [ingesting, setIngesting] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
@@ -100,6 +101,30 @@ export default function App() {
     }
   }
 
+  async function runEnrich() {
+    setEnriching(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Enrich failed (${res.status})`);
+      setNotice(
+        `Google enrichment: ${data.veg_yes} vegetarian-friendly, ` +
+          `${data.veg_unknown} unknown; ${data.with_editorial} editorial summaries.`
+      );
+      await loadData();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setEnriching(false);
+    }
+  }
+
   async function openMenu(r) {
     setMenuFor(r);
     setMenuText(null);
@@ -131,6 +156,10 @@ export default function App() {
     () => restaurants.filter((r) => r.has_menu_text).length,
     [restaurants]
   );
+  const vegFriendly = useMemo(
+    () => restaurants.filter((r) => r.serves_vegetarian === 1).length,
+    [restaurants]
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -154,6 +183,14 @@ export default function App() {
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={runEnrich}
+              disabled={enriching || !config?.has_api_key}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+              title="Pull Google's food signals (vegetarian-friendly, editorial summary)"
+            >
+              {enriching ? "Enriching…" : "Enrich (Google)"}
+            </button>
             <button
               onClick={runIngest}
               disabled={ingesting || discovering}
@@ -197,14 +234,14 @@ export default function App() {
         <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <StatCard label="Restaurants" value={restaurants.length} />
           <StatCard
-            label="With website"
-            value={restaurants.length - noWebsite}
-            hint="scrapable"
-          />
-          <StatCard
             label="Real menus found"
             value={withMenuText}
             hint="passed menu detection"
+          />
+          <StatCard
+            label="Vegetarian-friendly"
+            value={vegFriendly}
+            hint="per Google"
           />
           <StatCard
             label="No usable menu"
@@ -239,6 +276,7 @@ export default function App() {
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-3 font-medium">Name</th>
+                    <th className="px-4 py-3 font-medium">Veg?</th>
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
                     <th className="px-4 py-3 font-medium">Menu text</th>
@@ -247,8 +285,31 @@ export default function App() {
                 <tbody className="divide-y divide-slate-100">
                   {filtered.map((r) => (
                     <tr key={r.place_id} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 font-medium text-slate-900">
+                      <td
+                        className="px-4 py-3 font-medium text-slate-900"
+                        title={r.editorial_summary || ""}
+                      >
                         {r.name}
+                        {r.editorial_summary && (
+                          <span className="ml-1 text-slate-300" title={r.editorial_summary}>
+                            ⓘ
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.serves_vegetarian === 1 ? (
+                          <span className="text-emerald-600" title="Google: serves vegetarian food">
+                            ✓
+                          </span>
+                        ) : r.serves_vegetarian === 0 ? (
+                          <span className="text-slate-400" title="Google: does not serve vegetarian food">
+                            ✗
+                          </span>
+                        ) : (
+                          <span className="text-slate-300" title="Unknown">
+                            ?
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-600">{r.address}</td>
                       <td className="px-4 py-3">

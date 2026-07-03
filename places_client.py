@@ -59,6 +59,44 @@ def _normalize_place(place: dict) -> dict:
     }
 
 
+# Place Details fields for enrichment. These are structured food signals Google
+# returns for many (not all) restaurants — a free vegetarian prior + dish hints
+# that don't depend on scraping the restaurant's own site.
+_DETAILS_FIELD_MASK = ",".join(
+    [
+        "id",
+        "priceLevel",
+        "primaryType",
+        "editorialSummary",
+        "servesVegetarianFood",
+    ]
+)
+
+PLACE_DETAILS_URL = "https://places.googleapis.com/v1/places/"
+
+
+def fetch_place_details(
+    place_id: str, *, api_key: str, timeout: float = 30.0
+) -> dict:
+    """Fetch structured food signals for one place. Missing fields -> None.
+
+    Returns: {serves_vegetarian, price_level, primary_type, editorial_summary}.
+    """
+    headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": _DETAILS_FIELD_MASK}
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    editorial = (data.get("editorialSummary") or {}).get("text")
+    return {
+        "serves_vegetarian": data.get("servesVegetarianFood"),  # True/False/None
+        "price_level": data.get("priceLevel"),
+        "primary_type": data.get("primaryType"),
+        "editorial_summary": editorial,
+    }
+
+
 def _search_circle(
     client: httpx.Client,
     *,
