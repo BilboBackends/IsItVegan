@@ -33,10 +33,56 @@ export function VerdictChip({ verdict }) {
   );
 }
 
+function DishList({ items }) {
+  return (
+    <ul className="divide-y divide-slate-100">
+      {items.map((d) => (
+        <li key={d.id} className="py-3">
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="font-medium text-slate-900">
+              {d.name}
+              {d.price && (
+                <span className="ml-2 text-sm font-normal text-slate-400">
+                  {d.price}
+                </span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <VerdictChip verdict={d.verdict} />
+              {d.confidence != null && (
+                <span className="text-xs text-slate-400">
+                  {Math.round(d.confidence * 100)}%
+                </span>
+              )}
+            </div>
+          </div>
+          {d.raw_description && (
+            <div className="mt-0.5 text-sm text-slate-500">
+              {d.raw_description}
+            </div>
+          )}
+          {d.reasoning && (
+            <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SectionHeading({ children }) {
+  return (
+    <h3 className="mb-1 border-b border-slate-200 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+      {children}
+    </h3>
+  );
+}
+
 export default function DishModal({ restaurant, onClose }) {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
+  const [showDrinks, setShowDrinks] = useState(false);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -56,6 +102,11 @@ export default function DishModal({ restaurant, onClose }) {
     if (filter === "not_vegan") return !VEGANISH.has(d.verdict);
     return true;
   });
+
+  // Group by category so a long cocktail list never buries the food.
+  const food = shown.filter((d) => !d.category || d.category === "food");
+  const desserts = shown.filter((d) => d.category === "dessert");
+  const drinks = shown.filter((d) => d.category === "drink");
 
   return (
     <div
@@ -106,43 +157,43 @@ export default function DishModal({ restaurant, onClose }) {
                 : "No dishes match this filter."}
             </div>
           ) : (
-            <ul className="divide-y divide-slate-100">
-              {shown.map((d) => (
-                <li key={d.id} className="py-3">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <div className="font-medium text-slate-900">
-                      {d.name}
-                      {d.price && (
-                        <span className="ml-2 text-sm font-normal text-slate-400">
-                          {d.price}
-                        </span>
-                      )}
-                      {d.category && d.category !== "food" && (
-                        <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
-                          {d.category === "drink" ? "🥤 drink" : "🍰 dessert"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <VerdictChip verdict={d.verdict} />
-                      {d.confidence != null && (
-                        <span className="text-xs text-slate-400">
-                          {Math.round(d.confidence * 100)}%
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {d.raw_description && (
-                    <div className="mt-0.5 text-sm text-slate-500">
-                      {d.raw_description}
-                    </div>
+            <div className="space-y-5">
+              {food.length > 0 && (
+                <section>
+                  <SectionHeading>🍽 Food ({food.length})</SectionHeading>
+                  <DishList items={food} />
+                </section>
+              )}
+              {desserts.length > 0 && (
+                <section>
+                  <SectionHeading>🍰 Desserts ({desserts.length})</SectionHeading>
+                  <DishList items={desserts} />
+                </section>
+              )}
+              {drinks.length > 0 && (
+                <section>
+                  <SectionHeading>🥤 Drinks ({drinks.length})</SectionHeading>
+                  {showDrinks ? (
+                    <>
+                      <DishList items={drinks} />
+                      <button
+                        onClick={() => setShowDrinks(false)}
+                        className="mt-1 text-xs font-medium text-slate-500 hover:text-slate-700"
+                      >
+                        Hide drinks
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => setShowDrinks(true)}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Show {drinks.length} drink{drinks.length === 1 ? "" : "s"}
+                    </button>
                   )}
-                  {d.reasoning && (
-                    <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
-                  )}
-                </li>
-              ))}
-            </ul>
+                </section>
+              )}
+            </div>
           )}
         </div>
         <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
