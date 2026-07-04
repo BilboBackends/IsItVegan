@@ -1,4 +1,5 @@
 import { useState } from "react";
+import DietaryBadges, { DietaryProfile } from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
@@ -109,6 +110,7 @@ export default function DishDetail({
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           <div className="flex flex-wrap items-center gap-2">
             <VerdictChip verdict={dish.verdict} />
+            <DietaryBadges dish={dish} includeMeals />
             {dish.confidence != null && (
               <span className="text-xs font-semibold text-stone-500">{Math.round(dish.confidence * 100)}% confidence</span>
             )}
@@ -133,6 +135,32 @@ export default function DishDetail({
               )}
             </section>
           )}
+
+          <section className="rounded-2xl border border-stone-200 bg-white p-4">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-stone-400">
+              Dietary profile
+            </h3>
+            <div className="mt-3">
+              <DietaryProfile dish={dish} />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-stone-600">
+              {dish.protein_level && (
+                <span><strong>Protein:</strong> {dish.protein_level}</span>
+              )}
+              {dish.meal_types?.length > 0 && (
+                <span><strong>Meals:</strong> {dish.meal_types.join(", ")}</span>
+              )}
+            </div>
+            {dish.key_ingredients?.length > 0 && (
+              <p className="mt-2 text-sm text-stone-600">
+                <strong>Key ingredients:</strong> {dish.key_ingredients.join(", ")}
+              </p>
+            )}
+            <p className="mt-3 text-xs leading-relaxed text-stone-400">
+              Inferred from menu text and common preparation. This does not certify
+              allergy safety or cross-contact controls—confirm strict needs directly.
+            </p>
+          </section>
 
           <section className="rounded-2xl border border-stone-200 bg-white p-4">
             <div className="flex flex-wrap items-center gap-2">

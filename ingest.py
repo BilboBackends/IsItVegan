@@ -35,7 +35,10 @@ from venue_filter import is_consumer_food_venue
 
 
 def _targets(
-    restaurant_id: int | None, do_all: bool, stale_days: int | None = None
+    restaurant_id: int | None,
+    do_all: bool,
+    stale_days: int | None = None,
+    restaurant_ids: list[int] | None = None,
 ) -> list[dict]:
     """Pick which restaurants to ingest.
 
@@ -54,8 +57,19 @@ def _targets(
         return [{"id": rows[0]["id"], "name": rows[0]["name"],
                  "website_url": rows[0]["website_url"]}]
 
-    eligible = {r["id"] for r in all_rows if is_consumer_food_venue(r)}
-    if do_all:
+    eligible = {
+        r["id"]
+        for r in all_rows
+        if is_consumer_food_venue(r) and r.get("refresh_enabled", 1)
+    }
+    if restaurant_ids is not None:
+        requested = set(restaurant_ids)
+        targets = [
+            {"id": r["id"], "name": r["name"], "website_url": r["website_url"]}
+            for r in all_rows
+            if r["id"] in requested and r.get("website_url")
+        ]
+    elif do_all:
         targets = [
             {"id": r["id"], "name": r["name"], "website_url": r["website_url"]}
             for r in all_rows
@@ -77,6 +91,7 @@ def run(
     do_all: bool = False,
     dry_run: bool = False,
     stale_days: int | None = None,
+    restaurant_ids: list[int] | None = None,
     on_progress=None,
 ) -> dict:
     """Scrape targets; on_progress (optional) receives event dicts so a live
@@ -88,7 +103,7 @@ def run(
             on_progress(event)
 
     db.init_db()
-    targets = _targets(restaurant_id, do_all, stale_days)
+    targets = _targets(restaurant_id, do_all, stale_days, restaurant_ids)
     _emit({"total": len(targets)})
 
     print(f"Ingesting {len(targets)} restaurant(s)...\n")

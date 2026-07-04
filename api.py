@@ -23,6 +23,7 @@ import discover
 import enrich
 import ingest
 import menu_audit
+from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
 from menu_score import score_menu_text
 from venue_filter import is_consumer_food_venue
@@ -52,6 +53,7 @@ def get_config() -> object:
             "cell_radius_meters": settings.discovery_cell_radius_meters,
             "has_api_key": bool(settings.google_places_api_key),
             "database_path": settings.database_path,
+            "classifier": provider_status(),
         }
     )
 
@@ -68,6 +70,15 @@ def get_restaurants() -> object:
     counts = db.verdict_counts_by_restaurant()
     veganish = ("vegan", "likely_vegan", "vegan_adaptable")
     for r in restaurants:
+        menu_source = db.get_menu_text(r["id"]) if r.get("has_menu_text") else None
+        menu_score = (
+            score_menu_text(menu_source["content"])
+            if menu_source is not None
+            else None
+        )
+        r["menu_score"] = menu_score.score if menu_score else None
+        r["menu_score_reason"] = menu_score.reason if menu_score else None
+        r["menu_score_is_menu"] = menu_score.is_menu if menu_score else None
         c = counts.get(r["id"])
         r["dish_count"] = c["total"] if c else 0
         r["vegan_options"] = (
@@ -133,7 +144,9 @@ _ingest_state: dict = {
 _ingest_lock = threading.Lock()
 
 
-def _ingest_worker(do_all: bool, stale_days: int | None) -> None:
+def _ingest_worker(
+    do_all: bool, stale_days: int | None, restaurant_ids: list[int] | None
+) -> None:
     def on_progress(event: dict) -> None:
         with _ingest_lock:
             if "total" in event:
@@ -149,7 +162,10 @@ def _ingest_worker(do_all: bool, stale_days: int | None) -> None:
 
     try:
         summary = ingest.run(
-            do_all=do_all, stale_days=stale_days, on_progress=on_progress
+            do_all=do_all,
+            stale_days=stale_days,
+            restaurant_ids=restaurant_ids,
+            on_progress=on_progress,
         )
         with _ingest_lock:
             _ingest_state["summary"] = {
@@ -198,6 +214,17 @@ def run_ingest() -> object:
             }
         )
 
+    restaurant_ids = payload.get("restaurant_ids")
+    if restaurant_ids is not None and (
+        not isinstance(restaurant_ids, list)
+        or not restaurant_ids
+        or len(restaurant_ids) > 100
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in restaurant_ids)
+    ):
+        return jsonify({"error": "restaurant_ids must be 1-100 integer IDs."}), 400
+    if restaurant_ids is not None:
+        restaurant_ids = list(dict.fromkeys(restaurant_ids))
+
     with _ingest_lock:
         if _ingest_state["running"]:
             return jsonify({"error": "A menu scrape is already running."}), 409
@@ -207,7 +234,7 @@ def run_ingest() -> object:
         )
     threading.Thread(
         target=_ingest_worker,
-        args=(bool(payload.get("all")), stale_days),
+        args=(bool(payload.get("all")), stale_days, restaurant_ids),
         daemon=True,
     ).start()
     return jsonify({"started": True}), 202
@@ -276,6 +303,17 @@ def update_restaurant_visibility(restaurant_id: int) -> object:
     if not db.set_restaurant_hidden(restaurant_id, payload["hidden"]):
         return jsonify({"error": "Restaurant not found."}), 404
     return jsonify({"id": restaurant_id, "hidden": payload["hidden"]})
+
+
+@app.patch("/api/restaurants/<int:restaurant_id>/refresh-enabled")
+def update_restaurant_refresh_enabled(restaurant_id: int) -> object:
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return jsonify({"error": "enabled must be true or false."}), 400
+    if not db.set_restaurant_refresh_enabled(restaurant_id, payload["enabled"]):
+        return jsonify({"error": "Restaurant not found."}), 404
+    return jsonify({"id": restaurant_id, "refresh_enabled": payload["enabled"]})
 
 
 @app.get("/api/restaurants/<int:restaurant_id>/dishes")
@@ -349,6 +387,7 @@ def update_report(report_id: int) -> object:
 # dashboard can show what each restaurant's classification cost.
 _classify_state: dict = {
     "running": False,
+    "cancel_requested": False,
     "total": None,
     "done": 0,
     "succeeded": 0,
@@ -358,11 +397,16 @@ _classify_state: dict = {
     "recent": [],      # newest first; ok results carry dishes + cost
     "summary": None,   # {"ok", "failed", "dishes", "cost"} once finished
     "error": None,
+    "provider": None,
+    "billing": None,
 }
 _classify_lock = threading.Lock()
+_classify_cancel = threading.Event()
 
 
-def _classify_worker(do_all: bool) -> None:
+def _classify_worker(
+    do_all: bool, restaurant_ids: list[int] | None, provider: str | None
+) -> None:
     import classify
 
     def on_progress(event: dict) -> None:
@@ -380,15 +424,27 @@ def _classify_worker(do_all: bool) -> None:
                 )
                 _classify_state["recent"] = [result] + _classify_state["recent"][:9]
                 _classify_state["current"] = None
+                if result.get("provider"):
+                    _classify_state["provider"] = result["provider"]
+                    _classify_state["billing"] = result.get("billing")
 
     try:
-        summary = classify.run(do_all=do_all, on_progress=on_progress)
+        summary = classify.run(
+            do_all=do_all,
+            restaurant_ids=restaurant_ids,
+            on_progress=on_progress,
+            should_stop=_classify_cancel.is_set,
+            provider=provider,
+        )
         with _classify_lock:
             _classify_state["summary"] = {
                 "ok": summary["ok"],
                 "failed": summary["failed"],
                 "dishes": summary["dishes"],
                 "cost": summary["cost"],
+                "cancelled": summary["cancelled"],
+                "provider": _classify_state["provider"] or provider,
+                "billing": _classify_state["billing"],
             }
     except (Exception, SystemExit) as exc:
         with _classify_lock:
@@ -401,42 +457,83 @@ def _classify_worker(do_all: bool) -> None:
 
 @app.post("/api/classify")
 def run_classify() -> object:
-    """Classify dishes with Claude (costs API credits, ~$0.10/restaurant).
+    """Classify dishes via the provider chain: Claude Code subscription,
+    Codex/ChatGPT subscription, or the Anthropic API.
 
     With {"restaurant_id": N}: synchronous, returns that run's result
     including its estimated cost. Bulk ({} classifies restaurants with menu
     text but no dishes yet; {"all": true} re-classifies everyone): starts a
     background job — poll GET /api/classify/status for progress and cost.
+
+    "provider" may be auto, a single provider, or a comma-separated priority
+    list. The REQUESTED chain (not the resolved name) is what runs, so a
+    provider that hits its usage limit mid-run fails over to the next one.
     """
-    if not settings.anthropic_api_key:
-        return jsonify({"error": "ANTHROPIC_API_KEY is not set."}), 400
     payload = request.get_json(silent=True) or {}
+    requested_provider = payload.get("provider")
+    try:
+        # Validates the chain and that at least one provider can serve it;
+        # the resolved name is for display until results report actual usage.
+        provider = resolve_provider(requested_provider)
+    except ProviderUnavailable as exc:
+        return jsonify({"error": str(exc)}), 400
 
     restaurant_id = payload.get("restaurant_id")
     if restaurant_id is not None:
         try:
             import classify
 
-            result = classify.run(restaurant_id=restaurant_id)
+            result = classify.run(
+                restaurant_id=restaurant_id, provider=requested_provider
+            )
         except SystemExit as exc:  # e.g. restaurant has no menu text yet
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:
             return jsonify({"error": str(exc)}), 502
         return jsonify(result)
 
+    restaurant_ids = payload.get("restaurant_ids")
+    if restaurant_ids is not None and (
+        not isinstance(restaurant_ids, list)
+        or not restaurant_ids
+        or len(restaurant_ids) > 100
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in restaurant_ids)
+    ):
+        return jsonify({"error": "restaurant_ids must be 1-100 integer IDs."}), 400
+    if restaurant_ids is not None:
+        restaurant_ids = list(dict.fromkeys(restaurant_ids))
+
     with _classify_lock:
         if _classify_state["running"]:
             return jsonify({"error": "A classification run is already running."}), 409
         _classify_state.update(
-            running=True, total=None, done=0, succeeded=0, failed=0,
+            running=True, cancel_requested=False, total=None, done=0,
+            succeeded=0, failed=0,
             cost=0.0, current=None, recent=[], summary=None, error=None,
+            provider=provider,
+            billing={
+                "claude": "claude_subscription",
+                "codex": "chatgpt_subscription",
+            }.get(provider, "api"),
         )
+        _classify_cancel.clear()
     threading.Thread(
         target=_classify_worker,
-        args=(bool(payload.get("all")),),
+        args=(bool(payload.get("all")), restaurant_ids, requested_provider),
         daemon=True,
     ).start()
     return jsonify({"started": True}), 202
+
+
+@app.post("/api/classify/stop")
+def stop_classify() -> object:
+    """Request a safe stop after the currently active restaurant finishes."""
+    with _classify_lock:
+        if not _classify_state["running"]:
+            return jsonify({"error": "No classification run is active."}), 409
+        _classify_state["cancel_requested"] = True
+        _classify_cancel.set()
+    return jsonify({"stopping": True}), 202
 
 
 @app.get("/api/classify/status")

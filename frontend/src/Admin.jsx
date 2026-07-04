@@ -1,11 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import DishModal from "./DishModal.jsx";
 import RatingBadge from "./RatingBadge.jsx";
-import { FreshnessBadge, OpenStatusBadge, isMenuStale } from "./RestaurantMeta.jsx";
+import {
+  FreshnessBadge,
+  OpenStatusBadge,
+  isMenuStale,
+  relativeDate,
+} from "./RestaurantMeta.jsx";
 
 // The pipeline dashboard (admin view). Talks only to our own backend
 // (proxied /api/*), so no keys ever reach the browser. The consumer-facing
 // view lives in Explore.jsx.
+
+// Display names for the classification providers. "auto" walks claude then
+// codex (subscriptions only, failing over on usage limits); the metered
+// Anthropic API runs only when explicitly selected.
+const PROVIDER_LABELS = {
+  claude: "Claude subscription",
+  codex: "Codex subscription",
+  anthropic: "Anthropic API",
+};
 
 function StatCard({ label, value, hint }) {
   return (
@@ -17,10 +31,33 @@ function StatCard({ label, value, hint }) {
   );
 }
 
+function classificationAgeGroup(value) {
+  if (!value) return "Never classified";
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "Never classified";
+  const ageDays = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+  if (ageDays <= 7) return "Classified in the past 7 days";
+  if (ageDays <= 30) return "Classified 8–30 days ago";
+  return "Classified over 30 days ago";
+}
+
+function classificationDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 // Live progress for a background pipeline job (bulk scrape / bulk classify).
 // `job` is the polled /api/<job>/status payload; classify jobs also carry a
 // running API-cost total and per-restaurant costs.
-function JobProgressPanel({ job, title }) {
+function JobProgressPanel({ job, title, onStop }) {
   if (!job?.running) return null;
   return (
     <section className="mb-6 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm">
@@ -29,21 +66,33 @@ function JobProgressPanel({ job, title }) {
           {title}…{" "}
           {job.total != null ? `${job.done} of ${job.total}` : "preparing"}
         </span>
-        <span className="text-slate-500">
-          <span className="font-semibold text-emerald-700">{job.succeeded} ok</span>
-          {" · "}
-          <span className={job.failed > 0 ? "font-semibold text-amber-700" : ""}>
-            {job.failed} failed
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-slate-500">
+            <span className="font-semibold text-emerald-700">{job.succeeded} ok</span>
+            {" · "}
+            <span className={job.failed > 0 ? "font-semibold text-amber-700" : ""}>
+              {job.failed} failed
+            </span>
+            {job.billing === "api" && job.cost != null && (
+              <>
+                {" · "}
+                <span className="font-semibold text-slate-700">
+                  ~${job.cost.toFixed(2)} so far
+                </span>
+              </>
+            )}
           </span>
-          {job.cost != null && (
-            <>
-              {" · "}
-              <span className="font-semibold text-slate-700">
-                ~${job.cost.toFixed(2)} so far
-              </span>
-            </>
+          {onStop && (
+            <button
+              type="button"
+              onClick={onStop}
+              disabled={job.cancel_requested}
+              className="rounded-lg border border-rose-200 px-3 py-1 text-xs font-bold text-rose-700 hover:bg-rose-50 disabled:cursor-wait disabled:border-slate-200 disabled:text-slate-400"
+            >
+              {job.cancel_requested ? "Stopping…" : "Stop"}
+            </button>
           )}
-        </span>
+        </div>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
         <div
@@ -73,7 +122,8 @@ function JobProgressPanel({ job, title }) {
                     {r.dishes != null
                       ? `${r.dishes} dishes` +
                         (r.veganish != null ? `, ${r.veganish} veganish` : "") +
-                        (r.cost != null ? ` · ~$${r.cost.toFixed(2)}` : "")
+                        (r.cost != null ? ` · ~$${r.cost.toFixed(2)}` : "") +
+                        (r.provider ? ` · ${r.provider}` : "")
                       : `${r.pages} page${r.pages === 1 ? "" : "s"}, ${r.chars} chars, score ${r.score?.toFixed(2)}`}
                   </span>
                 </>
@@ -104,6 +154,8 @@ export default function Admin() {
   const [enriching, setEnriching] = useState(false);
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
+  const [operationalFilter, setOperationalFilter] = useState("all");
+  const [groupBy, setGroupBy] = useState("none");
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [menuText, setMenuText] = useState(null);
   const [menuScore, setMenuScore] = useState(null);
@@ -120,6 +172,8 @@ export default function Admin() {
   const [classifying, setClassifying] = useState(false);
   const [menuQuality, setMenuQuality] = useState([]); // automated audit flags
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [classifierProvider, setClassifierProvider] = useState("auto");
 
   async function loadData() {
     setLoading(true);
@@ -134,6 +188,9 @@ export default function Admin() {
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
       setRestaurants(rData.restaurants);
+      setSelectedIds((current) =>
+        current.filter((id) => rData.restaurants.some((restaurant) => restaurant.id === id))
+      );
       if (cRes.ok) setConfig(await cRes.json());
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
       if (qualityRes.ok) setMenuQuality((await qualityRes.json()).findings || []);
@@ -237,8 +294,11 @@ export default function Admin() {
         else if (data.summary) {
           const s = data.summary;
           setNotice(
-            `Classification: ${s.ok} restaurant(s), ${s.dishes} dishes, ` +
-              `~$${(s.cost ?? 0).toFixed(2)} API cost` +
+            `${s.cancelled ? "Classification stopped" : "Classification"}: ` +
+              `${s.ok} restaurant(s), ${s.dishes} dishes, ` +
+              (s.billing === "api"
+                ? `~$${(s.cost ?? 0).toFixed(2)} API cost`
+                : `via ${PROVIDER_LABELS[s.provider] || "subscription"}`) +
               (s.failed ? `, ${s.failed} failed` : "") +
               "."
           );
@@ -260,7 +320,7 @@ export default function Admin() {
       const res = await fetch("/api/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ provider: classifierProvider }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Classify failed (${res.status})`);
@@ -379,7 +439,10 @@ export default function Admin() {
       const res = await fetch(`/api/${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ restaurant_id: r.id }),
+        body: JSON.stringify({
+          restaurant_id: r.id,
+          ...(action === "classify" ? { provider: classifierProvider } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `${action} failed (${res.status})`);
@@ -389,7 +452,9 @@ export default function Admin() {
               data.failures?.[0] ? ` — ${data.failures[0].error}` : ""
             }`
           : `Reclassified ${r.name}: ${data.dishes} dishes` +
-            (data.cost != null ? ` (~$${data.cost.toFixed(2)} API cost)` : "") +
+            (data.billing === "api"
+              ? ` (~$${data.cost.toFixed(2)} API cost)`
+              : ` via ${PROVIDER_LABELS[data.provider] || "subscription"}`) +
             `.`
       );
       await loadData();
@@ -407,7 +472,57 @@ export default function Admin() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hidden }),
     });
-    if (response.ok) await loadData();
+    if (!response.ok) return;
+    setRestaurants((current) =>
+      current.map((item) =>
+        item.id === restaurant.id
+          ? {
+              ...item,
+              consumer_hidden: hidden ? 1 : 0,
+              is_consumer_venue: !hidden,
+            }
+          : item
+      )
+    );
+    if (hidden) {
+      setSelectedIds((current) => current.filter((id) => id !== restaurant.id));
+    }
+  }
+
+  async function stopClassify() {
+    try {
+      const res = await fetch("/api/classify/stop", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Stop failed (${res.status})`);
+      setClassifyJob((current) =>
+        current ? { ...current, cancel_requested: true } : current
+      );
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function toggleRefreshEnabled(restaurant) {
+    const enabled = !Boolean(restaurant.refresh_enabled);
+    const response = await fetch(
+      `/api/restaurants/${restaurant.id}/refresh-enabled`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }
+    );
+    if (!response.ok) return;
+    setRestaurants((current) =>
+      current.map((item) =>
+        item.id === restaurant.id
+          ? { ...item, refresh_enabled: enabled ? 1 : 0 }
+          : item
+      )
+    );
+    if (!enabled) {
+      setSelectedIds((current) => current.filter((id) => id !== restaurant.id));
+    }
   }
 
   // Data-quality flags: places with no website (scraping fallback needed)
@@ -451,20 +566,213 @@ export default function Admin() {
         .reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
     [restaurants]
   );
+  const resolvedClassifierProvider =
+    classifierProvider === "auto"
+      ? config?.classifier?.resolved
+      : classifierProvider;
+  const classifierUsesApi = resolvedClassifierProvider === "anthropic";
+  const classifierProviderLabel =
+    PROVIDER_LABELS[resolvedClassifierProvider] || "No provider available";
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return restaurants;
-    return restaurants.filter(
-      (r) =>
-        r.name?.toLowerCase().includes(q) ||
-        r.address?.toLowerCase().includes(q)
+    const qualityIds = new Set(menuQuality.map((finding) => finding.restaurant_id));
+    return restaurants.filter((restaurant) => {
+      if (
+        q &&
+        !restaurant.name?.toLowerCase().includes(q) &&
+        !restaurant.address?.toLowerCase().includes(q)
+      ) {
+        return false;
+      }
+      if (operationalFilter === "refresh_on") return Boolean(restaurant.refresh_enabled);
+      if (operationalFilter === "refresh_paused") return !restaurant.refresh_enabled;
+      if (operationalFilter === "needs_menu") {
+        return restaurant.is_consumer_venue && restaurant.website_url && !restaurant.has_menu_text;
+      }
+      if (operationalFilter === "ready_to_classify") {
+        return restaurant.has_menu_text && (restaurant.dish_count || 0) === 0;
+      }
+      if (operationalFilter === "classified") return (restaurant.dish_count || 0) > 0;
+      if (operationalFilter === "stale") return isMenuStale(restaurant.menu_fetched_at);
+      if (operationalFilter === "excluded") return !restaurant.is_consumer_venue;
+      if (operationalFilter === "no_website") return !restaurant.website_url;
+      if (operationalFilter === "quality") return qualityIds.has(restaurant.id);
+      return true;
+    });
+  }, [restaurants, query, operationalFilter, menuQuality]);
+
+  const groupedFiltered = useMemo(() => {
+    if (groupBy === "none") return [{ label: "All restaurants", items: filtered }];
+
+    const labelFor = (restaurant) => {
+      if (groupBy === "refresh") {
+        return restaurant.refresh_enabled ? "Refresh enabled" : "Refresh paused";
+      }
+      if (groupBy === "freshness") {
+        if (!restaurant.has_menu_text) return "No menu stored";
+        return isMenuStale(restaurant.menu_fetched_at)
+          ? "Menu needs refresh"
+          : "Menu current";
+      }
+      if (groupBy === "classification_age") {
+        return classificationAgeGroup(restaurant.last_classified_at);
+      }
+      if (!restaurant.is_consumer_venue) return "Excluded from Explore";
+      if (!restaurant.website_url) return "No website";
+      if (!restaurant.has_menu_text) return "Needs menu scrape";
+      if ((restaurant.dish_count || 0) === 0) return "Ready to classify";
+      return "Classified";
+    };
+
+    const groups = new Map();
+    for (const restaurant of filtered) {
+      const label = labelFor(restaurant);
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(restaurant);
+    }
+    const result = [...groups.entries()].map(([label, items]) => ({
+      label,
+      items:
+        groupBy === "classification_age"
+          ? [...items].sort(
+              (a, b) =>
+                new Date(b.last_classified_at || 0).getTime() -
+                new Date(a.last_classified_at || 0).getTime()
+            )
+          : items,
+    }));
+    if (groupBy === "classification_age") {
+      const order = [
+        "Never classified",
+        "Classified over 30 days ago",
+        "Classified 8–30 days ago",
+        "Classified in the past 7 days",
+      ];
+      result.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
+    }
+    if (groupBy === "refresh") {
+      const order = ["Refresh enabled", "Refresh paused"];
+      result.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
+    }
+    return result;
+  }, [filtered, groupBy]);
+
+  const selectableFiltered = useMemo(
+    () =>
+      filtered.filter(
+        (restaurant) =>
+          restaurant.refresh_enabled && restaurant.is_consumer_venue
+      ),
+    [filtered]
+  );
+  const selectedRestaurants = useMemo(() => {
+    const selected = new Set(selectedIds);
+    return restaurants.filter((restaurant) => selected.has(restaurant.id));
+  }, [restaurants, selectedIds]);
+  const selectedScrapeIds = useMemo(
+    () =>
+      selectedRestaurants
+        .filter((restaurant) => restaurant.website_url)
+        .map((restaurant) => restaurant.id),
+    [selectedRestaurants]
+  );
+  const selectedClassifyIds = useMemo(
+    () =>
+      selectedRestaurants
+        .filter((restaurant) => restaurant.has_menu_text)
+        .map((restaurant) => restaurant.id),
+    [selectedRestaurants]
+  );
+  const selectedClassifyCost = useMemo(
+    () =>
+      selectedRestaurants
+        .filter((restaurant) => restaurant.has_menu_text)
+        .reduce((sum, restaurant) => sum + (restaurant.classify_estimate || 0), 0),
+    [selectedRestaurants]
+  );
+  const allFilteredSelected =
+    selectableFiltered.length > 0 &&
+    selectableFiltered.every((restaurant) => selectedIds.includes(restaurant.id));
+
+  function toggleSelected(id) {
+    setSelectedIds((current) =>
+      current.includes(id)
+        ? current.filter((value) => value !== id)
+        : [...current, id]
     );
-  }, [restaurants, query]);
+  }
+
+  function toggleAllFiltered() {
+    const visibleIds = selectableFiltered.map((restaurant) => restaurant.id);
+    setSelectedIds((current) => {
+      if (visibleIds.every((id) => current.includes(id))) {
+        return current.filter((id) => !visibleIds.includes(id));
+      }
+      return [...new Set([...current, ...visibleIds])];
+    });
+  }
+
+  function toggleGroup(items) {
+    const ids = items
+      .filter((restaurant) => restaurant.refresh_enabled && restaurant.is_consumer_venue)
+      .map((restaurant) => restaurant.id);
+    setSelectedIds((current) => {
+      if (ids.every((id) => current.includes(id))) {
+        return current.filter((id) => !ids.includes(id));
+      }
+      return [...new Set([...current, ...ids])];
+    });
+  }
+
+  async function runSelectedIngest() {
+    if (selectedScrapeIds.length === 0) return;
+    setIngesting(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restaurant_ids: selectedScrapeIds }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Selected scrape failed to start.");
+      setSelectedIds([]);
+      await pollIngest("Selected menu scrape");
+    } catch (error) {
+      setError(error.message);
+      setIngesting(false);
+    }
+  }
+
+  async function runSelectedClassify() {
+    if (selectedClassifyIds.length === 0) return;
+    setClassifying(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurant_ids: selectedClassifyIds,
+          provider: classifierProvider,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Selected classification failed to start.");
+      setSelectedIds([]);
+      await pollClassify();
+    } catch (error) {
+      setError(error.message);
+      setClassifying(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="mx-auto max-w-screen-2xl px-4 py-8">
+      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">VeganFind — Pipeline Dashboard</h1>
@@ -473,7 +781,7 @@ export default function Admin() {
               {config?.city ? ` · ${config.city}, FL` : ""}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <button
               onClick={() => {
                 setAddOpen(true);
@@ -500,16 +808,55 @@ export default function Admin() {
             >
               Refresh stale ({staleMenus})
             </button>
+            <select
+              value={classifierProvider}
+              onChange={(event) => setClassifierProvider(event.target.value)}
+              disabled={classifying}
+              className="rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm font-semibold text-violet-800 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400"
+              aria-label="Classification provider"
+              title="Choose how menu classifications are generated"
+            >
+              <option value="auto">
+                Auto — subscriptions only (
+                {PROVIDER_LABELS[config?.classifier?.resolved] ||
+                  "none available"}
+                )
+              </option>
+              <option
+                value="claude"
+                disabled={!config?.classifier?.providers?.claude?.available}
+              >
+                Claude subscription
+              </option>
+              <option
+                value="codex"
+                disabled={!config?.classifier?.providers?.codex?.available}
+              >
+                Codex subscription
+              </option>
+              <option
+                value="anthropic"
+                disabled={!config?.classifier?.providers?.anthropic?.available}
+              >
+                Anthropic API
+              </option>
+            </select>
             <button
               onClick={runClassify}
               disabled={classifying || unclassified === 0}
               className="rounded-lg border border-violet-400 px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-              title={`Classify restaurants that have menu text but no dishes yet — est ~$${classifyCostNew.toFixed(2)} total, billed to your Anthropic API key`}
+              title={
+                classifierUsesApi
+                  ? `Classify new menus with Anthropic — est ~$${classifyCostNew.toFixed(2)} API cost`
+                  : `Classify new menus with your ${classifierProviderLabel}`
+              }
             >
               {classifying
                 ? "Classifying…"
                 : `⚡ Classify new (${unclassified}${
-                    unclassified > 0 ? ` · ~$${classifyCostNew.toFixed(2)}` : ""
+                    unclassified > 0 && classifierUsesApi
+                      ? ` · ~$${classifyCostNew.toFixed(2)}`
+                      : ""
                   })`}
             </button>
             <button
@@ -535,11 +882,11 @@ export default function Admin() {
           </div>
           <p
             className="w-full text-right text-xs text-slate-400"
-            title="Sum of per-restaurant estimates based on each menu's size; hover a row's ⚡ reclassify for its individual estimate"
+            title="Current classification provider and estimated spend"
           >
-            re-running all {withMenuText} classifications ≈ $
-            {classifyCostAll.toFixed(2)} · via{" "}
-            <code className="text-slate-500">python classify.py --all</code>
+            Classifier: {classifierProviderLabel}
+            {classifierUsesApi &&
+              ` · re-running all ${withMenuText} ≈ $${classifyCostAll.toFixed(2)}`}
           </p>
         </header>
 
@@ -561,7 +908,11 @@ export default function Admin() {
         )}
 
         <JobProgressPanel job={ingestJob} title="Scraping menus" />
-        <JobProgressPanel job={classifyJob} title="Classifying dishes" />
+        <JobProgressPanel
+          job={classifyJob}
+          title="Classifying dishes"
+          onStop={stopClassify}
+        />
 
         <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
           <StatCard label="Restaurants" value={restaurants.length} />
@@ -659,7 +1010,7 @@ export default function Admin() {
           </section>
         )}
 
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <input
             type="text"
             value={query}
@@ -667,8 +1018,88 @@ export default function Admin() {
             placeholder="Filter by name or address…"
             className="w-full max-w-sm rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
-          <span className="whitespace-nowrap text-sm text-slate-500">
+          <select
+            value={operationalFilter}
+            onChange={(event) => setOperationalFilter(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            aria-label="Filter restaurants by operational status"
+          >
+            <option value="all">Filter: All restaurants</option>
+            <option value="refresh_on">Refresh enabled</option>
+            <option value="refresh_paused">Refresh paused</option>
+            <option value="needs_menu">Needs menu scrape</option>
+            <option value="ready_to_classify">Ready to classify</option>
+            <option value="classified">Classified</option>
+            <option value="stale">Stale menu</option>
+            <option value="quality">Quality warning</option>
+            <option value="excluded">Excluded from Explore</option>
+            <option value="no_website">No website</option>
+          </select>
+          <select
+            value={groupBy}
+            onChange={(event) => setGroupBy(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            aria-label="Group restaurants"
+          >
+            <option value="none">Group: None</option>
+            <option value="refresh">Group by refresh status</option>
+            <option value="pipeline">Group by pipeline stage</option>
+            <option value="freshness">Group by menu freshness</option>
+            <option value="classification_age">Group by last classified</option>
+          </select>
+          {(query || operationalFilter !== "all" || groupBy !== "none") && (
+            <button
+              onClick={() => {
+                setQuery("");
+                setOperationalFilter("all");
+                setGroupBy("none");
+              }}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800 hover:underline"
+            >
+              Reset view
+            </button>
+          )}
+          <span className="ml-auto whitespace-nowrap text-sm text-slate-500">
             {filtered.length} shown
+          </span>
+        </div>
+
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+          <span className="mr-1 text-sm font-semibold text-slate-700">
+            {selectedIds.length} selected
+          </span>
+          <button
+            onClick={runSelectedIngest}
+            disabled={selectedScrapeIds.length === 0 || ingesting || classifying}
+            className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+          >
+            Scrape menus ({selectedScrapeIds.length})
+          </button>
+          <button
+            onClick={runSelectedClassify}
+            disabled={selectedClassifyIds.length === 0 || classifying || ingesting}
+            className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+            title={
+              classifierUsesApi
+                ? `Estimated API cost: ~$${selectedClassifyCost.toFixed(2)}`
+                : `Uses your ${classifierProviderLabel}`
+            }
+          >
+            Reclassify ({selectedClassifyIds.length}
+            {classifierUsesApi
+              ? ` · ~$${selectedClassifyCost.toFixed(2)}`
+              : ` · ${classifierProviderLabel}`})
+          </button>
+          {selectedIds.length > 0 && (
+            <button
+              onClick={() => setSelectedIds([])}
+              className="ml-auto text-xs font-semibold text-slate-500 hover:text-slate-800 hover:underline"
+            >
+              Clear selection
+            </button>
+          )}
+          <span className="w-full text-[11px] text-slate-400 sm:ml-auto sm:w-auto">
+            Paused restaurants cannot be selected; one-off row actions still work.
           </span>
         </div>
 
@@ -681,23 +1112,94 @@ export default function Admin() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full min-w-[1680px] text-left text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
+                    <th className="w-10 px-3 py-3 text-center font-medium">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredSelected}
+                        onChange={toggleAllFiltered}
+                        disabled={selectableFiltered.length === 0}
+                        title="Select all refresh-enabled restaurants in the filtered results"
+                        aria-label="Select all filtered restaurants"
+                        className="h-4 w-4 rounded border-slate-300 accent-emerald-600"
+                      />
+                    </th>
                     <th className="px-4 py-3 font-medium">Name</th>
+                    <th className="px-4 py-3 text-center font-medium">Refresh</th>
                     <th className="px-4 py-3 font-medium">Rating</th>
                     <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 font-medium">Veg?</th>
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
-                    <th className="px-4 py-3 font-medium">Menu text</th>
+                    <th className="px-4 py-3 font-medium">Menu score</th>
+                    <th className="px-4 py-3 font-medium">Last classified</th>
                     <th className="px-4 py-3 font-medium">Vegan options</th>
-                    <th className="px-4 py-3 font-medium">Actions</th>
+                    <th className="sticky right-0 z-10 min-w-[430px] border-l border-slate-200 bg-slate-50 px-4 py-3 font-medium shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)]">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filtered.map((r) => (
-                    <tr key={r.place_id} className="hover:bg-slate-50">
+                  {groupedFiltered.map((group) => {
+                    const groupSelectable = group.items.filter(
+                      (restaurant) =>
+                        restaurant.refresh_enabled && restaurant.is_consumer_venue
+                    );
+                    const groupSelected =
+                      groupSelectable.length > 0 &&
+                      groupSelectable.every((restaurant) =>
+                        selectedIds.includes(restaurant.id)
+                      );
+                    return (
+                      <Fragment key={group.label}>
+                        {groupBy !== "none" && (
+                          <tr className="bg-slate-100/90">
+                            <td colSpan={12} className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={groupSelected}
+                                  onChange={() => toggleGroup(group.items)}
+                                  disabled={groupSelectable.length === 0}
+                                  aria-label={`Select group ${group.label}`}
+                                  className="h-4 w-4 rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed"
+                                />
+                                <span className="text-xs font-bold uppercase tracking-wide text-slate-600">
+                                  {group.label}
+                                </span>
+                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
+                                  {group.items.length}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        {group.items.map((r) => (
+                    <tr
+                      key={r.place_id}
+                      className={`group hover:bg-slate-50 ${
+                        r.refresh_enabled ? "" : "bg-slate-50/70 text-slate-400"
+                      }`}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.includes(r.id)}
+                          onChange={() => toggleSelected(r.id)}
+                          disabled={!r.refresh_enabled || !r.is_consumer_venue}
+                          title={
+                            !r.refresh_enabled
+                              ? "Enable refreshes before selecting this restaurant"
+                              : !r.is_consumer_venue
+                                ? "Non-consumer venues are excluded from batch jobs"
+                                : "Select restaurant for a batch action"
+                          }
+                          aria-label={`Select ${r.name}`}
+                          className="h-4 w-4 rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed"
+                        />
+                      </td>
                       <td
                         className="px-4 py-3 font-medium text-slate-900"
                         title={r.editorial_summary || ""}
@@ -713,6 +1215,22 @@ export default function Admin() {
                             ⓘ
                           </span>
                         )}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <label className="inline-flex cursor-pointer items-center gap-2" title={r.refresh_enabled ? "Included in bulk refresh jobs" : "Paused from bulk refresh jobs"}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(r.refresh_enabled)}
+                            onChange={() => toggleRefreshEnabled(r)}
+                            className="h-4 w-4 rounded border-slate-300 accent-emerald-600"
+                            aria-label={`Enable refreshes for ${r.name}`}
+                          />
+                          <span className={`text-[10px] font-bold uppercase tracking-wide ${
+                            r.refresh_enabled ? "text-emerald-700" : "text-slate-400"
+                          }`}>
+                            {r.refresh_enabled ? "on" : "paused"}
+                          </span>
+                        </label>
                       </td>
                       <td className="px-4 py-3">
                         <RatingBadge
@@ -757,15 +1275,38 @@ export default function Admin() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {r.has_menu_text ? (
-                          <button
-                            onClick={() => openMenu(r)}
-                            className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                        {r.menu_score != null ? (
+                          <span
+                            className={`inline-flex min-w-12 justify-center rounded-full px-2 py-0.5 text-xs font-bold tabular-nums ${
+                              r.menu_score >= 0.75
+                                ? "bg-emerald-100 text-emerald-800"
+                                : r.menu_score_is_menu
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-rose-100 text-rose-700"
+                            }`}
+                            title={r.menu_score_reason || "Menu-likeness score from 0 to 1"}
                           >
-                            view
-                          </button>
+                            {r.menu_score.toFixed(2)}
+                          </span>
                         ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
+                      <td className="min-w-40 px-4 py-3">
+                        {r.last_classified_at ? (
+                          <div
+                            className="text-xs text-slate-700"
+                            title={new Date(r.last_classified_at).toLocaleString()}
+                          >
+                            <div className="font-medium">
+                              {classificationDate(r.last_classified_at)}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-slate-400">
+                              {relativeDate(r.last_classified_at)}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-xs font-medium text-amber-600">Never</span>
                         )}
                       </td>
                       <td className="px-4 py-3">
@@ -785,8 +1326,20 @@ export default function Admin() {
                           <span className="text-xs text-slate-300">—</span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3">
+                      <td className="sticky right-0 z-[1] min-w-[430px] whitespace-nowrap border-l border-slate-100 bg-white px-4 py-3 shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)] group-hover:bg-slate-50">
                         <div className="flex gap-1.5">
+                          <button
+                            onClick={() => openMenu(r)}
+                            disabled={!r.has_menu_text}
+                            title={
+                              r.has_menu_text
+                                ? "View the stored menu text and menu score"
+                                : "No menu text has been stored"
+                            }
+                            className="rounded border border-emerald-200 px-2 py-0.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-300"
+                          >
+                            view menu
+                          </button>
                           <button
                             onClick={() => toggleVisibility(r)}
                             disabled={!r.is_consumer_venue && !r.consumer_hidden}
@@ -824,9 +1377,11 @@ export default function Admin() {
                             disabled={rowBusy !== null || !r.has_menu_text}
                             title={
                               r.has_menu_text
-                                ? `Re-run Claude dish classification (est ~$${(
-                                    r.classify_estimate ?? 0.1
-                                  ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars of menu)`
+                                ? classifierUsesApi
+                                  ? `Re-run classification with Anthropic (est ~$${(
+                                      r.classify_estimate ?? 0.1
+                                    ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars)`
+                                  : `Re-run classification with your ${classifierProviderLabel}`
                                 : "No menu text to classify"
                             }
                             className="rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -841,18 +1396,31 @@ export default function Admin() {
                               title={
                                 r.last_classify_cost != null
                                   ? "Actual cost of the last classification run"
-                                  : "Estimate from menu size — updates to the actual cost after a run"
+                                  : PROVIDER_LABELS[r.last_classify_provider] &&
+                                      r.last_classify_provider !== "anthropic"
+                                    ? `Last classified with ${PROVIDER_LABELS[r.last_classify_provider]}`
+                                    : classifierUsesApi
+                                      ? "Estimate from menu size"
+                                      : `Uses your ${classifierProviderLabel}`
                               }
                             >
                               {r.last_classify_cost != null
                                 ? `$${r.last_classify_cost.toFixed(2)}`
-                                : `~$${(r.classify_estimate ?? 0).toFixed(2)} est`}
+                                : PROVIDER_LABELS[r.last_classify_provider] &&
+                                    r.last_classify_provider !== "anthropic"
+                                  ? r.last_classify_provider
+                                  : classifierUsesApi
+                                    ? `~$${(r.classify_estimate ?? 0).toFixed(2)} est`
+                                    : "subscription"}
                             </span>
                           )}
                         </div>
                       </td>
                     </tr>
-                  ))}
+                        ))}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 
@@ -208,6 +209,9 @@ export default function DishModal({ restaurant, onClose }) {
                       {d.raw_description}
                     </div>
                   )}
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    <DietaryBadges dish={d} includeMeals />
+                  </div>
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}

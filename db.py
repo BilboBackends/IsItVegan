@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
     lng             REAL,
     last_scraped_at TEXT,
     consumer_hidden INTEGER NOT NULL DEFAULT 0,
+    refresh_enabled INTEGER NOT NULL DEFAULT 1,
     -- Structured food signals from Google Places (New) Place Details.
     -- Nullable: Google doesn't populate these for every restaurant.
     serves_vegetarian INTEGER,   -- 1 / 0 / NULL (unknown)
@@ -85,7 +86,13 @@ CREATE TABLE IF NOT EXISTS classifications (
     reasoning     TEXT,
     source_id     INTEGER REFERENCES sources(id),
     model_version TEXT,
-    created_at    TEXT
+    created_at    TEXT,
+    dairy_status  TEXT NOT NULL DEFAULT 'unclear',
+    gluten_status TEXT NOT NULL DEFAULT 'unclear',
+    nut_status    TEXT NOT NULL DEFAULT 'unclear',
+    protein_level TEXT NOT NULL DEFAULT 'unclear',
+    meal_types    TEXT NOT NULL DEFAULT '[]',
+    key_ingredients TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS reports (
@@ -124,6 +131,7 @@ def connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
 _MIGRATIONS = {
     "restaurants": {
         "consumer_hidden": "INTEGER NOT NULL DEFAULT 0",
+        "refresh_enabled": "INTEGER NOT NULL DEFAULT 1",
         "serves_vegetarian": "INTEGER",
         "price_level": "TEXT",
         "primary_type": "TEXT",
@@ -137,11 +145,23 @@ _MIGRATIONS = {
         # Actual $ cost of the last classification run (estimated from token
         # usage) — shown next to the per-row reclassify button in Admin.
         "last_classify_cost": "REAL",
+        "last_classify_provider": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
         # "vegan options" count (a list of vegan sodas isn't the product).
         "category": "TEXT",
+    },
+    "classifications": {
+        # Ingredient-level discovery attributes inferred alongside the vegan
+        # verdict. JSON arrays keep the SQLite MVP flexible for multi-value
+        # meal and ingredient tags.
+        "dairy_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "gluten_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "nut_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "protein_level": "TEXT NOT NULL DEFAULT 'unclear'",
+        "meal_types": "TEXT NOT NULL DEFAULT '[]'",
+        "key_ingredients": "TEXT NOT NULL DEFAULT '[]'",
     },
     "reports": {
         "dish_name": "TEXT",
@@ -221,6 +241,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
             """
             SELECT r.id, r.name, r.address, r.place_id, r.website_url,
                    r.lat, r.lng, r.last_scraped_at, r.consumer_hidden,
+                   r.refresh_enabled,
                    r.serves_vegetarian, r.price_level, r.primary_type,
                    r.editorial_summary, r.rating, r.user_rating_count,
                    r.open_now, r.opening_hours, r.hours_enriched_at,
@@ -235,7 +256,13 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
                          AND (s.url IS NULL OR s.url != 'google:editorial_summary')
                    ) AS menu_chars,
-                   r.last_classify_cost,
+                   (
+                       SELECT MAX(c.created_at)
+                       FROM classifications c
+                       JOIN dishes d ON d.id = c.dish_id
+                       WHERE d.restaurant_id = r.id
+                   ) AS last_classified_at,
+                   r.last_classify_cost, r.last_classify_provider,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -299,13 +326,20 @@ def update_food_signals(
 
 
 def record_classify_cost(
-    restaurant_id: int, cost: float, db_path: str | None = None
+    restaurant_id: int,
+    cost: float | None,
+    provider: str | None = None,
+    db_path: str | None = None,
 ) -> None:
-    """Remember what the last classification run actually cost ($)."""
+    """Remember the provider and API cost of the last classification run."""
     with connect(db_path) as conn:
         conn.execute(
-            "UPDATE restaurants SET last_classify_cost = ? WHERE id = ?",
-            (round(cost, 3), restaurant_id),
+            """
+            UPDATE restaurants
+            SET last_classify_cost = ?, last_classify_provider = ?
+            WHERE id = ?
+            """,
+            (None if cost is None else round(cost, 3), provider, restaurant_id),
         )
 
 
@@ -317,6 +351,18 @@ def set_restaurant_hidden(
         cur = conn.execute(
             "UPDATE restaurants SET consumer_hidden = ? WHERE id = ?",
             (int(hidden), restaurant_id),
+        )
+    return cur.rowcount > 0
+
+
+def set_restaurant_refresh_enabled(
+    restaurant_id: int, enabled: bool, db_path: str | None = None
+) -> bool:
+    """Include/exclude a restaurant from bulk scrape/classify refresh jobs."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE restaurants SET refresh_enabled = ? WHERE id = ?",
+            (int(enabled), restaurant_id),
         )
     return cur.rowcount > 0
 
@@ -465,6 +511,12 @@ def insert_classification(
     source_id: int | None,
     model_version: str,
     created_at: str,
+    dairy_status: str = "unclear",
+    gluten_status: str = "unclear",
+    nut_status: str = "unclear",
+    protein_level: str = "unclear",
+    meal_types: list[str] | None = None,
+    key_ingredients: list[str] | None = None,
     db_path: str | None = None,
 ) -> None:
     with connect(db_path) as conn:
@@ -472,9 +524,11 @@ def insert_classification(
             """
             INSERT INTO classifications
                 (dish_id, verdict, confidence, reasoning, source_id,
-                 model_version, created_at)
+                 model_version, created_at, dairy_status, gluten_status,
+                 nut_status, protein_level, meal_types, key_ingredients)
             VALUES (:dish_id, :verdict, :confidence, :reasoning, :source_id,
-                    :model_version, :created_at)
+                    :model_version, :created_at, :dairy_status, :gluten_status,
+                    :nut_status, :protein_level, :meal_types, :key_ingredients)
             """,
             {
                 "dish_id": dish_id,
@@ -484,6 +538,12 @@ def insert_classification(
                 "source_id": source_id,
                 "model_version": model_version,
                 "created_at": created_at,
+                "dairy_status": dairy_status,
+                "gluten_status": gluten_status,
+                "nut_status": nut_status,
+                "protein_level": protein_level,
+                "meal_types": json.dumps(meal_types or []),
+                "key_ingredients": json.dumps(key_ingredients or []),
             },
         )
 
@@ -522,7 +582,9 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
             """
             SELECT d.id, d.name, d.raw_description, d.price, d.category,
                    c.verdict, c.confidence, c.reasoning, c.model_version,
-                   c.created_at AS classified_at
+                   c.created_at AS classified_at,
+                   c.dairy_status, c.gluten_status, c.nut_status,
+                   c.protein_level, c.meal_types, c.key_ingredients
             FROM dishes d
             LEFT JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -543,7 +605,11 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
             """,
             (restaurant_id,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for row in out:
+        row["meal_types"] = _decode_json_list(row.get("meal_types"))
+        row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
+    return out
 
 
 def list_all_dishes(db_path: str | None = None) -> list[dict]:
@@ -560,6 +626,8 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    d.price, d.category,
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at,
+                   c.dairy_status, c.gluten_status, c.nut_status,
+                   c.protein_level, c.meal_types, c.key_ingredients,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
                    r.serves_vegetarian,
@@ -587,6 +655,8 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
     out = [dict(r) for r in rows]
     for row in out:
         row["opening_hours"] = _decode_json_list(row.get("opening_hours"))
+        row["meal_types"] = _decode_json_list(row.get("meal_types"))
+        row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
     return out
 
 

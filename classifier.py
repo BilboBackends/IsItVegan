@@ -18,23 +18,20 @@ vegan when it isn't) are worse than false negatives, and the prompt says so.
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
+from classification_providers import PRICES as _PRICES
+from classification_providers import run_provider
 from config import settings
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). Override with
 # CLASSIFIER_MODEL: claude-opus-4-8 for max accuracy, claude-haiku-4-5 for
 # cheapest (no thinking/effort support).
-MODEL = os.environ.get("CLASSIFIER_MODEL", "claude-sonnet-5")
+MODEL = settings.anthropic_classifier_model
 
-# $/MTok (input, output) for cost reporting. Approximate list prices.
-_PRICES = {
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-}
+# $/MTok pricing lives in classification_providers.PRICES (imported above) so
+# the transports and these estimates can't drift apart.
 
 # Bound per-restaurant cost: menus longer than this are truncated. Matches
 # the scraper's combined-pages cap (scraper._MAX_COMBINED_CHARS) — multi-page
@@ -54,7 +51,9 @@ def estimate_cost(menu_chars: int) -> float:
     chars = min(max(menu_chars, 0), _MAX_MENU_CHARS)
     in_price, out_price = _PRICES.get(MODEL, (3.0, 15.0))
     input_tokens = 1_200 + chars / 4
-    output_tokens = 250 + (chars / 120) * 70
+    # Dietary attributes, meal tags, and key ingredients make each extracted
+    # dish somewhat larger than the original vegan-only response.
+    output_tokens = 250 + (chars / 120) * 110
     return round(
         (input_tokens * in_price + output_tokens * out_price) / 1_000_000, 3
     )
@@ -99,6 +98,35 @@ _SCHEMA = {
                         "(max ~8 words) supporting the verdict. Empty string "
                         "if the dish name itself is the evidence.",
                     },
+                    "dairy_status": {
+                        "type": "string",
+                        "enum": ["free", "contains", "unclear"],
+                    },
+                    "gluten_status": {
+                        "type": "string",
+                        "enum": ["free", "contains", "unclear"],
+                    },
+                    "nut_status": {
+                        "type": "string",
+                        "enum": ["free", "contains", "unclear"],
+                        "description": "Tree nuts and peanuts.",
+                    },
+                    "protein_level": {
+                        "type": "string",
+                        "enum": ["high", "moderate", "low", "unclear"],
+                    },
+                    "meal_types": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["breakfast", "brunch", "lunch", "dinner", "snack"],
+                        },
+                    },
+                    "key_ingredients": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Up to 8 normalized searchable ingredients.",
+                    },
                 },
                 "required": [
                     "name",
@@ -109,6 +137,12 @@ _SCHEMA = {
                     "confidence",
                     "reasoning",
                     "evidence",
+                    "dairy_status",
+                    "gluten_status",
+                    "nut_status",
+                    "protein_level",
+                    "meal_types",
+                    "key_ingredients",
                 ],
                 "additionalProperties": False,
             },
@@ -147,6 +181,22 @@ addresses, marketing copy.
 beer, wine, cocktails), dessert, or food. Users looking for vegan options \
 mean food; a vegan soda is not a "vegan option".
 - evidence must be a verbatim excerpt of the provided text, not paraphrase.
+- Also classify ingredient-level dietary attributes for future search:
+  - dairy_status, gluten_status, and nut_status are free, contains, or unclear.
+    Use free only when the listed ingredients and normal preparation support it;
+    use unclear when sauces, breading, shared ingredients, or missing detail make
+    the answer uncertain. "Free" describes apparent ingredients, never kitchen
+    cross-contact or allergy safety. nut_status includes peanuts and tree nuts.
+  - protein_level is high only when a substantial protein source is central to
+    the serving (for example tofu, tempeh, seitan, beans, lentils, eggs, meat, or
+    fish), moderate for a meaningful but smaller source, low when little protein
+    is apparent, and unclear when the menu provides too little information.
+  - meal_types contains every plausible context from breakfast, brunch, lunch,
+    dinner, and snack. Use menu section headings and ordinary dish usage.
+  - key_ingredients contains up to 8 concise lowercase ingredient names useful
+    for search, such as tofu, seitan, mushroom, chickpea, or rice. Do not invent
+    ingredients merely because they are typical; only include menu-supported or
+    strongly inherent ingredients.
 - Be terse: reasoning is one short sentence, evidence a short phrase. No \
 elaboration — the verdict, a reason, done.
 - Extract every dish on the menu, not a sample."""
@@ -162,6 +212,12 @@ class ClassifiedDish:
     confidence: float
     reasoning: str
     evidence: str
+    dairy_status: str = "unclear"
+    gluten_status: str = "unclear"
+    nut_status: str = "unclear"
+    protein_level: str = "unclear"
+    meal_types: list[str] = field(default_factory=list)
+    key_ingredients: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -174,6 +230,116 @@ class ClassificationResult:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_estimate: float = 0.0  # USD, approximate list price
+    provider: str = "anthropic"
+    billing: str = "api"
+
+
+def result_from_data(
+    data: dict,
+    *,
+    provider: str,
+    model: str,
+    billing: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cost_estimate: float = 0.0,
+    stop_reason: str | None = None,
+) -> ClassificationResult:
+    """Validate provider/file-exchange JSON into the shared result model."""
+    dishes: list[ClassifiedDish] = []
+    raw_dishes = data.get("dishes", []) if isinstance(data, dict) else []
+    for dish in raw_dishes:
+        if not isinstance(dish, dict):
+            continue
+        verdict = dish.get("verdict")
+        if verdict not in VERDICTS:
+            continue
+        confidence = dish.get("confidence")
+        confidence = (
+            max(0.0, min(1.0, float(confidence)))
+            if isinstance(confidence, (int, float))
+            else 0.0
+        )
+        name = (dish.get("name") or "").strip()
+        if not name:
+            continue
+        category = dish.get("category")
+        if category not in ("food", "drink", "dessert"):
+            category = "food"
+        dietary_values = {"free", "contains", "unclear"}
+        protein_values = {"high", "moderate", "low", "unclear"}
+        meal_values = {"breakfast", "brunch", "lunch", "dinner", "snack"}
+        # Guard the types, not just the values: a hand-edited exchange file
+        # with "key_ingredients": "tofu, rice" would otherwise be sliced into
+        # one-character "ingredients".
+        raw_meals = dish.get("meal_types")
+        if not isinstance(raw_meals, list):
+            raw_meals = []
+        raw_ingredients = dish.get("key_ingredients")
+        if not isinstance(raw_ingredients, list):
+            raw_ingredients = []
+        meal_types = [value for value in raw_meals if value in meal_values]
+        key_ingredients = [
+            str(value).strip().lower()[:80]
+            for value in raw_ingredients[:8]
+            if str(value).strip()
+        ]
+        dishes.append(
+            ClassifiedDish(
+                name=name[:200],
+                description=(dish.get("description") or None),
+                price=(dish.get("price") or None),
+                category=category,
+                verdict=verdict,
+                confidence=confidence,
+                reasoning=dish.get("reasoning") or "",
+                evidence=dish.get("evidence") or "",
+                dairy_status=(
+                    dish.get("dairy_status")
+                    if dish.get("dairy_status") in dietary_values
+                    else "unclear"
+                ),
+                gluten_status=(
+                    dish.get("gluten_status")
+                    if dish.get("gluten_status") in dietary_values
+                    else "unclear"
+                ),
+                nut_status=(
+                    dish.get("nut_status")
+                    if dish.get("nut_status") in dietary_values
+                    else "unclear"
+                ),
+                protein_level=(
+                    dish.get("protein_level")
+                    if dish.get("protein_level") in protein_values
+                    else "unclear"
+                ),
+                meal_types=list(dict.fromkeys(meal_types)),
+                key_ingredients=list(dict.fromkeys(key_ingredients)),
+            )
+        )
+    if not dishes:
+        return ClassificationResult(
+            ok=False,
+            error="No valid dishes extracted",
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_estimate=cost_estimate,
+            provider=provider,
+            billing=billing,
+        )
+    return ClassificationResult(
+        ok=True,
+        dishes=dishes,
+        model=model,
+        stop_reason=stop_reason,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_estimate=cost_estimate,
+        provider=provider,
+        billing=billing,
+    )
 
 
 def classify_menu(
@@ -183,12 +349,15 @@ def classify_menu(
     editorial_summary: str | None = None,
     serves_vegetarian: bool | None = None,
     mock: bool = False,
+    provider: str | None = None,
 ) -> ClassificationResult:
     """Extract + classify all dishes in menu_text. Never raises."""
     if mock:
         return ClassificationResult(
             ok=True,
             model="mock",
+            provider="mock",
+            billing="none",
             dishes=[
                 ClassifiedDish(
                     name="Falafel Wrap",
@@ -200,12 +369,15 @@ def classify_menu(
                     reasoning="All listed ingredients are plant-based; wrap "
                     "bread is typically vegan.",
                     evidence="Falafel Wrap - chickpea, tahini, lettuce, tomato $9",
+                    dairy_status="free",
+                    gluten_status="contains",
+                    nut_status="free",
+                    protein_level="moderate",
+                    meal_types=["lunch", "dinner"],
+                    key_ingredients=["chickpea", "tahini", "lettuce", "tomato"],
                 )
             ],
         )
-
-    if not settings.anthropic_api_key:
-        return ClassificationResult(ok=False, error="ANTHROPIC_API_KEY not set")
 
     context_bits = [f"Restaurant: {restaurant_name}"]
     if serves_vegetarian is True:
@@ -228,94 +400,38 @@ def classify_menu(
     )
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        # Stream so large menus can emit a full dish list — big izakaya/BBQ
-        # menus overflow a non-streaming response cap (observed live), and a
-        # truncated dish list must never be stored.
-        kwargs = dict(
-            model=MODEL,
-            max_tokens=64000,
-            system=_SYSTEM,
-            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
-            messages=[{"role": "user", "content": prompt}],
+        response = run_provider(
+            requested=provider,
+            system_prompt=_SYSTEM,
+            user_prompt=prompt,
+            schema=_SCHEMA,
         )
-        if "haiku" not in MODEL:
-            # Cap thinking/verbosity spend — output tokens dominate the cost
-            # of this task. (Haiku doesn't support adaptive thinking/effort.)
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"]["effort"] = "medium"
-        with client.messages.stream(**kwargs) as stream:
-            resp = stream.get_final_message()
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
-
-    usage = getattr(resp, "usage", None)
-    in_tok = getattr(usage, "input_tokens", 0) or 0
-    out_tok = getattr(usage, "output_tokens", 0) or 0
-    in_price, out_price = _PRICES.get(MODEL, (5.0, 25.0))
-    cost = (in_tok * in_price + out_tok * out_price) / 1_000_000
-
-    if resp.stop_reason == "max_tokens":
-        # Truncated output can't be trusted as complete JSON; log, don't store.
+    if not response.ok or response.data is None:
         return ClassificationResult(
             ok=False,
-            error="Output hit max_tokens (menu too large?)",
-            stop_reason=resp.stop_reason,
+            error=response.error or "Classification provider failed",
+            model=response.model,
+            stop_reason=response.stop_reason,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            cost_estimate=response.cost_estimate,
+            provider=response.provider,
+            billing=response.billing,
         )
-    if resp.stop_reason == "refusal":
-        return ClassificationResult(
-            ok=False, error="Model refused", stop_reason=resp.stop_reason
-        )
+    data = response.data
+    in_tok = response.input_tokens
+    out_tok = response.output_tokens
+    cost = response.cost_estimate
 
-    import json
-
-    text = next((b.text for b in resp.content if b.type == "text"), "")
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return ClassificationResult(ok=False, error=f"Malformed JSON: {exc}")
-
-    dishes: list[ClassifiedDish] = []
-    for d in data.get("dishes", []):
-        verdict = d.get("verdict")
-        if verdict not in VERDICTS:
-            continue  # schema should prevent this; belt and suspenders
-        conf = d.get("confidence")
-        conf = max(0.0, min(1.0, float(conf))) if isinstance(conf, (int, float)) else 0.0
-        name = (d.get("name") or "").strip()
-        if not name:
-            continue
-        category = d.get("category")
-        if category not in ("food", "drink", "dessert"):
-            category = "food"
-        dishes.append(
-            ClassifiedDish(
-                name=name[:200],
-                description=(d.get("description") or None),
-                price=(d.get("price") or None),
-                category=category,
-                verdict=verdict,
-                confidence=conf,
-                reasoning=d.get("reasoning") or "",
-                evidence=d.get("evidence") or "",
-            )
-        )
-
-    if not dishes:
-        return ClassificationResult(
-            ok=False,
-            error="No dishes extracted",
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            cost_estimate=cost,
-        )
-    return ClassificationResult(
-        ok=True,
-        dishes=dishes,
-        stop_reason=resp.stop_reason,
+    return result_from_data(
+        data,
+        provider=response.provider,
+        model=response.model,
+        billing=response.billing,
         input_tokens=in_tok,
         output_tokens=out_tok,
         cost_estimate=cost,
+        stop_reason=response.stop_reason,
     )

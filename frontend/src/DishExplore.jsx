@@ -2,11 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
+import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, relativeDate } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import {
+  dishMatchesQuery,
+  dishSearchScore,
+  parseDishQuery,
+  queryIntentLabels,
+} from "./dishSearch.js";
 
 const MAITLAND = { lat: 28.6278, lng: -81.3631 };
 const RANGES = [
@@ -64,17 +71,6 @@ function splitReasoning(value) {
     reasoning: value.slice(0, index),
     evidence: value.slice(index + marker.length),
   };
-}
-
-function searchScore(dish, query) {
-  if (!query) return 0;
-  const name = (dish.name || "").toLowerCase();
-  const restaurant = (dish.restaurant_name || "").toLowerCase();
-  if (name === query) return 4;
-  if (name.startsWith(query)) return 3;
-  if (name.includes(query)) return 2;
-  if (restaurant.includes(query)) return 1;
-  return 0;
 }
 
 export default function DishExplore({
@@ -190,6 +186,9 @@ export default function DishExplore({
     [dishes, origin]
   );
 
+  const parsedQuery = useMemo(() => parseDishQuery(query), [query]);
+  const queryIntent = useMemo(() => queryIntentLabels(parsedQuery), [parsedQuery]);
+
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     const out = dishesWithDistance.filter((dish) => {
@@ -199,23 +198,14 @@ export default function DishExplore({
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) return false;
       if (maxMiles > 0 && (dish.distance == null || dish.distance > maxMiles)) return false;
       if (!q) return true;
-      const haystack = [
-        dish.name,
-        dish.raw_description,
-        dish.restaurant_name,
-        dish.primary_type,
-        dish.address,
-        dish.reasoning,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return q.split(/\s+/).every((word) => haystack.includes(word));
+      return dishMatchesQuery(dish, parsedQuery);
     });
 
     return out.sort((a, b) => {
       if (q) {
-        const relevance = searchScore(b, q) - searchScore(a, q);
+        const relevance =
+          dishSearchScore(b, query, parsedQuery) -
+          dishSearchScore(a, query, parsedQuery);
         if (relevance) return relevance;
       }
       if (sortBy === "restaurant") {
@@ -239,7 +229,17 @@ export default function DishExplore({
       }
       return a.name.localeCompare(b.name) || a.restaurant_name.localeCompare(b.restaurant_name);
     });
-  }, [dishesWithDistance, query, verdict, category, restaurant, cuisine, maxMiles, sortBy]);
+  }, [
+    dishesWithDistance,
+    query,
+    parsedQuery,
+    verdict,
+    category,
+    restaurant,
+    cuisine,
+    maxMiles,
+    sortBy,
+  ]);
 
   const selectedDish = dishesWithDistance.find((dish) => dish.id === selectedDishId) || null;
 
@@ -447,7 +447,7 @@ export default function DishExplore({
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Try ‘tacos’, ‘tofu’, or ‘Thai’…"
+                placeholder="Try ‘vegan pizza’ or ‘high protein breakfast’…"
                 className="w-full rounded-full border border-stone-300 bg-white py-2 pl-9 pr-4 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
               />
             </div>
@@ -517,6 +517,24 @@ export default function DishExplore({
                 </button>
               ))}
             </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+            <span className="font-semibold">Try:</span>
+            {["Pad thai", "Vegan pizza", "High protein breakfast", "Tofu", "Seitan", "Mushroom"].map((example) => (
+              <button
+                key={example}
+                type="button"
+                onClick={() => setQuery(example)}
+                className="rounded-full border border-stone-200 bg-white px-2.5 py-1 hover:border-emerald-400 hover:text-emerald-700"
+              >
+                {example}
+              </button>
+            ))}
+            {queryIntent.length > 0 && (
+              <span className="ml-auto font-medium text-emerald-700">
+                Understood: {queryIntent.join(" · ")}
+              </span>
+            )}
           </div>
           <div className="flex gap-2 overflow-x-auto pb-0.5">
             {CATEGORIES.map((item) => {
@@ -696,6 +714,7 @@ export default function DishExplore({
                     </button>
                     {cuisine && <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-600">{cuisine}</span>}
                     <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-500">{categoryOf(dish)}</span>
+                    <DietaryBadges dish={dish} includeMeals />
                     <RatingBadge
                       rating={dish.rating}
                       userRatingCount={dish.user_rating_count}

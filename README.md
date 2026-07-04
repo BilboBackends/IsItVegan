@@ -57,14 +57,23 @@ Two top-level views:
   search, distance/geolocation controls, synchronized cards and map pins, and
   dish-detail modals. Google ratings and rating counts appear on restaurant
   cards, map popups, food results, and dish modals after enrichment.
-  Food search also supports distance ranges / nearest-first sorting, shareable
-  dish details, correction reports, and map popups that preview matching dish
-  names. Hearts save dishes and restaurants locally in the browser under the
+  Food search also understands combined intent such as `vegan pizza`,
+  `high protein breakfast`, and dietary phrases such as `dairy free`, while
+  indexing normalized ingredients such as tofu, seitan, and mushroom. It
+  supports distance ranges / nearest-first sorting, shareable dish details,
+  correction reports, and matching map pins. Hearts save dishes and restaurants locally in the browser under the
   **Saved** tab—no account required. Menu freshness and current opening status
   are shown wherever that restaurant context is useful.
 - **Admin** (`#admin`) — the pipeline dashboard: run discovery / enrichment /
   ingestion, refresh stale menus and Google opening data, review correction
   reports, add restaurants by name, and inspect scraped menu text and scores.
+  Each restaurant has a persistent refresh-enabled checkbox; paused rows are
+  excluded from bulk jobs but retain their one-off debug actions. Select any
+  combination of enabled rows to run a background menu scrape or Claude
+  reclassification with live progress and a pre-run cost estimate. Operational
+  filters cover enabled/paused refreshes, missing or stale menus, classification
+  stage, quality warnings, excluded venues, and missing websites; rows can be
+  grouped by refresh status, pipeline stage, or menu freshness.
 
 Consumer views automatically exclude Google place types that are not food
 venues (for example convenience stores, gas stations, and supermarkets).
@@ -171,10 +180,13 @@ homepage-only. All are photo-fallback candidates. In the current Maitland set,
 ### Phase 3 — dish classification
 
 Sends each scraped menu (plus Google's editorial summary and vegetarian flag
-as context) to Claude, which extracts every dish and classifies it into the
+as context) to the selected model, which extracts every dish and classifies it into the
 CLAUDE.md verdict taxonomy — `vegan` / `likely_vegan` / `vegan_adaptable` /
 `not_vegan` / `unclear` — with a confidence score, reasoning, and a verbatim
-menu excerpt as evidence. Structured outputs guarantee valid JSON; truncated
+menu excerpt as evidence. The same pass stores ingredient-level dairy,
+gluten, and nut status; protein level; likely meal contexts; and normalized
+key ingredients so discovery can improve without another model call.
+Structured outputs guarantee valid JSON; truncated
 or refused responses are logged as failures, never stored. False positives
 (calling a dish vegan when it isn't) are treated as the worst failure mode.
 
@@ -188,8 +200,17 @@ python classify.py --mock --dry-run    # no API call, canned result
 Dishes upsert on (restaurant_id, name); each run adds a new classification row
 (model version + timestamp), and reads always use the latest verdict. The
 dashboard shows per-restaurant vegan-option counts and a per-dish verdict view.
-Model defaults to Claude Opus (accuracy-critical); override with
-`CLASSIFIER_MODEL`.
+Dietary fields are menu-text inferences, not allergy or cross-contact
+certification. Anthropic defaults to Claude Sonnet; override it with
+`ANTHROPIC_CLASSIFIER_MODEL` (the older `CLASSIFIER_MODEL` remains an alias).
+
+Classification transport is provider-independent. `CLASSIFIER_PROVIDER=auto`
+prefers the locally installed Codex CLI when it is logged in with ChatGPT, then
+uses Anthropic when Codex is unavailable before a request starts. Set it to
+`codex` or `anthropic` to force one provider; the Admin provider selector can
+also choose per run. Codex runs are ephemeral and read-only and use JSON-schema
+structured output. A failed/limited Codex request never silently falls through
+to a billable Anthropic retry.
 
 ## Discovery configuration (`.env`)
 

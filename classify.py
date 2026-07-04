@@ -23,11 +23,16 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import db
 from classifier import classify_menu
+from venue_filter import is_consumer_food_venue
 
 _VEGANISH = ("vegan", "likely_vegan", "vegan_adaptable")
 
 
-def _targets(restaurant_id: int | None, do_all: bool) -> list[dict]:
+def _targets(
+    restaurant_id: int | None,
+    do_all: bool,
+    restaurant_ids: list[int] | None = None,
+) -> list[dict]:
     all_restaurants = {r["id"]: r for r in db.list_restaurants()}
     if restaurant_id is not None:
         r = all_restaurants.get(restaurant_id)
@@ -36,10 +41,20 @@ def _targets(restaurant_id: int | None, do_all: bool) -> list[dict]:
         if not r.get("has_menu_text"):
             raise SystemExit(f"Restaurant {restaurant_id} has no menu text.")
         return [r]
+    eligible = [
+        r
+        for r in all_restaurants.values()
+        if r.get("has_menu_text")
+        and r.get("refresh_enabled", 1)
+        and is_consumer_food_venue(r)
+    ]
+    if restaurant_ids is not None:
+        requested = set(restaurant_ids)
+        return [r for r in eligible if r["id"] in requested]
     if do_all:
-        return [r for r in all_restaurants.values() if r.get("has_menu_text")]
+        return eligible
     needing = set(db.restaurants_needing_classification())
-    return [r for r in all_restaurants.values() if r["id"] in needing]
+    return [r for r in eligible if r["id"] in needing]
 
 
 def run(
@@ -47,27 +62,37 @@ def run(
     do_all: bool = False,
     dry_run: bool = False,
     mock: bool = False,
+    restaurant_ids: list[int] | None = None,
     on_progress=None,
+    should_stop=None,
+    provider: str | None = None,
 ) -> dict:
     """Classify targets; on_progress (optional) receives event dicts so a live
     caller (the Admin dashboard) can show progress and per-restaurant cost:
     {"total": N}, {"current": name}, {"result": {..., "cost": $}}.
+    should_stop (optional) is checked between restaurants so a background job
+    can stop without interrupting an API response or a database write.
     """
     def _emit(event: dict) -> None:
         if on_progress is not None:
             on_progress(event)
 
     db.init_db()
-    targets = _targets(restaurant_id, do_all)
+    targets = _targets(restaurant_id, do_all, restaurant_ids)
     _emit({"total": len(targets)})
     print(f"Classifying {len(targets)} restaurant(s)...\n")
 
-    now = datetime.now(timezone.utc).isoformat()
     ok_count = fail_count = dish_count = 0
     total_cost = 0.0
     failures: list[tuple[str, str]] = []
+    cancelled = False
+    used_provider = provider
+    used_billing = None
 
     for r in targets:
+        if should_stop is not None and should_stop():
+            cancelled = True
+            break
         _emit({"current": r["name"]})
         source = db.get_menu_text(r["id"])
         if source is None:
@@ -84,7 +109,10 @@ def run(
                 else bool(r["serves_vegetarian"])
             ),
             mock=mock,
+            provider=provider,
         )
+        used_provider = result.provider
+        used_billing = result.billing
         if not result.ok:
             fail_count += 1
             failures.append((r["name"], result.error or "unknown"))
@@ -104,16 +132,32 @@ def run(
         print(
             f"  [ok]   {r['name']}: {len(result.dishes)} dishes, "
             f"{veganish} vegan/likely/adaptable (food, excl. drinks)"
-            f"  [~${result.cost_estimate:.2f}]"
+            + (
+                f"  [~${result.cost_estimate:.2f}]"
+                if result.billing == "api"
+                else f"  [{result.provider} subscription]"
+            )
         )
         _emit({"result": {
             "name": r["name"], "ok": True, "dishes": len(result.dishes),
-            "veganish": veganish, "cost": round(result.cost_estimate, 3),
+            "veganish": veganish,
+            "cost": (
+                round(result.cost_estimate, 3)
+                if result.billing == "api"
+                else None
+            ),
+            "provider": result.provider,
+            "billing": result.billing,
         }})
 
         if dry_run:
             continue
-        db.record_classify_cost(r["id"], result.cost_estimate)
+        classified_at = datetime.now(timezone.utc).isoformat()
+        db.record_classify_cost(
+            r["id"],
+            result.cost_estimate if result.billing == "api" else None,
+            provider=result.provider,
+        )
         # Fresh snapshot: drop old dishes so items that left the menu don't
         # linger with stale verdicts.
         db.delete_dishes_for_restaurant(r["id"])
@@ -133,11 +177,18 @@ def run(
                 reasoning=reasoning,
                 source_id=source["id"],
                 model_version=result.model,
-                created_at=now,
+                created_at=classified_at,
+                dairy_status=d.dairy_status,
+                gluten_status=d.gluten_status,
+                nut_status=d.nut_status,
+                protein_level=d.protein_level,
+                meal_types=d.meal_types,
+                key_ingredients=d.key_ingredients,
             )
 
+    status = "Stopped" if cancelled else "Done"
     print(
-        f"\nDone. {ok_count} restaurants classified ({dish_count} dishes), "
+        f"\n{status}. {ok_count} restaurants classified ({dish_count} dishes), "
         f"{fail_count} failed. Estimated API cost: ~${total_cost:.2f}."
     )
     if failures:
@@ -147,7 +198,9 @@ def run(
     if dry_run:
         print("[dry-run] Nothing written to the database.")
     return {"ok": ok_count, "failed": fail_count, "dishes": dish_count,
-            "cost": round(total_cost, 2), "failures": failures}
+            "cost": round(total_cost, 2), "failures": failures,
+            "cancelled": cancelled, "provider": used_provider,
+            "billing": used_billing}
 
 
 def main() -> None:
@@ -158,9 +211,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--mock", action="store_true",
                         help="Use a canned result instead of calling the API.")
+    parser.add_argument(
+        "--provider", default=None,
+        help="auto | claude | codex | anthropic, or a comma-separated "
+        "priority list (e.g. claude,codex). auto = claude, codex, anthropic.",
+    )
     args = parser.parse_args()
     run(restaurant_id=args.restaurant_id, do_all=args.all,
-        dry_run=args.dry_run, mock=args.mock)
+        dry_run=args.dry_run, mock=args.mock, provider=args.provider)
 
 
 if __name__ == "__main__":

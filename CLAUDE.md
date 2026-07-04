@@ -84,7 +84,8 @@ sources
   id, dish_id, type (text|image), content (excerpt or image_url), fetched_at
 
 classifications
-  id, dish_id, verdict, confidence, reasoning, source_id, model_version, created_at
+  id, dish_id, verdict, confidence, reasoning, source_id, model_version, created_at,
+  dairy_status, gluten_status, nut_status, protein_level, meal_types, key_ingredients
 ```
 
 ## API Key Handling
