@@ -8,6 +8,7 @@ import { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, relativeDate } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import { parsePriceValue } from "./price.js";
 import {
   dishMatchesQuery,
   dishSearchScore,
@@ -85,6 +86,8 @@ export default function DishExplore({
   const [query, setQuery] = useState("");
   const [verdict, setVerdict] = useState("all");
   const [category, setCategory] = useState("food");
+  const [servingRole, setServingRole] = useState("all"); // all | meal | side
+  const [maxPrice, setMaxPrice] = useState(0); // 0 = any; else dollar cap
   const [restaurant, setRestaurant] = useState("all");
   const [cuisine, setCuisine] = useState("all");
   const [sortBy, setSortBy] = useState("name");
@@ -182,6 +185,7 @@ export default function DishExplore({
           dish.lat != null && dish.lng != null
             ? haversineMiles(origin, { lat: dish.lat, lng: dish.lng })
             : null,
+        priceValue: parsePriceValue(dish.price),
       })),
     [dishes, origin]
   );
@@ -194,6 +198,12 @@ export default function DishExplore({
     const out = dishesWithDistance.filter((dish) => {
       if (verdict !== "all" && dish.verdict !== verdict) return false;
       if (categoryOf(dish) !== category) return false;
+      // Legacy/unclear roles count as meals so unclassified data isn't hidden.
+      if (category === "food" && servingRole === "meal" && dish.serving_role === "side") return false;
+      if (category === "food" && servingRole === "side" && dish.serving_role !== "side") return false;
+      // A price cap only keeps dishes we can PRICE — "Market Price" and
+      // unpriced items can't honestly claim to be under $15.
+      if (maxPrice > 0 && (dish.priceValue == null || dish.priceValue > maxPrice)) return false;
       if (restaurant !== "all" && String(dish.restaurant_id) !== restaurant) return false;
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) return false;
       if (maxMiles > 0 && (dish.distance == null || dish.distance > maxMiles)) return false;
@@ -227,6 +237,12 @@ export default function DishExplore({
       if (sortBy === "distance") {
         return (a.distance ?? 1e9) - (b.distance ?? 1e9) || a.name.localeCompare(b.name);
       }
+      if (sortBy === "price") {
+        return (
+          (a.priceValue ?? 1e9) - (b.priceValue ?? 1e9) ||
+          a.name.localeCompare(b.name)
+        );
+      }
       return a.name.localeCompare(b.name) || a.restaurant_name.localeCompare(b.restaurant_name);
     });
   }, [
@@ -235,6 +251,8 @@ export default function DishExplore({
     parsedQuery,
     verdict,
     category,
+    servingRole,
+    maxPrice,
     restaurant,
     cuisine,
     maxMiles,
@@ -252,7 +270,8 @@ export default function DishExplore({
       ? null
       : restaurants.find((item) => String(item.id) === restaurant);
   const hasActiveFilters =
-    Boolean(query.trim()) || verdict !== "all" || restaurant !== "all" || cuisine !== "all" || maxMiles > 0;
+    Boolean(query.trim()) || verdict !== "all" || servingRole !== "all" ||
+    maxPrice > 0 || restaurant !== "all" || cuisine !== "all" || maxMiles > 0;
 
   const mappedRestaurants = useMemo(() => {
     const groups = new Map();
@@ -394,6 +413,7 @@ export default function DishExplore({
     setCuisine("all");
     setQuery("");
     setVerdict("all");
+    setServingRole("all");
     setMaxMiles(0);
     setSortBy("name");
     setMobileView("list");
@@ -416,6 +436,8 @@ export default function DishExplore({
     setQuery("");
     setVerdict("all");
     setCategory("food");
+    setServingRole("all");
+    setMaxPrice(0);
     setRestaurant("all");
     setCuisine("all");
     setMaxMiles(0);
@@ -476,6 +498,32 @@ export default function DishExplore({
                 <option key={label} value={label}>{label}</option>
               ))}
             </select>
+            {category === "food" && (
+              <select
+                value={servingRole}
+                onChange={(e) => setServingRole(e.target.value)}
+                className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+                aria-label="Filter by meals or sides"
+                title="Full meals vs sides and small plates; items not yet reclassified count as meals"
+              >
+                <option value="all">Meals & sides</option>
+                <option value="meal">Meals only</option>
+                <option value="side">Sides & small plates</option>
+              </select>
+            )}
+            <select
+              value={maxPrice}
+              onChange={(e) => setMaxPrice(Number(e.target.value))}
+              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              aria-label="Filter by price"
+              title="Caps by listed menu price; unpriced items are hidden while a cap is active"
+            >
+              <option value={0}>Any price</option>
+              <option value={10}>Under $10</option>
+              <option value={15}>Under $15</option>
+              <option value={20}>Under $20</option>
+              <option value={30}>Under $30</option>
+            </select>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
@@ -486,6 +534,7 @@ export default function DishExplore({
               <option value="confidence">Sort: Confidence</option>
               <option value="rating">Sort: Restaurant rating</option>
               <option value="distance">Sort: Closest</option>
+              <option value="price">Sort: Cheapest</option>
             </select>
             <select
               value={maxMiles}
@@ -542,7 +591,10 @@ export default function DishExplore({
               return (
                 <button
                   key={item.key}
-                  onClick={() => setCategory(item.key)}
+                  onClick={() => {
+                    setCategory(item.key);
+                    if (item.key !== "food") setServingRole("all");
+                  }}
                   className={`shrink-0 rounded-full px-3 py-1.5 text-sm font-bold transition ${
                     category === item.key
                       ? "bg-stone-800 text-white"
@@ -610,6 +662,26 @@ export default function DishExplore({
                   <span aria-hidden="true" className="text-base leading-none">×</span>
                 </button>
               )}
+              {servingRole !== "all" && (
+                <button
+                  onClick={() => setServingRole("all")}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+                  title="Remove meal/side filter"
+                >
+                  Serving: {servingRole === "meal" ? "Meals only" : "Sides & small plates"}
+                  <span aria-hidden="true" className="text-base leading-none">×</span>
+                </button>
+              )}
+              {maxPrice > 0 && (
+                <button
+                  onClick={() => setMaxPrice(0)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+                  title="Remove price filter"
+                >
+                  Price: Under ${maxPrice}
+                  <span aria-hidden="true" className="text-base leading-none">×</span>
+                </button>
+              )}
               {cuisine !== "all" && (
                 <button
                   onClick={() => setCuisine("all")}
@@ -662,7 +734,7 @@ export default function DishExplore({
             <>
           <div className="mb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wide text-stone-400">
             <span>{shown.length.toLocaleString()} menu item{shown.length === 1 ? "" : "s"}</span>
-            {(query || verdict !== "all" || category !== "food" || restaurant !== "all" || cuisine !== "all" || maxMiles > 0) && (
+            {(query || verdict !== "all" || category !== "food" || servingRole !== "all" || restaurant !== "all" || cuisine !== "all" || maxMiles > 0) && (
               <button onClick={clearFilters} className="normal-case tracking-normal text-emerald-700 hover:underline">
                 Clear filters
               </button>

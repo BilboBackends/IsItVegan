@@ -184,8 +184,12 @@ as context) to the selected model, which extracts every dish and classifies it i
 CLAUDE.md verdict taxonomy — `vegan` / `likely_vegan` / `vegan_adaptable` /
 `not_vegan` / `unclear` — with a confidence score, reasoning, and a verbatim
 menu excerpt as evidence. The same pass stores ingredient-level dairy,
-gluten, and nut status; protein level; likely meal contexts; and normalized
-key ingredients so discovery can improve without another model call.
+gluten, and nut status; protein level; meal-versus-side serving role; likely
+meal contexts; and normalized key ingredients so discovery can improve without
+another model call. Restaurant totals count full vegan meals separately from
+sides and small plates; drinks and desserts are excluded from both totals.
+Older classifications default to `unclear` and remain in the meal count until
+that restaurant is reclassified with the expanded schema.
 Structured outputs guarantee valid JSON; truncated
 or refused responses are logged as failures, never stored. False positives
 (calling a dish vegan when it isn't) are treated as the worst failure mode.

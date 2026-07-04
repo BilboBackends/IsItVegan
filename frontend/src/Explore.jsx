@@ -10,6 +10,7 @@ import {
   relativeDate,
 } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import { priceLevelRank, priceLevelSymbol } from "./price.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
 // distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
@@ -47,7 +48,16 @@ const SORTS = [
   { key: "vegan", label: "Most vegan options" },
   { key: "rating", label: "Top rated" },
   { key: "distance", label: "Closest" },
+  { key: "price", label: "Cheapest" },
   { key: "name", label: "Name A–Z" },
+];
+
+// Max Google price tier to show; 0 = any. Only three tiers exist locally.
+const PRICE_TIERS = [
+  { tier: 0, label: "Any price" },
+  { tier: 1, label: "$ inexpensive" },
+  { tier: 2, label: "$$ or less" },
+  { tier: 3, label: "$$$ or less" },
 ];
 
 const RANGES = [
@@ -76,6 +86,7 @@ export default function Explore({
   const [query, setQuery] = useState("");
   const [cuisine, setCuisine] = useState("all");
   const [sortBy, setSortBy] = useState("vegan");
+  const [priceTier, setPriceTier] = useState(0);
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
@@ -165,11 +176,25 @@ export default function Explore({
     if (maxMiles > 0) {
       out = out.filter((r) => r.distance != null && r.distance <= maxMiles);
     }
+    if (priceTier > 0) {
+      // Only restaurants Google has priced can honestly match a price cap.
+      out = out.filter((r) => {
+        const rank = priceLevelRank(r.price_level);
+        return rank != null && rank <= priceTier;
+      });
+    }
     return [...out].sort((a, b) => {
       if (sortBy === "vegan") {
         if ((b.vegan_options || 0) !== (a.vegan_options || 0))
           return (b.vegan_options || 0) - (a.vegan_options || 0);
         return (a.distance ?? 1e9) - (b.distance ?? 1e9);
+      }
+      if (sortBy === "price") {
+        return (
+          (priceLevelRank(a.price_level) ?? 9) -
+            (priceLevelRank(b.price_level) ?? 9) ||
+          (b.vegan_options || 0) - (a.vegan_options || 0)
+        );
       }
       if (sortBy === "distance") return (a.distance ?? 1e9) - (b.distance ?? 1e9);
       if (sortBy === "rating") {
@@ -180,7 +205,7 @@ export default function Explore({
       }
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enriched, query, cuisine, maxMiles, sortBy]);
+  }, [enriched, query, cuisine, maxMiles, sortBy, priceTier]);
 
   const showMap = isDesktop || view === "map";
 
@@ -251,13 +276,20 @@ export default function Explore({
       title.textContent = r.name || "";
       const sub = document.createElement("div");
       sub.style.cssText = "color:#57534e;font-size:12px;text-transform:capitalize";
-      sub.textContent = prettyType(r.primary_type) || "restaurant";
+      sub.textContent =
+        (prettyType(r.primary_type) || "restaurant") +
+        (priceLevelSymbol(r.price_level)
+          ? ` · ${priceLevelSymbol(r.price_level)}`
+          : "");
       const count = document.createElement("div");
       count.style.cssText = `margin-top:4px;font-size:13px;font-weight:600;color:${
         (r.vegan_options || 0) > 0 ? "#047857" : "#57534e"
       }`;
       count.textContent = analyzed
-        ? `${r.vegan_options || 0} vegan food option${r.vegan_options === 1 ? "" : "s"}`
+        ? `${r.vegan_options || 0} vegan meal${r.vegan_options === 1 ? "" : "s"}` +
+          ((r.vegan_sides || 0) > 0
+            ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
+            : "")
         : "Menu not analyzed yet";
       el.append(title, sub, count);
       const googleRating = ratingText(r.rating, r.user_rating_count);
@@ -395,6 +427,14 @@ export default function Explore({
       </div>
       <div className="mt-0.5 text-xs capitalize text-stone-500">
         {prettyType(r.primary_type) || "restaurant"}
+        {priceLevelSymbol(r.price_level) && (
+          <span
+            className="ml-2 font-semibold text-stone-600"
+            title="Google price level"
+          >
+            {priceLevelSymbol(r.price_level)}
+          </span>
+        )}
         {r.serves_vegetarian === 1 && (
           <span className="ml-2 font-medium text-emerald-700">
             ✓ veg-friendly
@@ -424,7 +464,8 @@ export default function Explore({
                 : "bg-stone-100 text-stone-500"
             }`}
           >
-            {r.vegan_options} vegan option{r.vegan_options === 1 ? "" : "s"}
+            {r.vegan_options} vegan meal{r.vegan_options === 1 ? "" : "s"}
+            {(r.vegan_sides || 0) > 0 && ` +${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`}
           </span>
         ) : (
           <span className="text-xs italic text-stone-400">
@@ -461,6 +502,10 @@ export default function Explore({
 
   const analyzed = restaurants.filter((r) => r.dish_count > 0).length;
   const totalVegan = restaurants.reduce((s, r) => s + (r.vegan_options || 0), 0);
+  const totalVeganSides = restaurants.reduce(
+    (sum, restaurant) => sum + (restaurant.vegan_sides || 0),
+    0
+  );
 
   return (
     <div className={`mx-auto max-w-7xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
@@ -472,7 +517,8 @@ export default function Explore({
         </h1>
         <p className="mt-2 text-sm text-stone-500">
           <span className="font-semibold text-stone-700">{totalVegan}</span>{" "}
-          vegan food options found across{" "}
+          vegan meals
+          {totalVeganSides > 0 && ` plus ${totalVeganSides} sides/small plates`} found across{" "}
           <span className="font-semibold text-stone-700">{analyzed}</span>{" "}
           analyzed menus — every verdict backed by menu evidence, even when the
           restaurant never says "vegan".
@@ -519,6 +565,19 @@ export default function Explore({
             {RANGES.map((r) => (
               <option key={r.miles} value={r.miles}>
                 {r.label}
+              </option>
+            ))}
+          </select>
+          <select
+            value={priceTier}
+            onChange={(e) => setPriceTier(Number(e.target.value))}
+            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            aria-label="Filter by price level"
+            title="Google price level; restaurants without one are hidden while a price filter is active"
+          >
+            {PRICE_TIERS.map((p) => (
+              <option key={p.tier} value={p.tier}>
+                {p.label}
               </option>
             ))}
           </select>

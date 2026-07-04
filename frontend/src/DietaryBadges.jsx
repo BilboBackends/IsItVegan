@@ -6,13 +6,36 @@ const BADGES = [
 
 export default function DietaryBadges({ dish, includeMeals = false }) {
   const badges = BADGES.filter(([field]) => dish[field] === "free").map(
-    ([field, label, style]) => ({ key: field, label, style })
+    ([field, label, style]) => ({
+      key: field,
+      label,
+      style,
+      title: "Inferred from menu ingredients; confirm allergy and cross-contact needs with the restaurant",
+    })
   );
+  // A side/accompaniment is not a meal — surface that up front so a bag of
+  // chips can't masquerade as a dinner option.
+  if (dish.serving_role === "meal") {
+    badges.unshift({
+      key: "serving-role",
+      label: "Full meal",
+      style: "bg-emerald-100 text-emerald-800",
+      title: "Classified as substantial enough to be a main meal",
+    });
+  } else if (dish.serving_role === "side") {
+    badges.unshift({
+      key: "serving-role",
+      label: "Side / small plate",
+      style: "bg-stone-200 text-stone-700",
+      title: "Classified as an accompaniment, snack, or small plate rather than a full meal",
+    });
+  }
   if (dish.protein_level === "high") {
     badges.push({
       key: "protein",
       label: "High protein",
       style: "bg-violet-50 text-violet-800",
+      title: "Inferred from the listed ingredients and typical serving",
     });
   }
   if (includeMeals) {
@@ -21,6 +44,7 @@ export default function DietaryBadges({ dish, includeMeals = false }) {
         key: `meal-${meal}`,
         label: meal,
         style: "bg-stone-100 text-stone-600 capitalize",
+        title: `Suitable as ${meal}`,
       });
     }
   }
@@ -31,7 +55,7 @@ export default function DietaryBadges({ dish, includeMeals = false }) {
         <span
           key={badge.key}
           className={`rounded-full px-2.5 py-1 text-xs font-medium ${badge.style}`}
-          title="Inferred from menu ingredients; confirm allergy and cross-contact needs with the restaurant"
+          title={badge.title}
         >
           {badge.label}
         </span>

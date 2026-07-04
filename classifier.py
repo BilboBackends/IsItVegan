@@ -115,6 +115,12 @@ _SCHEMA = {
                         "type": "string",
                         "enum": ["high", "moderate", "low", "unclear"],
                     },
+                    "serving_role": {
+                        "type": "string",
+                        "enum": ["meal", "side", "unclear"],
+                        "description": "Whether this is a full meal or a "
+                        "side/accompaniment/snack.",
+                    },
                     "meal_types": {
                         "type": "array",
                         "items": {
@@ -141,6 +147,7 @@ _SCHEMA = {
                     "gluten_status",
                     "nut_status",
                     "protein_level",
+                    "serving_role",
                     "meal_types",
                     "key_ingredients",
                 ],
@@ -191,6 +198,15 @@ mean food; a vegan soda is not a "vegan option".
     the serving (for example tofu, tempeh, seitan, beans, lentils, eggs, meat, or
     fish), moderate for a meaningful but smaller source, low when little protein
     is apparent, and unclear when the menu provides too little information.
+  - serving_role separates real meals from accompaniments so "vegan options"
+    can't be inflated by a bag of chips. meal = substantial enough to be
+    someone's main (sandwich, entree, burger, pizza, large bowl/salad);
+    side = accompaniment, snack, or small plate (fries, chips, side salad,
+    bread, hummus cup, most starters). A large/shareable appetizer that could
+    serve as a main counts as meal. Menu section headings ("Sides",
+    "Starters") are strong evidence. Drinks and desserts: use unclear unless
+    obviously side-like. When genuinely torn, prefer side over meal — an
+    understated count is better than an inflated one.
   - meal_types contains every plausible context from breakfast, brunch, lunch,
     dinner, and snack. Use menu section headings and ordinary dish usage.
   - key_ingredients contains up to 8 concise lowercase ingredient names useful
@@ -216,6 +232,7 @@ class ClassifiedDish:
     gluten_status: str = "unclear"
     nut_status: str = "unclear"
     protein_level: str = "unclear"
+    serving_role: str = "unclear"  # meal | side | unclear
     meal_types: list[str] = field(default_factory=list)
     key_ingredients: list[str] = field(default_factory=list)
 
@@ -314,6 +331,11 @@ def result_from_data(
                     if dish.get("protein_level") in protein_values
                     else "unclear"
                 ),
+                serving_role=(
+                    dish.get("serving_role")
+                    if dish.get("serving_role") in ("meal", "side", "unclear")
+                    else "unclear"
+                ),
                 meal_types=list(dict.fromkeys(meal_types)),
                 key_ingredients=list(dict.fromkeys(key_ingredients)),
             )
@@ -373,6 +395,7 @@ def classify_menu(
                     gluten_status="contains",
                     nut_status="free",
                     protein_level="moderate",
+                    serving_role="meal",
                     meal_types=["lunch", "dinner"],
                     key_ingredients=["chickpea", "tahini", "lettuce", "tomato"],
                 )

@@ -591,6 +591,10 @@ export default function Admin() {
     () => restaurants.reduce((sum, r) => sum + (r.vegan_options || 0), 0),
     [restaurants]
   );
+  const totalVeganSides = useMemo(
+    () => restaurants.reduce((sum, r) => sum + (r.vegan_sides || 0), 0),
+    [restaurants]
+  );
   const staleMenus = useMemo(
     () => restaurants.filter((restaurant) => isMenuStale(restaurant.menu_fetched_at)).length,
     [restaurants]
@@ -975,9 +979,9 @@ export default function Admin() {
             hint="per Google"
           />
           <StatCard
-            label="Vegan options found"
+            label="Vegan meals found"
             value={totalVeganOptions}
-            hint="food only — drinks excluded"
+            hint={`${totalVeganSides} sides/small plates tracked separately`}
           />
         </div>
 
@@ -1236,7 +1240,7 @@ export default function Admin() {
                     <th className="px-4 py-3 font-medium">Website</th>
                     <th className="px-4 py-3 font-medium">Menu score</th>
                     <th className="px-4 py-3 font-medium">Last classified</th>
-                    <th className="px-4 py-3 font-medium">Vegan options</th>
+                    <th className="px-4 py-3 font-medium">Vegan meals / sides</th>
                     <th className="sticky right-0 z-10 min-w-[430px] border-l border-slate-200 bg-slate-50 px-4 py-3 font-medium shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)]">
                       Actions
                     </th>
@@ -1421,7 +1425,8 @@ export default function Admin() {
                             }`}
                             title="View dishes and verdicts"
                           >
-                            {r.vegan_options} of {r.dish_count}
+                            {r.vegan_options} meals
+                            {(r.vegan_sides || 0) > 0 && ` · ${r.vegan_sides} sides`}
                           </button>
                         ) : (
                           <span className="text-xs text-slate-300">—</span>

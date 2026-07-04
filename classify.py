@@ -182,6 +182,7 @@ def run(
                 gluten_status=d.gluten_status,
                 nut_status=d.nut_status,
                 protein_level=d.protein_level,
+                serving_role=d.serving_role,
                 meal_types=d.meal_types,
                 key_ingredients=d.key_ingredients,
             )

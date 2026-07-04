@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS classifications (
     gluten_status TEXT NOT NULL DEFAULT 'unclear',
     nut_status    TEXT NOT NULL DEFAULT 'unclear',
     protein_level TEXT NOT NULL DEFAULT 'unclear',
+    serving_role  TEXT NOT NULL DEFAULT 'unclear',  -- meal | side | unclear
     meal_types    TEXT NOT NULL DEFAULT '[]',
     key_ingredients TEXT NOT NULL DEFAULT '[]'
 );
@@ -160,6 +161,9 @@ _MIGRATIONS = {
         "gluten_status": "TEXT NOT NULL DEFAULT 'unclear'",
         "nut_status": "TEXT NOT NULL DEFAULT 'unclear'",
         "protein_level": "TEXT NOT NULL DEFAULT 'unclear'",
+        # meal | side | unclear — keeps "vegan options" from counting a bag
+        # of chips the same as a sandwich.
+        "serving_role": "TEXT NOT NULL DEFAULT 'unclear'",
         "meal_types": "TEXT NOT NULL DEFAULT '[]'",
         "key_ingredients": "TEXT NOT NULL DEFAULT '[]'",
     },
@@ -515,6 +519,7 @@ def insert_classification(
     gluten_status: str = "unclear",
     nut_status: str = "unclear",
     protein_level: str = "unclear",
+    serving_role: str = "unclear",
     meal_types: list[str] | None = None,
     key_ingredients: list[str] | None = None,
     db_path: str | None = None,
@@ -525,10 +530,12 @@ def insert_classification(
             INSERT INTO classifications
                 (dish_id, verdict, confidence, reasoning, source_id,
                  model_version, created_at, dairy_status, gluten_status,
-                 nut_status, protein_level, meal_types, key_ingredients)
+                 nut_status, protein_level, serving_role, meal_types,
+                 key_ingredients)
             VALUES (:dish_id, :verdict, :confidence, :reasoning, :source_id,
                     :model_version, :created_at, :dairy_status, :gluten_status,
-                    :nut_status, :protein_level, :meal_types, :key_ingredients)
+                    :nut_status, :protein_level, :serving_role, :meal_types,
+                    :key_ingredients)
             """,
             {
                 "dish_id": dish_id,
@@ -542,6 +549,7 @@ def insert_classification(
                 "gluten_status": gluten_status,
                 "nut_status": nut_status,
                 "protein_level": protein_level,
+                "serving_role": serving_role,
                 "meal_types": json.dumps(meal_types or []),
                 "key_ingredients": json.dumps(key_ingredients or []),
             },
@@ -584,7 +592,8 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
-                   c.protein_level, c.meal_types, c.key_ingredients
+                   c.protein_level, c.serving_role, c.meal_types,
+                   c.key_ingredients
             FROM dishes d
             LEFT JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -627,7 +636,8 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
-                   c.protein_level, c.meal_types, c.key_ingredients,
+                   c.protein_level, c.serving_role, c.meal_types,
+                   c.key_ingredients,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
                    r.serves_vegetarian,
@@ -756,16 +766,21 @@ def resolve_report(report_id: int, db_path: str | None = None) -> bool:
 
 
 def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
-    """Per restaurant: dish total (all) + per-verdict counts over FOOD only.
+    """Per restaurant: dish total (all) + per-verdict counts over FOOD only,
+    split into meals vs sides.
 
-    Drinks are excluded from by_verdict so "12 vegan options" can't mean
-    12 sodas. NULL category (pre-category rows) is treated as food.
+    Drinks and desserts are excluded from both verdict maps so "12 vegan
+    meals" can't mean sodas or brownies, and sides are counted separately so
+    it can't mean 12 bags of chips either. NULL category (pre-category rows) is treated as food;
+    NULL/'unclear' serving_role (pre-role rows) is treated as a meal so the
+    headline count doesn't collapse before dishes are re-classified.
     """
     with connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT d.restaurant_id, c.verdict,
-                   (d.category IS NULL OR d.category != 'drink') AS is_food,
+                   (d.category IS NULL OR d.category = 'food') AS is_food,
+                   (c.serving_role = 'side') AS is_side,
                    COUNT(*) AS n
             FROM dishes d
             JOIN classifications c ON c.id = (
@@ -774,18 +789,20 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
             )
-            GROUP BY d.restaurant_id, c.verdict, is_food
+            GROUP BY d.restaurant_id, c.verdict, is_food, is_side
             """
         ).fetchall()
     out: dict[int, dict] = {}
     for r in rows:
         entry = out.setdefault(
-            r["restaurant_id"], {"total": 0, "by_verdict": {}}
+            r["restaurant_id"],
+            {"total": 0, "by_verdict": {}, "sides_by_verdict": {}},
         )
         entry["total"] += r["n"]
         if r["is_food"]:
-            entry["by_verdict"][r["verdict"]] = (
-                entry["by_verdict"].get(r["verdict"], 0) + r["n"]
+            bucket = "sides_by_verdict" if r["is_side"] else "by_verdict"
+            entry[bucket][r["verdict"]] = (
+                entry[bucket].get(r["verdict"], 0) + r["n"]
             )
     return out
 

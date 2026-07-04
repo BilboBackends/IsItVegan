@@ -81,8 +81,13 @@ def get_restaurants() -> object:
         r["menu_score_is_menu"] = menu_score.is_menu if menu_score else None
         c = counts.get(r["id"])
         r["dish_count"] = c["total"] if c else 0
+        # Meals only — sides are counted separately so a bag of chips can't
+        # inflate the headline the way a sandwich earns it.
         r["vegan_options"] = (
             sum(c["by_verdict"].get(v, 0) for v in veganish) if c else 0
+        )
+        r["vegan_sides"] = (
+            sum(c["sides_by_verdict"].get(v, 0) for v in veganish) if c else 0
         )
         # Pre-run classification cost estimate from menu size; the actual
         # cost of the last run (if any) rides along as last_classify_cost.

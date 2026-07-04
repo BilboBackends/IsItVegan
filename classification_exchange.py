@@ -101,6 +101,7 @@ def _persist(
             gluten_status=dish.gluten_status,
             nut_status=dish.nut_status,
             protein_level=dish.protein_level,
+            serving_role=dish.serving_role,
             meal_types=dish.meal_types,
             key_ingredients=dish.key_ingredients,
         )

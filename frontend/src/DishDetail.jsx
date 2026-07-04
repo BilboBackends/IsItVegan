@@ -144,6 +144,12 @@ export default function DishDetail({
               <DietaryProfile dish={dish} />
             </div>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-stone-600">
+              {dish.serving_role && dish.serving_role !== "unclear" && (
+                <span>
+                  <strong>Serving:</strong>{" "}
+                  {dish.serving_role === "side" ? "side / small plate" : "full meal"}
+                </span>
+              )}
               {dish.protein_level && (
                 <span><strong>Protein:</strong> {dish.protein_level}</span>
               )}

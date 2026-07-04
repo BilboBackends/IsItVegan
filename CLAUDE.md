@@ -85,7 +85,8 @@ sources
 
 classifications
   id, dish_id, verdict, confidence, reasoning, source_id, model_version, created_at,
-  dairy_status, gluten_status, nut_status, protein_level, meal_types, key_ingredients
+  dairy_status, gluten_status, nut_status, protein_level, serving_role,
+  meal_types, key_ingredients
 ```
 
 ## API Key Handling

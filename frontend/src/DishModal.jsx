@@ -54,12 +54,14 @@ export default function DishModal({ restaurant, onClose }) {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("food");
   const [filter, setFilter] = useState("all");
+  const [servingFilter, setServingFilter] = useState("all");
 
   useEffect(() => {
     if (!restaurant) return;
     setLoading(true);
     setDishes([]);
     setFilter("all");
+    setServingFilter("all");
     fetch(`/api/restaurants/${restaurant.id}/dishes`)
       .then((res) => (res.ok ? res.json() : { dishes: [] }))
       .then((data) => {
@@ -87,11 +89,36 @@ export default function DishModal({ restaurant, onClose }) {
   if (!restaurant) return null;
 
   const active = byCategory[tab] || [];
-  const shown = active.filter((d) => {
+  const verdictShown = active.filter((d) => {
     if (filter === "veganish") return VEGANISH.has(d.verdict);
     if (filter === "not_vegan") return !VEGANISH.has(d.verdict);
     return true;
   });
+  const mealItems = verdictShown.filter((dish) => dish.serving_role !== "side");
+  const sideItems = verdictShown.filter((dish) => dish.serving_role === "side");
+  const shown =
+    tab !== "food" || servingFilter === "all"
+      ? verdictShown
+      : servingFilter === "side"
+        ? sideItems
+        : mealItems;
+  const displayGroups =
+    tab === "food"
+      ? [
+          servingFilter !== "side" && {
+            key: "meal",
+            label: "Full meals",
+            description: "Substantial dishes intended as a main.",
+            items: mealItems,
+          },
+          servingFilter !== "meal" && {
+            key: "side",
+            label: "Sides & small plates",
+            description: "Accompaniments, snacks, starters, and smaller plates.",
+            items: sideItems,
+          },
+        ].filter(Boolean)
+      : [{ key: tab, label: null, description: null, items: shown }];
 
   return (
     <div
@@ -107,8 +134,12 @@ export default function DishModal({ restaurant, onClose }) {
             <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
               <span className="text-sm font-normal text-slate-400">
-                {restaurant.vegan_options} vegan food option
+                {restaurant.vegan_options} vegan meal
                 {restaurant.vegan_options === 1 ? "" : "s"}
+                {restaurant.vegan_sides > 0 &&
+                  ` · ${restaurant.vegan_sides} side${
+                    restaurant.vegan_sides === 1 ? "" : "s"
+                  }`}
               </span>
               <RatingBadge
                 rating={restaurant.rating}
@@ -135,7 +166,10 @@ export default function DishModal({ restaurant, onClose }) {
             return (
               <button
                 key={c.key}
-                onClick={() => setTab(c.key)}
+                onClick={() => {
+                  setTab(c.key);
+                  setServingFilter("all");
+                }}
                 className={`relative -mb-px rounded-t-lg border px-3 py-2 text-sm font-medium transition ${
                   tab === c.key
                     ? "border-slate-200 border-b-white bg-white text-slate-900"
@@ -173,6 +207,31 @@ export default function DishModal({ restaurant, onClose }) {
           ))}
         </div>
 
+        {tab === "food" && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2">
+            <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+              Show
+            </span>
+            {[
+              ["all", "All food", verdictShown.length],
+              ["meal", "Full meals", mealItems.length],
+              ["side", "Sides & small plates", sideItems.length],
+            ].map(([key, label, count]) => (
+              <button
+                key={key}
+                onClick={() => setServingFilter(key)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                  servingFilter === key
+                    ? "bg-slate-800 text-white"
+                    : "border border-slate-200 bg-white text-slate-600 hover:border-slate-400"
+                }`}
+              >
+                {label} <span className="ml-1 opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="overflow-y-auto p-4">
           {loading ? (
             <div className="text-slate-400">Loading…</div>
@@ -183,9 +242,25 @@ export default function DishModal({ restaurant, onClose }) {
               No {tab === "food" ? "food items" : tab + "s"} match this filter.
             </div>
           ) : (
-            <ul className="divide-y divide-slate-100">
-              {shown.map((d) => (
-                <li key={d.id} className="py-3">
+            <div className="space-y-5">
+              {displayGroups.map((group) => {
+                if (group.items.length === 0) return null;
+                return (
+                  <section key={group.key}>
+                    {group.label && (
+                      <div className="mb-1 flex items-end justify-between gap-3 border-b border-slate-200 pb-2">
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-800">{group.label}</h3>
+                          <p className="text-xs text-slate-400">{group.description}</p>
+                        </div>
+                        <span className="shrink-0 text-xs font-semibold text-slate-400">
+                          {group.items.length} item{group.items.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                    )}
+                    <ul className="divide-y divide-slate-100">
+              {group.items.map((d) => (
+                <li key={d.id} className="py-3 first:pt-2">
                   <div className="flex items-baseline justify-between gap-3">
                     <div className="font-medium text-slate-900">
                       {d.name}
@@ -223,7 +298,11 @@ export default function DishModal({ restaurant, onClose }) {
                   </a>
                 </li>
               ))}
-            </ul>
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
           )}
         </div>
         <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
