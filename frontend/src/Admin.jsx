@@ -209,6 +209,11 @@ export default function Admin() {
   const [rowBusy, setRowBusy] = useState(null); // {id, action} while a per-row job runs
   const [addOpen, setAddOpen] = useState(false);
   const [addNames, setAddNames] = useState("");
+  const [resolving, setResolving] = useState(false);
+  const [addResolved, setAddResolved] = useState(null); // [{query, candidates}]
+  const [addSelections, setAddSelections] = useState({}); // query -> place_id | ""
+  const [addIngest, setAddIngest] = useState(true);
+  const [addClassify, setAddClassify] = useState(true);
   const [adding, setAdding] = useState(false);
   const [addResult, setAddResult] = useState(null);
   const [reports, setReports] = useState([]);
@@ -453,23 +458,65 @@ export default function Admin() {
     }
   }
 
-  async function submitAddNames() {
+  // Step 1 of the add flow: resolve names to candidates — nothing written.
+  async function resolveAddNames() {
     const names = addNames
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
     if (names.length === 0) return;
+    setResolving(true);
+    setAddResult(null);
+    try {
+      const res = await fetch("/api/restaurants/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Resolve failed (${res.status})`);
+      setAddResolved(data.resolved);
+      // Preselect the best plausible match per name; weak-overlap-only
+      // results start unselected so a wrong match needs a deliberate click.
+      const selections = {};
+      for (const entry of data.resolved) {
+        const best = entry.candidates.find((c) => c.name_overlap);
+        selections[entry.query] = best ? best.place_id : "";
+      }
+      setAddSelections(selections);
+    } catch (e) {
+      setAddResult({ error: e.message });
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  // Step 2: add exactly the confirmed places, running only the chosen stages.
+  async function confirmAdd() {
+    const places = [];
+    for (const entry of addResolved || []) {
+      const chosen = entry.candidates.find(
+        (c) => c.place_id === addSelections[entry.query]
+      );
+      if (chosen) places.push(chosen);
+    }
+    if (places.length === 0) return;
     setAdding(true);
     setAddResult(null);
     try {
       const res = await fetch("/api/restaurants/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ names }),
+        body: JSON.stringify({
+          places,
+          ingest: addIngest,
+          classify: addIngest && addClassify,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
       setAddResult(data);
+      setAddResolved(null);
       await loadData();
     } catch (e) {
       setAddResult({ error: e.message });
@@ -838,6 +885,8 @@ export default function Admin() {
               onClick={() => {
                 setAddOpen(true);
                 setAddResult(null);
+                setAddResolved(null);
+                setAddSelections({});
               }}
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
               title="Add restaurants by name — resolves via Google, then scrapes"
@@ -1553,48 +1602,180 @@ export default function Admin() {
               </button>
             </div>
             <div className="space-y-3 overflow-y-auto p-4">
-              <p className="text-sm text-slate-500">
-                One name per line. Each is resolved via Google Places, then
-                enriched, scraped, and classified (~1–2 min each).
-                Classification uses the provider chain — your subscriptions
-                first; the metered API only if you've selected it. Check the
-                matched addresses below — a wrong match is worse than no
-                match.
-              </p>
-              <textarea
-                value={addNames}
-                onChange={(e) => setAddNames(e.target.value)}
-                rows={5}
-                placeholder={"Ethos Vegan Kitchen\n4Rivers Smokehouse Winter Park"}
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-              />
-              <button
-                onClick={submitAddNames}
-                disabled={adding || !addNames.trim()}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              >
-                {adding ? "Adding (this can take a minute per restaurant)…" : "Add & run pipeline"}
-              </button>
+              {addResolved === null ? (
+                <>
+                  <p className="text-sm text-slate-500">
+                    One name per line. Matches are shown for confirmation
+                    before anything is added — you pick the exact place and
+                    which pipeline steps to run.
+                  </p>
+                  <textarea
+                    value={addNames}
+                    onChange={(e) => setAddNames(e.target.value)}
+                    rows={5}
+                    placeholder={"Ethos Vegan Kitchen\n4Rivers Smokehouse Winter Park"}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    onClick={resolveAddNames}
+                    disabled={resolving || !addNames.trim()}
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    {resolving ? "Searching Google Places…" : "Find matches"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-slate-700">
+                      Confirm the right place for each name
+                    </p>
+                    <button
+                      onClick={() => setAddResolved(null)}
+                      disabled={adding}
+                      className="text-xs font-semibold text-slate-400 hover:text-slate-700 hover:underline"
+                    >
+                      ← Edit names
+                    </button>
+                  </div>
+                  {addResolved.map((entry) => (
+                    <fieldset
+                      key={entry.query}
+                      className="rounded-lg border border-slate-200 p-3"
+                    >
+                      <legend className="px-1 text-xs font-bold uppercase tracking-wide text-slate-400">
+                        {entry.query}
+                      </legend>
+                      {entry.candidates.length === 0 && (
+                        <p className="text-sm text-amber-700">
+                          No Google Places match found.
+                        </p>
+                      )}
+                      <div className="space-y-1.5">
+                        {entry.candidates.map((c) => (
+                          <label
+                            key={c.place_id}
+                            className="flex cursor-pointer items-start gap-2 text-sm"
+                          >
+                            <input
+                              type="radio"
+                              name={`cand-${entry.query}`}
+                              checked={addSelections[entry.query] === c.place_id}
+                              onChange={() =>
+                                setAddSelections((s) => ({
+                                  ...s,
+                                  [entry.query]: c.place_id,
+                                }))
+                              }
+                              className="mt-1"
+                            />
+                            <span>
+                              <span className="font-medium text-slate-900">
+                                {c.name}
+                              </span>
+                              {!c.name_overlap && (
+                                <span className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800">
+                                  weak match
+                                </span>
+                              )}
+                              {c.already_added_id != null && (
+                                <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-sky-800">
+                                  already added — re-adding refreshes it
+                                </span>
+                              )}
+                              <span className="block text-xs text-slate-500">
+                                {c.address}
+                              </span>
+                            </span>
+                          </label>
+                        ))}
+                        {entry.candidates.length > 0 && (
+                          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-500">
+                            <input
+                              type="radio"
+                              name={`cand-${entry.query}`}
+                              checked={!addSelections[entry.query]}
+                              onChange={() =>
+                                setAddSelections((s) => ({
+                                  ...s,
+                                  [entry.query]: "",
+                                }))
+                              }
+                            />
+                            Don't add this one
+                          </label>
+                        )}
+                      </div>
+                    </fieldset>
+                  ))}
+                  <div className="rounded-lg bg-slate-50 p-3">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+                      Run immediately after adding
+                    </p>
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={addIngest}
+                        onChange={(e) => setAddIngest(e.target.checked)}
+                      />
+                      Scrape menu now (~30s–1 min each)
+                    </label>
+                    <label
+                      className={`mt-1 flex items-center gap-2 text-sm ${
+                        addIngest ? "text-slate-700" : "text-slate-400"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={addIngest && addClassify}
+                        disabled={!addIngest}
+                        onChange={(e) => setAddClassify(e.target.checked)}
+                      />
+                      Classify dishes now (needs the menu; uses the selected
+                      provider)
+                    </label>
+                    <p className="mt-1.5 text-xs text-slate-400">
+                      Enrichment (Google ratings, hours, food signals) always
+                      runs. Anything skipped here can be run later from the
+                      table.
+                    </p>
+                  </div>
+                  <button
+                    onClick={confirmAdd}
+                    disabled={
+                      adding ||
+                      !Object.values(addSelections).some(Boolean)
+                    }
+                    className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  >
+                    {adding
+                      ? "Adding (this can take a minute per restaurant)…"
+                      : `Add ${
+                          Object.values(addSelections).filter(Boolean).length
+                        } restaurant${
+                          Object.values(addSelections).filter(Boolean).length === 1
+                            ? ""
+                            : "s"
+                        }`}
+                  </button>
+                </>
+              )}
               {addResult?.error && (
                 <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
                   {addResult.error}
                 </div>
               )}
-              {addResult?.matches?.length > 0 && (
+              {addResult?.added?.length > 0 && (
                 <ul className="space-y-1 text-sm">
-                  {addResult.matches.map((m) => (
-                    <li key={m.query} className="rounded bg-emerald-50 px-3 py-1.5">
-                      <span className="font-medium text-emerald-800">{m.matched}</span>
-                      <span className="ml-1 text-emerald-700/70">— {m.address}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {addResult?.not_found?.length > 0 && (
-                <ul className="space-y-1 text-sm">
-                  {addResult.not_found.map((n) => (
-                    <li key={n} className="rounded bg-amber-50 px-3 py-1.5 text-amber-800">
-                      not found: {n}
+                  {addResult.added.map((entry) => (
+                    <li key={entry.id} className="rounded bg-emerald-50 px-3 py-1.5">
+                      <span className="font-medium text-emerald-800">{entry.name}</span>
+                      <span className="ml-1 text-emerald-700/70">
+                        — added
+                        {entry.scraped != null &&
+                          (entry.scraped ? ", menu scraped" : ", menu scrape failed")}
+                        {entry.dishes != null && `, ${entry.dishes} dishes classified`}
+                      </span>
                     </li>
                   ))}
                 </ul>

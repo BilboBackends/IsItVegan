@@ -31,7 +31,7 @@ import db
 import enrich
 import ingest
 from config import settings
-from places_client import search_place_by_name
+from places_client import search_place_by_name, search_place_candidates
 
 
 def _resolve(name: str) -> dict | None:
@@ -41,6 +41,74 @@ def _resolve(name: str) -> dict | None:
         bias_lat=settings.discovery_lat,
         bias_lng=settings.discovery_lng,
     )
+
+
+def resolve_candidates(names: list[str]) -> list[dict]:
+    """Resolve names to selectable candidates — NO database writes.
+
+    Powers the Admin add flow's confirm step: the user sees every plausible
+    match (with weak name-overlap ones flagged) and picks the right place
+    before anything is added. Existing place_ids are marked so re-adding is
+    a visible choice (it refreshes, not duplicates).
+    """
+    if not settings.google_places_api_key:
+        raise SystemExit("GOOGLE_PLACES_API_KEY not set in .env.")
+    db.init_db()
+    existing = {r["place_id"]: r["id"] for r in db.list_restaurants()}
+    out: list[dict] = []
+    for name in names:
+        candidates = search_place_candidates(
+            name,
+            api_key=settings.google_places_api_key,
+            bias_lat=settings.discovery_lat,
+            bias_lng=settings.discovery_lng,
+        )
+        for cand in candidates:
+            cand["already_added_id"] = existing.get(cand["place_id"])
+        out.append({"query": name, "candidates": candidates})
+    return out
+
+
+def add_places(
+    places: list[dict], *, do_ingest: bool = True, do_classify: bool = True
+) -> dict:
+    """Add user-CONFIRMED places, then run the chosen pipeline stages.
+
+    Enrichment always runs (cheap, and Explore needs the food signals);
+    menu scraping and classification are opt-in per the Admin add flow.
+    """
+    db.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    results: list[dict] = []
+    for place in places:
+        place = dict(place)
+        place["last_scraped_at"] = now
+        db.upsert_restaurants([place])
+        rid = next(
+            r["id"] for r in db.list_restaurants() if r["place_id"] == place["place_id"]
+        )
+        entry = {"id": rid, "name": place.get("name"), "scraped": None, "dishes": None}
+        try:
+            enrich.run(restaurant_id=rid)
+        except Exception as exc:
+            print(f"  enrich failed: {exc}")
+        if do_ingest:
+            try:
+                summary = ingest.run(restaurant_id=rid)
+                entry["scraped"] = summary["succeeded"] > 0
+            except (SystemExit, Exception) as exc:
+                print(f"  ingest failed: {exc}")
+                entry["scraped"] = False
+        if do_ingest and do_classify and entry["scraped"]:
+            try:
+                import classify
+
+                summary = classify.run(restaurant_id=rid)
+                entry["dishes"] = summary["dishes"]
+            except (SystemExit, Exception) as exc:
+                print(f"  classify failed: {exc}")
+        results.append(entry)
+    return {"added": results}
 
 
 def run(names: list[str], dry_run: bool = False, classify_too: bool = True) -> dict:

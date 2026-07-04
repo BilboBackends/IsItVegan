@@ -84,7 +84,7 @@ PLACE_DETAILS_URL = "https://places.googleapis.com/v1/places/"
 TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
 
-def search_place_by_name(
+def search_place_candidates(
     name: str,
     *,
     api_key: str,
@@ -92,12 +92,15 @@ def search_place_by_name(
     bias_lng: float | None = None,
     bias_radius_meters: float = 50_000.0,
     timeout: float = 30.0,
-) -> dict | None:
-    """Resolve a restaurant name to a place via Text Search. Top match or None.
+) -> list[dict]:
+    """All Text Search candidates for a name, best first, for user selection.
 
     The bias circle nudges results toward our area ("Antonio's" finds the
     Maitland one) without restricting — an explicit query like "Antonio's
-    Orlando" still wins. Returns the same normalized shape as discovery.
+    Orlando" still wins. Each candidate carries `name_overlap`: whether its
+    name plausibly IS the queried restaurant. (Text Search happily returns a
+    semantically-similar place when the exact one isn't nearby — e.g. a
+    different vegan restaurant — so the UI marks those as weak matches.)
     """
     headers = {
         "Content-Type": "application/json",
@@ -106,7 +109,7 @@ def search_place_by_name(
     }
     body: dict = {
         "textQuery": name,
-        "maxResultCount": 3,
+        "maxResultCount": 5,
     }
     if bias_lat is not None and bias_lng is not None:
         body["locationBias"] = {
@@ -121,12 +124,35 @@ def search_place_by_name(
         resp.raise_for_status()
         places = resp.json().get("places", [])
 
-    # Text Search happily returns a semantically-similar place when the exact
-    # one isn't nearby (e.g. a different vegan restaurant). Require real name
-    # overlap with the query before trusting a candidate.
     candidates = [_normalize_place(p) for p in places]
     for cand in candidates:
-        if _names_overlap(name, cand["name"]):
+        cand["name_overlap"] = _names_overlap(name, cand["name"])
+    return candidates
+
+
+def search_place_by_name(
+    name: str,
+    *,
+    api_key: str,
+    bias_lat: float | None = None,
+    bias_lng: float | None = None,
+    bias_radius_meters: float = 50_000.0,
+    timeout: float = 30.0,
+) -> dict | None:
+    """Resolve a restaurant name to a place via Text Search. Top match or None.
+
+    The unattended flavor of search_place_candidates (CLI/scripted adds):
+    keeps only the first candidate whose name genuinely overlaps the query.
+    """
+    for cand in search_place_candidates(
+        name,
+        api_key=api_key,
+        bias_lat=bias_lat,
+        bias_lng=bias_lng,
+        bias_radius_meters=bias_radius_meters,
+        timeout=timeout,
+    ):
+        if cand["name_overlap"]:
             return cand
     return None
 

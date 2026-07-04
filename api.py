@@ -277,14 +277,12 @@ def run_enrich() -> object:
     return jsonify(result)
 
 
-@app.post("/api/restaurants/add")
-def add_restaurants_endpoint() -> object:
-    """Add restaurants by name: resolve, enrich, ingest, and classify each.
+@app.post("/api/restaurants/resolve")
+def resolve_restaurants_endpoint() -> object:
+    """Resolve names to selectable Places candidates — NO writes.
 
-    Body: {"names": ["...", ...]}. Synchronous — each added restaurant runs
-    the full pipeline including Claude classification (~$0.10 and up to a
-    couple of minutes per restaurant); fine for a handful of names in a
-    local tool.
+    Body: {"names": ["...", ...]}. The confirm step of the Admin add flow:
+    the user picks the exact place per name before anything is added.
     """
     if not settings.google_places_api_key:
         return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
@@ -297,6 +295,54 @@ def add_restaurants_endpoint() -> object:
     try:
         import add_restaurants
 
+        return jsonify({"resolved": add_restaurants.resolve_candidates(names)})
+    except SystemExit as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.post("/api/restaurants/add")
+def add_restaurants_endpoint() -> object:
+    """Add user-confirmed places and run the CHOSEN pipeline stages.
+
+    Body: {"places": [<candidate from /resolve>, ...],
+           "ingest": bool, "classify": bool}
+    Enrichment always runs; scraping and classification are opt-in.
+    Synchronous — up to a couple of minutes per place with both enabled.
+    (Legacy: {"names": [...]} still resolves-and-adds unattended.)
+    """
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        import add_restaurants
+
+        places = payload.get("places")
+        if places is not None:
+            if (
+                not isinstance(places, list)
+                or not places
+                or len(places) > 15
+                or any(
+                    not isinstance(p, dict) or not p.get("place_id") or not p.get("name")
+                    for p in places
+                )
+            ):
+                return jsonify({"error": "places must be 1-15 resolve candidates."}), 400
+            result = add_restaurants.add_places(
+                places,
+                do_ingest=bool(payload.get("ingest", True)),
+                do_classify=bool(payload.get("classify", True)),
+            )
+            return jsonify(result)
+
+        names = [n.strip() for n in payload.get("names", []) if isinstance(n, str) and n.strip()]
+        if not names:
+            return jsonify({"error": "Provide places: [...] or names: [\"...\"]"}), 400
+        if len(names) > 15:
+            return jsonify({"error": "Max 15 names per request."}), 400
         result = add_restaurants.run(names)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
