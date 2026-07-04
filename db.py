@@ -765,15 +765,27 @@ def resolve_report(report_id: int, db_path: str | None = None) -> bool:
     return cur.rowcount > 0
 
 
-def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
-    """Per restaurant: dish total (all) + per-verdict counts over FOOD only,
-    split into meals vs sides.
+# What earns a spot in a headline "N vegan" count: a `vegan` verdict, or
+# `likely_vegan` at/above this confidence. `vegan_adaptable` NEVER counts —
+# a dish that needs modification isn't vegan as served, and calling it vegan
+# on a card is exactly the confidently-wrong failure CLAUDE.md forbids.
+# Mirrored in frontend/src/verdicts.js.
+STRICT_LIKELY_VEGAN_MIN_CONFIDENCE = 0.75
 
-    Drinks and desserts are excluded from both verdict maps so "12 vegan
+
+def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
+    """Per restaurant: dish total (all), per-verdict maps over FOOD only
+    (split meals vs sides), and STRICT vegan counts for headline display.
+
+    Drinks and desserts are excluded from the verdict maps so "12 vegan
     meals" can't mean sodas or brownies, and sides are counted separately so
     it can't mean 12 bags of chips either. NULL category (pre-category rows) is treated as food;
     NULL/'unclear' serving_role (pre-role rows) is treated as a meal so the
     headline count doesn't collapse before dishes are re-classified.
+
+    vegan_meals / vegan_sides apply the strict standard (see
+    STRICT_LIKELY_VEGAN_MIN_CONFIDENCE); the by_verdict maps keep the full
+    distribution for detail views.
     """
     with connect(db_path) as conn:
         rows = conn.execute(
@@ -781,7 +793,13 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
             SELECT d.restaurant_id, c.verdict,
                    (d.category IS NULL OR d.category = 'food') AS is_food,
                    (c.serving_role = 'side') AS is_side,
-                   COUNT(*) AS n
+                   COUNT(*) AS n,
+                   SUM(CASE
+                       WHEN c.verdict = 'vegan' THEN 1
+                       WHEN c.verdict = 'likely_vegan'
+                            AND c.confidence >= :min_confidence THEN 1
+                       ELSE 0
+                   END) AS strict_n
             FROM dishes d
             JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -790,13 +808,20 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 LIMIT 1
             )
             GROUP BY d.restaurant_id, c.verdict, is_food, is_side
-            """
+            """,
+            {"min_confidence": STRICT_LIKELY_VEGAN_MIN_CONFIDENCE},
         ).fetchall()
     out: dict[int, dict] = {}
     for r in rows:
         entry = out.setdefault(
             r["restaurant_id"],
-            {"total": 0, "by_verdict": {}, "sides_by_verdict": {}},
+            {
+                "total": 0,
+                "by_verdict": {},
+                "sides_by_verdict": {},
+                "vegan_meals": 0,
+                "vegan_sides": 0,
+            },
         )
         entry["total"] += r["n"]
         if r["is_food"]:
@@ -804,6 +829,7 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
             entry[bucket][r["verdict"]] = (
                 entry[bucket].get(r["verdict"], 0) + r["n"]
             )
+            entry["vegan_sides" if r["is_side"] else "vegan_meals"] += r["strict_n"]
     return out
 
 

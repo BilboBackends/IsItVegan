@@ -45,7 +45,7 @@ function pinColor(r) {
 }
 
 const SORTS = [
-  { key: "vegan", label: "Most vegan options" },
+  { key: "vegan", label: "Most vegan meals" },
   { key: "rating", label: "Top rated" },
   { key: "distance", label: "Closest" },
   { key: "price", label: "Cheapest" },
@@ -69,9 +69,9 @@ const RANGES = [
 ];
 
 const LEGEND = [
-  { color: "#047857", label: "3+ vegan options" },
-  { color: "#65a30d", label: "1–2 vegan options" },
-  { color: "#78716c", label: "No vegan options found" },
+  { color: "#047857", label: "3+ vegan meals" },
+  { color: "#65a30d", label: "1–2 vegan meals" },
+  { color: "#78716c", label: "No vegan meals found" },
   { color: "#a8a29e", label: "Menu not analyzed" },
 ];
 

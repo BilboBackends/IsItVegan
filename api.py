@@ -68,7 +68,6 @@ def get_restaurants() -> object:
     if not include_excluded:
         restaurants = [r for r in restaurants if r["is_consumer_venue"]]
     counts = db.verdict_counts_by_restaurant()
-    veganish = ("vegan", "likely_vegan", "vegan_adaptable")
     for r in restaurants:
         menu_source = db.get_menu_text(r["id"]) if r.get("has_menu_text") else None
         menu_score = (
@@ -81,14 +80,11 @@ def get_restaurants() -> object:
         r["menu_score_is_menu"] = menu_score.is_menu if menu_score else None
         c = counts.get(r["id"])
         r["dish_count"] = c["total"] if c else 0
-        # Meals only — sides are counted separately so a bag of chips can't
-        # inflate the headline the way a sandwich earns it.
-        r["vegan_options"] = (
-            sum(c["by_verdict"].get(v, 0) for v in veganish) if c else 0
-        )
-        r["vegan_sides"] = (
-            sum(c["sides_by_verdict"].get(v, 0) for v in veganish) if c else 0
-        )
+        # Strict standard: vegan verdicts, or likely_vegan at high
+        # confidence — vegan_adaptable never counts toward a headline
+        # number. Meals only; sides counted separately.
+        r["vegan_options"] = c["vegan_meals"] if c else 0
+        r["vegan_sides"] = c["vegan_sides"] if c else 0
         # Pre-run classification cost estimate from menu size; the actual
         # cost of the last run (if any) rides along as last_classify_cost.
         r["classify_estimate"] = (

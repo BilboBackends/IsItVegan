@@ -9,6 +9,7 @@ import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, relativeDate } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 import { parsePriceValue } from "./price.js";
+import { isCountedVegan } from "./verdicts.js";
 import {
   dishMatchesQuery,
   dishSearchScore,
@@ -261,9 +262,7 @@ export default function DishExplore({
 
   const selectedDish = dishesWithDistance.find((dish) => dish.id === selectedDishId) || null;
 
-  const veganCount = dishes.filter((d) =>
-    ["vegan", "likely_vegan", "vegan_adaptable"].includes(d.verdict)
-  ).length;
+  const veganCount = dishes.filter(isCountedVegan).length;
 
   const selectedRestaurant =
     restaurant === "all"
@@ -454,7 +453,7 @@ export default function DishExplore({
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-500">
           Search {dishes.length.toLocaleString()} menu items from {restaurants.length} restaurants
-          {veganCount > 0 && `, including ${veganCount.toLocaleString()} vegan-friendly options`}.
+          {veganCount > 0 && `, including ${veganCount.toLocaleString()} vegan dishes`}.
           Try a dish, ingredient, cuisine, or restaurant name.
         </p>
       </div>}

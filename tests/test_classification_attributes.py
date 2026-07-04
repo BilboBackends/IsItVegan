@@ -148,3 +148,44 @@ def test_restaurant_counts_split_meals_and_sides_and_exclude_other_categories(tm
     assert counts["total"] == 4
     assert counts["by_verdict"] == {"vegan": 1}
     assert counts["sides_by_verdict"] == {"vegan": 1}
+    assert counts["vegan_meals"] == 1
+    assert counts["vegan_sides"] == 1
+
+
+def test_headline_vegan_counts_are_strict(tmp_path):
+    # vegan_adaptable NEVER counts as vegan on a card, and likely_vegan only
+    # counts above the confidence bar — being transparently uncertain beats
+    # being confidently wrong (CLAUDE.md).
+    path = str(tmp_path / "strict_counts.db")
+    db.init_db(path)
+    restaurant_id = _restaurant(path)
+
+    def add(name, verdict, confidence, serving_role="meal"):
+        dish_id = db.upsert_dish(
+            restaurant_id, name, None, None, category="food", db_path=path
+        )
+        db.insert_classification(
+            dish_id=dish_id,
+            verdict=verdict,
+            confidence=confidence,
+            reasoning="test",
+            source_id=None,
+            model_version="test",
+            created_at="2026-07-04T12:00:00+00:00",
+            serving_role=serving_role,
+            db_path=path,
+        )
+
+    add("Certain Vegan Bowl", "vegan", 0.95)              # counts
+    add("Confident Likely Curry", "likely_vegan", 0.80)   # counts (>= 0.75)
+    add("Shaky Likely Soup", "likely_vegan", 0.55)        # too uncertain
+    add("Hold-The-Cheese Wrap", "vegan_adaptable", 0.95)  # never counts
+    add("Cheese Pizza", "not_vegan", 0.99)                # never counts
+    add("Vegan Fries", "vegan", 0.9, serving_role="side")  # counts as side
+
+    counts = db.verdict_counts_by_restaurant(path)[restaurant_id]
+    assert counts["vegan_meals"] == 2
+    assert counts["vegan_sides"] == 1
+    # The full distribution stays available for detail views.
+    assert counts["by_verdict"]["vegan_adaptable"] == 1
+    assert counts["by_verdict"]["likely_vegan"] == 2

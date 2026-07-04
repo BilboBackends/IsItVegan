@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
+import { isCountedVegan } from "./verdicts.js";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
 // dishes for the given restaurant; every verdict shows confidence, reasoning,
@@ -24,9 +25,12 @@ const CATEGORIES = [
   { key: "drink", label: "Drinks", icon: "🥤" },
 ];
 
+// The browse filter is deliberately WIDER than the strict counted-vegan
+// standard: adaptable/likely dishes are worth seeing (each wears its own
+// verdict chip) — they just don't get counted as vegan in the numbers.
 const FILTERS = [
   { key: "all", label: "All" },
-  { key: "veganish", label: "Vegan options" },
+  { key: "veganish", label: "Vegan-friendly" },
   { key: "not_vegan", label: "Not vegan" },
 ];
 
@@ -83,8 +87,8 @@ export default function DishModal({ restaurant, onClose }) {
     return groups;
   }, [dishes]);
 
-  const veganishIn = (items) =>
-    items.filter((d) => VEGANISH.has(d.verdict)).length;
+  // Tab badges use the strict standard so they agree with the card counts.
+  const veganishIn = (items) => items.filter(isCountedVegan).length;
 
   if (!restaurant) return null;
 
