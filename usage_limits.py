@@ -19,6 +19,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 _USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -173,24 +174,23 @@ def parse_codex_rate_limits(rate_limits: dict, now_ts: float | None = None) -> l
     return windows
 
 
-def _codex_usage() -> dict:
-    """Codex limits from its LOCAL session logs — the CLI has no headless
-    usage command, but every session records `rate_limits` snapshots (the
-    data its /status screen shows). Zero-cost read; numbers are as of the
-    last Codex activity, so the panel labels them with that timestamp.
-    """
-    from classification_providers import find_codex
+def _iso_to_epoch(value) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
 
-    if find_codex() is None:
-        return {"available": False, "reason": "Codex CLI not installed."}
 
+def _read_codex_session_snapshot() -> tuple[float, dict] | None:
+    """Newest rate-limit snapshot from Codex's own session logs (written by
+    interactive Codex use, e.g. the VS Code extension)."""
     sessions = Path.home() / ".codex" / "sessions"
     if not sessions.is_dir():
-        return {
-            "available": False,
-            "reason": "No Codex sessions recorded yet — limits appear after "
-            "the first Codex run.",
-        }
+        return None
     files = sorted(
         sessions.rglob("*.jsonl"),
         key=lambda p: p.stat().st_mtime,
@@ -214,18 +214,47 @@ def _codex_usage() -> dict:
             rate_limits = payload.get("rate_limits")
             if not isinstance(rate_limits, dict):
                 continue
-            windows = parse_codex_rate_limits(rate_limits)
-            if not windows:
+            epoch = _iso_to_epoch(event.get("timestamp"))
+            if epoch is None:
                 continue
-            return {
-                "available": True,
-                "plan": rate_limits.get("plan_type"),
-                "windows": windows,
-                "as_of": event.get("timestamp"),
-            }
+            return epoch, rate_limits
+    return None
+
+
+def _codex_usage() -> dict:
+    """Codex limits from its local session logs (zero-cost read).
+
+    Every codex session — including the pipeline's own classification runs,
+    which deliberately do NOT use --ephemeral for exactly this reason —
+    records rate-limit snapshots. The CLI has no headless usage command, so
+    this mirrors what its /status screen shows, labeled with the snapshot's
+    timestamp.
+    """
+    from classification_providers import find_codex
+
+    if find_codex() is None:
+        return {"available": False, "reason": "Codex CLI not installed."}
+
+    snapshot = _read_codex_session_snapshot()
+    if snapshot is None:
+        return {
+            "available": False,
+            "reason": "No rate-limit snapshot yet — limits appear after the "
+            "first Codex run.",
+        }
+    epoch, rate_limits = snapshot
+    windows = parse_codex_rate_limits(rate_limits)
+    if not windows:
+        return {
+            "available": False,
+            "reason": "Rate-limit snapshot found but not understood "
+            "(format may have changed).",
+        }
     return {
-        "available": False,
-        "reason": "No rate-limit snapshot found in recent Codex sessions.",
+        "available": True,
+        "plan": rate_limits.get("plan_type"),
+        "windows": windows,
+        "as_of": datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(),
     }
 
 

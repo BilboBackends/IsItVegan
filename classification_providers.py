@@ -562,10 +562,14 @@ def _run_codex(
             schema_path = temp_path / "classification-schema.json"
             output_path = temp_path / "classification-result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            # Deliberately NOT --ephemeral: the session rollout codex writes
+            # is the only place it records rate-limit snapshots, and that's
+            # how the dashboard's Codex limits bar sees the pipeline's own
+            # usage. (The exec --json event stream carries no rate limits in
+            # current CLI versions.)
             command = [
                 executable,
                 "exec",
-                "--ephemeral",
                 "--ignore-user-config",
                 "--ignore-rules",
                 "--sandbox",
