@@ -829,7 +829,7 @@ export default function Admin() {
           <div>
             <h1 className="text-2xl font-bold">VeganFind — Pipeline Dashboard</h1>
             <p className="text-sm text-slate-500">
-              Phase 0: restaurant discovery
+              Discovery · menu scraping · dish classification
               {config?.city ? ` · ${config.city}, FL` : ""}
             </p>
           </div>
@@ -1555,9 +1555,11 @@ export default function Admin() {
             <div className="space-y-3 overflow-y-auto p-4">
               <p className="text-sm text-slate-500">
                 One name per line. Each is resolved via Google Places, then
-                enriched, scraped, and classified with Claude (~1–2 min and
-                ~$0.10 of API credits each). Check the matched addresses
-                below — a wrong match is worse than no match.
+                enriched, scraped, and classified (~1–2 min each).
+                Classification uses the provider chain — your subscriptions
+                first; the metered API only if you've selected it. Check the
+                matched addresses below — a wrong match is worse than no
+                match.
               </p>
               <textarea
                 value={addNames}
@@ -1571,7 +1573,7 @@ export default function Admin() {
                 disabled={adding || !addNames.trim()}
                 className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               >
-                {adding ? "Adding (this can take a minute per restaurant)…" : "Add & scrape"}
+                {adding ? "Adding (this can take a minute per restaurant)…" : "Add & run pipeline"}
               </button>
               {addResult?.error && (
                 <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -1641,7 +1643,8 @@ export default function Admin() {
               )}
             </div>
             <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
-              Raw text — Claude will parse dishes from this in Phase 3.
+              Raw scraped text — exactly what the classifier reads when
+              extracting this restaurant's dishes.
             </div>
           </div>
         </div>

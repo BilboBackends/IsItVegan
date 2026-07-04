@@ -119,19 +119,29 @@ classifications
 
 ## Current Phase
 
-**Phase 0: Restaurant discovery.** Build the Google Places API integration
-to pull the full restaurant list for Maitland, FL and persist basic
-metadata to the database. Nothing else should be built until this works
-and has been manually spot-checked against a few known Maitland restaurants.
+**Phases 0–3 are live** (discovery, ingestion, text classification, storage,
+frontend): ~60 Maitland restaurants discovered and enriched, 53 menus scraped
+(multi-page, headless-capable scraper with automated quality auditing), dish
+classification with vegan verdicts, dietary attributes, and meal/side serving
+roles, and the consumer Explore + Admin pipeline dashboard.
 
-## Open Questions to Resolve Early
+Classification runs through a provider chain (`classification_providers.py`):
+Claude Code subscription first, then Codex/ChatGPT subscription, with
+failover on usage limits — the metered Anthropic API is only used when
+explicitly selected. Headline "vegan" counts are strict: `vegan` verdicts or
+high-confidence `likely_vegan` only; `vegan_adaptable` never counts.
 
-- Google Places API pricing/quota limits at the scale we need — check
-  before building ingestion at volume
-- Which restaurant websites will actually be scrapable (some use
-  JS-rendered menus, PDF menus, or third-party ordering platforms
-  like Toast/Square that may block scraping — need a fallback plan,
-  possibly OCR on PDF menus)
-- Legal/ToS considerations for scraping restaurant websites — flag any
-  restaurant where scraping seems disallowed and fall back to
-  Places-photo-only classification for that restaurant
+**Next: Phase 4 — vision classification.** Google Places photos + Claude
+vision for the restaurants whose menus can't be scraped (social-only
+websites, hard JS walls, photo-only menus) — the audit's "photo fallback
+candidates" list is the queue.
+
+## Resolved Early Questions (kept for context)
+
+- Scrapability: solved for most sites via two-hop link following + headless
+  browser (Toast/Square/Clover/activemenus etc.); genuinely unscrapable
+  restaurants are flagged in the Admin quality audit as photo-fallback
+  candidates
+- Google Places quota: fine at Maitland scale (~49 calls per discovery run)
+- Scraping ToS: restaurant sites are scraped politely (one-shot, low volume);
+  Google Maps content is never scraped — only official Places API data
