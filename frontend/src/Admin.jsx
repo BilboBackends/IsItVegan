@@ -21,6 +21,51 @@ const PROVIDER_LABELS = {
   anthropic: "Anthropic API",
 };
 
+// "resets_at" from the usage endpoints may be an ISO string or an epoch in
+// seconds/milliseconds — render whatever arrives as a countdown.
+function formatReset(resetsAt) {
+  if (resetsAt == null) return null;
+  let target;
+  if (typeof resetsAt === "number") {
+    target = new Date(resetsAt > 1e12 ? resetsAt : resetsAt * 1000);
+  } else {
+    target = new Date(resetsAt);
+  }
+  if (isNaN(target.getTime())) return null;
+  const minutes = Math.max(0, Math.round((target - Date.now()) / 60000));
+  if (minutes < 60) return `resets in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `resets in ${hours}h ${minutes % 60}m`;
+  return `resets in ${Math.round(hours / 24)}d`;
+}
+
+function UsageBar({ window: w }) {
+  const pct = Math.min(100, Math.max(0, w.used_pct));
+  const tone =
+    pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-amber-500" : "bg-emerald-500";
+  const reset = formatReset(w.resets_at);
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-36 shrink-0 text-slate-500">{w.label}</span>
+      <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-full bg-slate-100">
+        <div
+          className={`h-full rounded-full ${tone} transition-all`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="w-20 shrink-0 text-right font-semibold text-slate-700">
+        {pct.toFixed(0)}% used
+      </span>
+      <span
+        className="w-28 shrink-0 text-right text-slate-400"
+        title={w.note || undefined}
+      >
+        {w.note ? "fresh window" : reset}
+      </span>
+    </div>
+  );
+}
+
 function StatCard({ label, value, hint }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -172,6 +217,7 @@ export default function Admin() {
   const [classifying, setClassifying] = useState(false);
   const [menuQuality, setMenuQuality] = useState([]); // automated audit flags
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [selectedIds, setSelectedIds] = useState([]);
   const [classifierProvider, setClassifierProvider] = useState("auto");
 
@@ -179,11 +225,12 @@ export default function Admin() {
     setLoading(true);
     setError(null);
     try {
-      const [rRes, cRes, reportRes, qualityRes] = await Promise.all([
+      const [rRes, cRes, reportRes, qualityRes, usageRes] = await Promise.all([
         fetch("/api/restaurants?include_excluded=true"),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
         fetch("/api/menu-quality"),
+        fetch("/api/provider-usage"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
@@ -194,6 +241,7 @@ export default function Admin() {
       if (cRes.ok) setConfig(await cRes.json());
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
       if (qualityRes.ok) setMenuQuality((await qualityRes.json()).findings || []);
+      if (usageRes.ok) setProviderUsage(await usageRes.json());
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
     } finally {
@@ -932,6 +980,59 @@ export default function Admin() {
             hint="food only — drinks excluded"
           />
         </div>
+
+        {providerUsage && (
+          <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-bold text-slate-900">
+                Subscription limits
+              </h2>
+              <span className="text-xs text-slate-400">
+                how much classification budget is left · refreshes with the page
+              </span>
+            </div>
+            <div className="space-y-3">
+              {["claude", "codex"].map((name) => {
+                const usage = providerUsage[name];
+                return (
+                  <div key={name}>
+                    <div className="text-xs font-semibold text-slate-700">
+                      {PROVIDER_LABELS[name]}
+                      {usage?.plan ? (
+                        <span className="ml-1 font-normal text-slate-400">
+                          · {usage.plan}
+                        </span>
+                      ) : null}
+                      {usage?.as_of ? (
+                        <span
+                          className="ml-1 font-normal text-slate-400"
+                          title="Read from local Codex session logs — updates whenever Codex runs"
+                        >
+                          · as of{" "}
+                          {new Date(usage.as_of).toLocaleTimeString([], {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      ) : null}
+                    </div>
+                    {usage?.available ? (
+                      <div className="mt-1 space-y-1">
+                        {usage.windows.map((w) => (
+                          <UsageBar key={w.id} window={w} />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 text-xs text-slate-400">
+                        {usage?.reason || "Usage unknown."}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {menuQuality.length > 0 && (
           <section className="mb-6 rounded-xl border border-orange-200 bg-orange-50 p-4">

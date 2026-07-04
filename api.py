@@ -247,6 +247,14 @@ def ingest_status() -> object:
         return jsonify({**_ingest_state, "recent": list(_ingest_state["recent"])})
 
 
+@app.get("/api/provider-usage")
+def provider_usage() -> object:
+    """Subscription usage windows for the claude/codex providers (cached)."""
+    import usage_limits
+
+    return jsonify(usage_limits.provider_usage())
+
+
 @app.get("/api/menu-quality")
 def menu_quality() -> object:
     """Automated audit of stored menus — flags likely-false/incomplete ones."""

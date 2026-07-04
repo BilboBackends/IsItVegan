@@ -24,6 +24,7 @@ class Settings:
     anthropic_classifier_model: str
     claude_classifier_model: str | None
     claude_classifier_timeout_seconds: int
+    codex_cli_path: str | None
     codex_classifier_model: str | None
     codex_classifier_timeout_seconds: int
     discovery_lat: float
@@ -73,6 +74,7 @@ def load_settings() -> Settings:
         claude_classifier_timeout_seconds=_get_int(
             "CLAUDE_CLASSIFIER_TIMEOUT_SECONDS", 900
         ),
+        codex_cli_path=(os.environ.get("CODEX_CLI_PATH") or None),
         codex_classifier_model=(os.environ.get("CODEX_CLASSIFIER_MODEL") or None),
         codex_classifier_timeout_seconds=_get_int(
             "CODEX_CLASSIFIER_TIMEOUT_SECONDS", 900

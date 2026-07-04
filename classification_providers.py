@@ -102,8 +102,30 @@ def _cached_probe(name: str, probe) -> bool:
     return value
 
 
+def find_codex() -> str | None:
+    """Locate the codex CLI: PATH, then CODEX_CLI_PATH, then the copy bundled
+    inside the ChatGPT VS Code extension (a full CLI sharing ~/.codex auth —
+    how Codex is installed on machines that only use the IDE extension)."""
+    path = shutil.which("codex")
+    if path:
+        return path
+    override = settings.codex_cli_path
+    if override and Path(override).exists():
+        return override
+    extensions = Path.home() / ".vscode" / "extensions"
+    candidates = [
+        p
+        for p in extensions.glob("openai.chatgpt-*/bin/*/codex*")
+        if p.stem == "codex" and p.is_file()
+    ]
+    if candidates:
+        # Newest extension version wins (best-effort string sort).
+        return str(sorted(candidates, key=lambda p: str(p), reverse=True)[0])
+    return None
+
+
 def _probe_codex() -> bool:
-    executable = shutil.which("codex")
+    executable = find_codex()
     if not executable:
         return False
     try:
@@ -511,7 +533,7 @@ def _run_claude(
 def _run_codex(
     system_prompt: str, user_prompt: str, schema: dict
 ) -> ProviderResponse:
-    executable = shutil.which("codex")
+    executable = find_codex()
     model = settings.codex_classifier_model or "codex-default"
     if not executable:
         return ProviderResponse(

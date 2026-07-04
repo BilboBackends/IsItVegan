@@ -160,6 +160,42 @@ def test_resolve_provider_reports_chain_when_nothing_available(monkeypatch):
         cp.resolve_provider("auto")
 
 
+def test_codex_rate_limit_snapshot_parses_to_windows():
+    # Shape captured from a real ~/.codex session log (token_count event).
+    from usage_limits import parse_codex_rate_limits
+
+    snapshot = {
+        "limit_id": "codex",
+        "primary": {
+            "used_percent": 100.0,
+            "window_minutes": 300,
+            "resets_at": 1783140990,
+        },
+        "secondary": {
+            "used_percent": 34.0,
+            "window_minutes": 10080,
+            "resets_at": 1783709628,
+        },
+        "plan_type": "plus",
+    }
+
+    # Snapshot still current: report it verbatim.
+    windows = parse_codex_rate_limits(snapshot, now_ts=1783140000)
+    assert [w["label"] for w in windows] == ["5-hour session", "Week (all usage)"]
+    assert windows[0]["used_pct"] == 100.0
+    assert windows[0]["resets_at"] == 1783140990
+    assert windows[1]["used_pct"] == 34.0
+
+    # 5-hour window's reset time has passed: last night's 100% no longer
+    # applies — the window is fresh. The weekly window is still live.
+    windows = parse_codex_rate_limits(snapshot, now_ts=1783150000)
+    assert windows[0]["used_pct"] == 0.0
+    assert windows[0]["resets_at"] is None
+    assert "reset" in windows[0]["note"]
+    assert windows[1]["used_pct"] == 34.0
+    assert windows[1]["note"] is None
+
+
 def test_result_from_data_guards_non_list_attributes():
     # A hand-edited exchange file with string attributes must not be sliced
     # into one-character "ingredients".
