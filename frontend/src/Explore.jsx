@@ -457,15 +457,24 @@ export default function Explore({
       )}
       <div className="mt-3 flex items-center justify-between border-t border-stone-100 pt-3">
         {r.dish_count > 0 ? (
+          // Dot + plain text, colored like the map pin for this restaurant —
+          // quieter than a filled pill, and card ↔ pin read as one system.
           <span
-            className={`rounded-full px-2.5 py-1 text-xs font-bold ${
-              r.vegan_options > 0
-                ? "bg-emerald-700 text-white"
-                : "bg-stone-100 text-stone-500"
-            }`}
+            className="flex items-center gap-1.5 text-xs font-semibold"
+            style={{ color: pinColor(r) }}
           >
-            {r.vegan_options} vegan meal{r.vegan_options === 1 ? "" : "s"}
-            {(r.vegan_sides || 0) > 0 && ` +${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`}
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ background: pinColor(r) }}
+            />
+            {r.vegan_options > 0
+              ? `${r.vegan_options} vegan meal${r.vegan_options === 1 ? "" : "s"}` +
+                ((r.vegan_sides || 0) > 0
+                  ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
+                  : "")
+              : (r.vegan_sides || 0) > 0
+                ? `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`
+                : "no vegan meals found"}
           </span>
         ) : (
           <span className="text-xs italic text-stone-400">
