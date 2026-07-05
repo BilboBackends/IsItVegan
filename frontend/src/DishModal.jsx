@@ -127,14 +127,14 @@ export default function DishModal({ restaurant, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 max-sm:p-0 sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
       onClick={onClose}
     >
       <div
-        className="flex w-full max-w-3xl flex-col bg-white shadow-xl max-sm:h-full max-sm:max-h-none max-sm:rounded-none sm:max-h-[85vh] sm:rounded-xl"
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 max-sm:px-3">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
             <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
@@ -168,7 +168,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {/* Category tabs */}
-        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 px-4 pt-2 max-sm:px-3 max-sm:pt-1 [&>*]:shrink-0">
+        <div className="flex gap-1 border-b border-slate-200 px-4 pt-2">
           {CATEGORIES.map((c) => {
             const items = byCategory[c.key];
             if (!items || items.length === 0) return null;
@@ -180,7 +180,7 @@ export default function DishModal({ restaurant, onClose }) {
                   setTab(c.key);
                   setServingFilter("all");
                 }}
-                className={`relative -mb-px rounded-t-lg border px-3 py-2 text-sm font-medium transition max-sm:px-2.5 max-sm:py-1.5 max-sm:text-xs ${
+                className={`relative -mb-px rounded-t-lg border px-3 py-2 text-sm font-medium transition ${
                   tab === c.key
                     ? "border-slate-200 border-b-white bg-white text-slate-900"
                     : "border-transparent text-slate-500 hover:text-slate-800"
@@ -201,7 +201,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {/* Verdict filter */}
-        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 px-4 py-2 max-sm:px-3 [&>*]:shrink-0">
+        <div className="flex gap-2 border-b border-slate-100 px-4 py-2">
           {FILTERS.map((f) => (
             <button
               key={f.key}
@@ -218,7 +218,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {tab === "food" && (
-          <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-100 bg-slate-50/70 px-4 py-2 max-sm:px-3 [&>*]:shrink-0 sm:flex-wrap">
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2">
             <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
               Show
             </span>
@@ -242,7 +242,7 @@ export default function DishModal({ restaurant, onClose }) {
           </div>
         )}
 
-        <div className="overflow-y-auto p-4 max-sm:p-3">
+        <div className="overflow-y-auto p-4">
           {loading ? (
             <div className="text-slate-400">Loading…</div>
           ) : dishes.length === 0 ? (
@@ -320,7 +320,7 @@ export default function DishModal({ restaurant, onClose }) {
             </div>
           )}
         </div>
-        <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400 max-sm:hidden">
+        <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
           Verdicts are inferred from the restaurant's menu text — evidence shown
           under each dish. Always confirm with the restaurant for allergies or
           strict diets.
