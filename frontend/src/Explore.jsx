@@ -583,9 +583,10 @@ export default function Explore({
 
       {/* Filter bar */}
       <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
-        {/* The view toggle lives OUTSIDE the swipeable strip so it's always
-            visible on phones — pinned right while the filters scroll. */}
-        <div className="flex items-center gap-2">
+        {/* On phones the view toggle gets its OWN ROW below the filters —
+            sharing the row squeezed it on top of the selects. From sm up it
+            sits inline at the right, as before. */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <div className="flex min-w-0 flex-1 items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <input
             type="text"
@@ -664,7 +665,7 @@ export default function Explore({
           </span>
           </div>
           {/* Mobile/tablet-only view toggle; desktop shows both panes */}
-          <div className="ml-auto flex shrink-0 overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm lg:hidden">
+          <div className="flex shrink-0 self-end overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm sm:ml-auto sm:self-auto lg:hidden">
             {["list", "map"].map((v) => (
               <button
                 key={v}
