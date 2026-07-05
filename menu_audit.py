@@ -117,6 +117,22 @@ def audit_menus(db_path: str | None = None) -> list[dict]:
                         f"({sources[0]['url']})"
                     )
 
+                # Ordering-platform pages that lazy-load/virtualize their
+                # menu leave cart chrome in the text with few actual items —
+                # the signature of a PARTIAL capture (found via Chuan Fu /
+                # Tamale Co / F&D Cantina, which stored 1-15 items of
+                # 76-110-item menus).
+                lowered = combined.lower()
+                cart_markers = (
+                    "add to cart", "checkout", "load more content",
+                    "view cart", "order online", "minimum order",
+                )
+                if prices < 15 and any(m in lowered for m in cart_markers):
+                    flags.append(
+                        f"looks like a partially captured ordering page "
+                        f"({prices} priced items alongside cart/order chrome)"
+                    )
+
                 # Identical text stored for two different restaurants means a
                 # generic chain/platform page, not either restaurant's menu.
                 digest = hashlib.sha256(combined.encode()).hexdigest()

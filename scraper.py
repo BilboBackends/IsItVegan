@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 
 from headless import fetch_rendered_html, is_available
 from menu_score import MENU_THRESHOLD, score_menu_text
+from structured_menu import extract_structured_menu_text
 
 # A browser-ish UA; some sites 403 the default httpx agent.
 _USER_AGENT = (
@@ -187,6 +188,25 @@ def _extract_text(html: str) -> str:
     raw = soup.get_text(separator="\n")
     lines = [line.strip() for line in raw.splitlines()]
     return "\n".join(line for line in lines if line)
+
+
+def _pages_from_html(page_url: str, html: str) -> list[tuple[str, str]]:
+    """One fetched page can yield TWO menu candidates: its visible DOM text,
+    and — when the page embeds a structured menu (schema.org JSON-LD or
+    ordering-platform state JSON) — that menu rendered as text.
+
+    Ordering platforms routinely show a fraction of the menu (lazy sections,
+    virtualized lists) while shipping ALL of it as data; the structured
+    pseudo-page is how those menus stop being "1174 chars, 15 items".
+    """
+    pages = [(page_url, _extract_text(html))]
+    try:
+        structured = extract_structured_menu_text(html)
+    except Exception:
+        structured = None  # never let a weird page break the scrape
+    if structured:
+        pages.append((page_url.split("#")[0] + "#structured-menu", structured))
+    return pages
 
 
 @dataclass
@@ -389,17 +409,29 @@ def _collect_http(
         def _norm(u: str) -> str:
             return u.split("#")[0].rstrip("/")
 
-        pages: list[tuple[str, str]] = [(url, _extract_text(landing.html))]
+        pages: list[tuple[str, str]] = _pages_from_html(url, landing.html)
         queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links]
         seen = {_norm(url)} | {_norm(lk) for lk in menu_links}
+        # "/menu" is a near-universal convention — probe it even when the
+        # landing never links to it. JS-built navs hide links from static
+        # HTML entirely (F&D Cantina's Popmenu site: the landing shows only
+        # order/catering links, while /menu carries the FULL menu as
+        # JSON-LD). Costs one request; a 404 is simply skipped.
+        conventional = urljoin(url, "/menu")
+        if _norm(conventional) not in seen:
+            seen.add(_norm(conventional))
+            queue.append((conventional, 1))
         fetches = 0
         while queue and fetches < _MAX_HTTP_FETCHES:
             link, hop = queue.pop(0)
             page = _fetch(client, link)
             fetches += 1
-            text = _fetched_to_text(page)
-            if text:
-                pages.append((link, text))
+            if page.html is not None:
+                pages.extend(_pages_from_html(link, page.html))
+            else:
+                text = _fetched_to_text(page)  # PDFs
+                if text:
+                    pages.append((link, text))
             if hop == 1 and page.html is not None:
                 more_links, more_tp, more_tp_urls = _find_menu_links(page.html, link)
                 for host in more_tp:
@@ -421,7 +453,9 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     Renders the landing page (running its JS), follows same-domain menu links
     by rendering those too. Used only as a fallback when HTTP finds no menu.
     """
-    landing_html, err = fetch_rendered_html(url)
+    # tab_words on the landing too: for single-page ordering sites (Square
+    # Online et al.) the landing IS the menu, with category tabs/fragments.
+    landing_html, err = fetch_rendered_html(url, tab_words=_TAB_WORDS)
     if landing_html is None:
         return [], []
 
@@ -440,7 +474,7 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
         return u.split("#")[0].rstrip("/")
 
     max_renders = 9
-    pages: list[tuple[str, str]] = [(url, _extract_text(landing_html))]
+    pages: list[tuple[str, str]] = _pages_from_html(url, landing_html)
     queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links + tp_urls[:2]]
     seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
     renders = 0
@@ -454,12 +488,16 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
         renders += 1
         if page_html is None:
             continue
-        text = _extract_text(page_html)
-        if text:
-            pages.append((link, text))
+        page_candidates = _pages_from_html(link, page_html)
+        pages.extend(page_candidates)
         # Expand another hop unless this page already looks confidently like a
         # menu (ordering platforms often score mid-range on marketing copy).
-        if hop == 1 and score_menu_text(text).score < 0.75:
+        # A structured pseudo-page counts: embedded menu data IS the menu.
+        best_here = max(
+            score_menu_text(candidate_text).score
+            for _, candidate_text in page_candidates
+        )
+        if hop == 1 and best_here < 0.75:
             more_menu, _tp, more_tp_urls = _find_menu_links(page_html, link)
             # Links literally containing "menu" first — on ordering sites every
             # URL contains /order/, so the generic hint matches everything.

@@ -53,6 +53,65 @@ def _launch(p):
         return p.chromium.launch(headless=True, args=args)
 
 
+def _text_lines(html: str) -> list[str]:
+    """Visible text lines of an HTML document (bs4, not a scraper import —
+    that would be circular)."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    return [
+        line.strip()
+        for line in soup.get_text("\n").splitlines()
+        if line.strip()
+    ]
+
+
+def _new_segment_lines(lines: list[str], seen: set[str]) -> list[str]:
+    """Lines that are new against `seen`, PLUS already-seen lines adjacent to
+    a new one.
+
+    Menus put names and prices on separate lines, and the same price line
+    ("$9.99") legitimately belongs to many dishes — exact-line dedup would
+    orphan dishes from their prices. Adjacency keeps a repeated line when
+    it travels with new content (a dish block) while whole repeated regions
+    (page chrome on every snapshot) still collapse away.
+    """
+    is_new = [line not in seen for line in lines]
+    kept: list[str] = []
+    for i, line in enumerate(lines):
+        if (
+            is_new[i]
+            or (i > 0 and is_new[i - 1])
+            or (i + 1 < len(lines) and is_new[i + 1])
+        ):
+            kept.append(line)
+    return kept
+
+
+def _overflow_div(html: str, banked: list[str]) -> str:
+    """HTML div holding banked text lines absent from the final DOM.
+
+    Everything seen during scrolling and tab/category navigation gets banked
+    as ordered line segments; whatever the final DOM no longer shows is
+    re-attached here once (with price-line adjacency preserved). This keeps
+    virtualized lists complete without ballooning a 15-category ordering
+    page into 15 concatenated copies of the same chrome.
+    """
+    from html import escape
+
+    present = set(_text_lines(html))
+    missing = _new_segment_lines(banked, present)
+    if not missing:
+        return ""
+    return (
+        '\n<div id="__virtualized_overflow__">'
+        + "".join(f"<p>{escape(line)}</p>" for line in missing)
+        + "</div>"
+    )
+
+
 _TAB_SELECTOR = "button, [role='tab'], a, li"
 
 # Collect label/href of every tab candidate in ONE roundtrip; per-element
@@ -76,12 +135,34 @@ def _click_section_tabs(page, tab_words: tuple[str, ...]) -> list[str]:
     clicks the LAST unclicked section label in DOM order: mode toggles sit
     above the section tabs, so deepest-first exhausts every section of the
     current mode before switching modes (which would make the current
-    sections disappear unvisited). Real links are skipped — navigating is the
-    link-crawler's job, not the tab-clicker's.
+    sections disappear unvisited).
+
+    Two kinds of clickables qualify:
+    - vocabulary tabs: elements whose label is a known section word
+      ("Burgers", "Desserts") with no real href
+    - fragment anchors: links whose href stays on THIS page (`#...`, or the
+      same path with a fragment — Square Online's category nav). These are
+      label-agnostic: category names ("Street Food", "Tamales") can't be
+      enumerated, but a same-document click can't navigate away, so clicking
+      them all (bounded) is safe.
+    Real links to other pages are skipped — navigating is the link-crawler's
+    job, not the tab-clicker's.
     """
+    from urllib.parse import urljoin, urlparse
+
     snapshots: list[str] = []
     seen: set[str] = set()
     start_url = page.url
+    start_path = urlparse(start_url).path or "/"
+
+    def _is_same_page_fragment(href: str) -> bool:
+        if "#" not in href:
+            return False
+        base = href.split("#", 1)[0]
+        if not base:
+            return True
+        base_path = urlparse(base).path or "/"
+        return base_path in ("", "/", start_path)
 
     for _ in range(20):  # bounds clicks on menus with many sections/modes
         try:
@@ -90,31 +171,62 @@ def _click_section_tabs(page, tab_words: tuple[str, ...]) -> list[str]:
             break
         target_index = None
         target_label = None
-        for i, c in enumerate(candidates[:250]):
+        target_fragment_href = None
+        # Generous cap: ordering pages stack hundreds of buttons/list items
+        # BEFORE their category nav (Square put Tamale Co's 15 categories
+        # past index 250). The scan is one JS roundtrip either way.
+        for i, c in enumerate(candidates[:800]):
             label = (c.get("text") or "").strip().lower()
             href = c.get("href") or ""
-            if not label or len(label) > 28 or label in seen or label not in tab_words:
+            if not label or len(label) > 28 or label in seen:
                 continue
-            if href and not href.startswith("#"):
+            fragment = _is_same_page_fragment(href)
+            if label not in tab_words and not fragment:
                 continue
-            target_index, target_label = i, label  # keep last match (deepest)
+            if href and not fragment and not href.startswith("#"):
+                continue
+            # keep last match (deepest)
+            target_index, target_label = i, label
+            target_fragment_href = href if fragment and href not in ("", "#") else None
         if target_index is None:
             break
 
         seen.add(target_label)
-        try:
-            page.locator(_TAB_SELECTOR).nth(target_index).click(timeout=1_500)
-        except (PlaywrightError, PlaywrightTimeout):
-            continue  # hidden/covered; marked seen, move on
-        page.wait_for_timeout(800)
-        if page.url != start_url:
-            # The click navigated after all; back out and keep going.
+        if target_fragment_href:
+            # Category links often live in a HIDDEN nav drawer, so clicking
+            # times out on visibility. Navigating to the fragment URL is
+            # same-document SPA routing: works regardless of visibility and
+            # cannot leave the page (same path by construction).
+            try:
+                page.goto(
+                    urljoin(start_url, target_fragment_href),
+                    timeout=15_000,
+                    wait_until="domcontentloaded",
+                )
+            except (PlaywrightError, PlaywrightTimeout):
+                continue
+            page.wait_for_timeout(1_200)
+        else:
+            try:
+                page.locator(_TAB_SELECTOR).nth(target_index).click(timeout=1_500)
+            except (PlaywrightError, PlaywrightTimeout):
+                continue  # hidden/covered; marked seen, move on
+            page.wait_for_timeout(800)
+        # Hash/query changes are same-document SPA routing; only a PATH
+        # change means the click truly navigated away.
+        if urlparse(page.url).path != start_path:
             try:
                 page.go_back()
                 page.wait_for_timeout(800)
             except PlaywrightError:
                 break
             continue
+        try:
+            # Categories often lazy-load their items; nudge before snapshot.
+            page.mouse.wheel(0, 2_500)
+            page.wait_for_timeout(500)
+        except PlaywrightError:
+            pass
         try:
             snapshots.append(page.content())
         except PlaywrightError:
@@ -170,12 +282,40 @@ def fetch_rendered_html(
                         break
                     page.wait_for_timeout(3_000)
 
-                # Nudge lazy-loaded content (long menus often render on scroll).
-                try:
-                    page.mouse.wheel(0, 4_000)
-                    page.wait_for_timeout(1_500)
-                except PlaywrightError:
-                    pass
+                # Lazy AND virtualized lists both defeat single snapshots:
+                # lazy content isn't in the DOM until you scroll to it, and
+                # virtualized lists REMOVE items that scroll out of view — so
+                # no single scroll position ever contains the whole menu.
+                # Scroll in steps, banking every text segment seen; content
+                # gone from the final DOM gets re-attached to the returned
+                # HTML (see _overflow_div / _new_segment_lines).
+                banked: list[str] = []
+                banked_seen: set[str] = set()
+
+                def _bank(lines: list[str]) -> None:
+                    banked.extend(_new_segment_lines(lines, banked_seen))
+                    banked_seen.update(lines)
+
+                def _bank_body() -> None:
+                    try:
+                        body_text = page.inner_text("body")
+                    except PlaywrightError:
+                        return
+                    _bank([l.strip() for l in body_text.splitlines() if l.strip()])
+
+                _bank_body()
+                stalls = 0
+                for _ in range(14):
+                    seen_before = len(banked_seen)
+                    try:
+                        page.mouse.wheel(0, 1_800)
+                    except PlaywrightError:
+                        break
+                    page.wait_for_timeout(650)
+                    _bank_body()
+                    stalls = stalls + 1 if len(banked_seen) == seen_before else 0
+                    if stalls >= 3:
+                        break
                 # Sites that redirect (e.g. Clover) may still be navigating when
                 # we ask for content; retry a couple times after a short wait.
                 html = ""
@@ -196,10 +336,24 @@ def fetch_rendered_html(
                         body_text_len = len(page.inner_text("body"))
                     except PlaywrightError:
                         body_text_len = 0
-                    if body_text_len < 3_000:
-                        snapshots = _click_section_tabs(page, tab_words)
-                        if snapshots:
-                            html = "\n".join([html, *snapshots])
+                    # 6k, not lower: scroll-banking above already fattens the
+                    # body, and a page can look rich while showing one
+                    # category of fifteen (Square Online's "Top Menu Items").
+                    if body_text_len < 6_000:
+                        for snapshot in _click_section_tabs(page, tab_words):
+                            _bank(_text_lines(snapshot))
+                        # Tab/category navigation may have left the page on a
+                        # different section — refresh the base snapshot.
+                        try:
+                            html = page.content()
+                        except PlaywrightError:
+                            pass
+
+                # Re-attach banked content the final DOM no longer contains
+                # (virtualized away, or shown only on other tabs/categories)
+                # so extraction sees everything that was ever on screen.
+                if banked:
+                    html += _overflow_div(html, banked)
             finally:
                 browser.close()
     except PlaywrightTimeout:

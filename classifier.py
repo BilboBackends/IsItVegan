@@ -74,6 +74,12 @@ _SCHEMA = {
                         "description": "The dish's menu description, if any.",
                     },
                     "price": {"type": ["string", "null"]},
+                    "calories": {
+                        "type": ["string", "null"],
+                        "description": "Calorie text printed for this item, "
+                        "including a range when shown (for example '450 cal' "
+                        "or '450-700 cal'). Null when the menu does not say.",
+                    },
                     "category": {
                         "type": "string",
                         "enum": ["food", "drink", "dessert"],
@@ -138,6 +144,7 @@ _SCHEMA = {
                     "name",
                     "description",
                     "price",
+                    "calories",
                     "category",
                     "verdict",
                     "confidence",
@@ -188,6 +195,19 @@ addresses, marketing copy.
 beer, wine, cocktails), dessert, or food. Users looking for vegan options \
 mean food; a vegan soda is not a "vegan option".
 - evidence must be a verbatim excerpt of the provided text, not paraphrase.
+- Copy calories only when the menu explicitly prints them for that item. Keep
+  the displayed number or range and unit (for example "450 cal" or
+  "450-700 calories"); otherwise set calories to null. Never estimate calories.
+- Calibrate, don't hedge reflexively: a dish centered on a plant protein
+  (tofu, tempeh, seitan) or made entirely of vegetables, with NO animal
+  ingredient named anywhere, is vegan when its listed ingredients are
+  complete and plant-based (e.g. an avocado or vegetable sushi roll: rice,
+  nori, vegetables — sushi rice seasoning is plant-based), and otherwise
+  likely_vegan with confidence 0.75-0.85 when preparation details are merely
+  unstated. Reserve confidence below 0.7 for dishes where a SPECIFIC hidden
+  risk genuinely applies in that cuisine (fish sauce in Thai curries, dashi
+  in miso soup, egg noodles) — and name that risk in the reasoning rather
+  than vaguely doubting every sauce.
 - Also classify ingredient-level dietary attributes for future search:
   - dairy_status, gluten_status, and nut_status are free, contains, or unclear.
     Use free only when the listed ingredients and normal preparation support it;
@@ -203,10 +223,12 @@ mean food; a vegan soda is not a "vegan option".
     someone's main (sandwich, entree, burger, pizza, large bowl/salad);
     side = accompaniment, snack, or small plate (fries, chips, side salad,
     bread, hummus cup, most starters). A large/shareable appetizer that could
-    serve as a main counts as meal. Menu section headings ("Sides",
-    "Starters") are strong evidence. Drinks and desserts: use unclear unless
-    obviously side-like. When genuinely torn, prefer side over meal — an
-    understated count is better than an inflated one.
+    serve as a main counts as meal, and an order of sushi rolls (a whole
+    maki roll, 6-8 pieces) is a meal — people order rolls AS lunch or
+    dinner. Menu section headings ("Sides", "Starters") are strong evidence.
+    Drinks and desserts: use unclear unless obviously side-like. When
+    genuinely torn, prefer side over meal — an understated count is better
+    than an inflated one.
   - meal_types contains every plausible context from breakfast, brunch, lunch,
     dinner, and snack. Use menu section headings and ordinary dish usage.
   - key_ingredients contains up to 8 concise lowercase ingredient names useful
@@ -228,6 +250,7 @@ class ClassifiedDish:
     confidence: float
     reasoning: str
     evidence: str
+    calories: str | None = None
     dairy_status: str = "unclear"
     gluten_status: str = "unclear"
     nut_status: str = "unclear"
@@ -306,6 +329,9 @@ def result_from_data(
                 name=name[:200],
                 description=(dish.get("description") or None),
                 price=(dish.get("price") or None),
+                calories=(str(dish.get("calories")).strip()[:50] or None)
+                if dish.get("calories") is not None
+                else None,
                 category=category,
                 verdict=verdict,
                 confidence=confidence,
@@ -385,6 +411,7 @@ def classify_menu(
                     name="Falafel Wrap",
                     description="chickpea, tahini, lettuce, tomato",
                     price="$9",
+                    calories="420 cal",
                     category="food",
                     verdict="vegan",
                     confidence=0.9,

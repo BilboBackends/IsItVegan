@@ -12,6 +12,7 @@ frontend only ever talks to our own backend — no keys client-side.
 """
 from __future__ import annotations
 
+import gzip
 import threading
 
 from flask import Flask, jsonify, request
@@ -31,6 +32,39 @@ from venue_filter import is_consumer_food_venue
 app = Flask(__name__)
 # Allow the Vite dev server origin during local development.
 CORS(app)
+
+
+@app.after_request
+def compress_dish_database(response):
+    """Compress the large cross-restaurant read model for remote browsers.
+
+    Restaurant metadata repeats across dishes, so this endpoint compresses
+    especially well. A short private cache avoids re-downloading it while a
+    user moves between Explore and Saved without hiding fresh classifications
+    for long.
+    """
+    if request.path != "/api/dishes" or response.status_code != 200:
+        return response
+
+    response.cache_control.private = True
+    response.cache_control.max_age = 30
+    if "gzip" not in request.headers.get("Accept-Encoding", "").lower():
+        return response
+    if response.headers.get("Content-Encoding"):
+        return response
+
+    raw = response.get_data()
+    if len(raw) < 1_024:
+        return response
+    compressed = gzip.compress(raw, compresslevel=5)
+    if len(compressed) >= len(raw):
+        return response
+
+    response.set_data(compressed)
+    response.headers["Content-Encoding"] = "gzip"
+    response.headers["Content-Length"] = str(len(compressed))
+    response.vary.add("Accept-Encoding")
+    return response
 
 
 @app.get("/api/health")
@@ -437,9 +471,9 @@ def update_report(report_id: int) -> object:
     return jsonify({"id": report_id, "status": "resolved"})
 
 
-# Live progress for the one background bulk-classify job at a time — same
-# pattern as the ingest job, plus running API-cost accounting so the
-# dashboard can show what each restaurant's classification cost.
+# Live progress for the one background classification job at a time. Both
+# single-row and batch runs use this state so the Admin page can reconnect
+# after a browser refresh without interrupting the model request.
 _classify_state: dict = {
     "running": False,
     "cancel_requested": False,
@@ -460,7 +494,11 @@ _classify_cancel = threading.Event()
 
 
 def _classify_worker(
-    do_all: bool, restaurant_ids: list[int] | None, provider: str | None
+    do_all: bool,
+    restaurant_ids: list[int] | None,
+    provider: str | None,
+    restaurant_id: int | None = None,
+    parallel: int = 3,
 ) -> None:
     import classify
 
@@ -485,11 +523,13 @@ def _classify_worker(
 
     try:
         summary = classify.run(
+            restaurant_id=restaurant_id,
             do_all=do_all,
             restaurant_ids=restaurant_ids,
             on_progress=on_progress,
             should_stop=_classify_cancel.is_set,
             provider=provider,
+            parallel=parallel,
         )
         with _classify_lock:
             _classify_state["summary"] = {
@@ -515,10 +555,10 @@ def run_classify() -> object:
     """Classify dishes via the provider chain: Claude Code subscription,
     Codex/ChatGPT subscription, or the Anthropic API.
 
-    With {"restaurant_id": N}: synchronous, returns that run's result
-    including its estimated cost. Bulk ({} classifies restaurants with menu
-    text but no dishes yet; {"all": true} re-classifies everyone): starts a
-    background job — poll GET /api/classify/status for progress and cost.
+    Every run starts a background job, including {"restaurant_id": N}, so the
+    browser can poll GET /api/classify/status and reconnect after a refresh.
+    Bulk ({} classifies restaurants with menu text but no dishes yet;
+    {"all": true} re-classifies everyone) uses the same job state.
 
     "provider" may be auto, a single provider, or a comma-separated priority
     list. The REQUESTED chain (not the resolved name) is what runs, so a
@@ -534,20 +574,12 @@ def run_classify() -> object:
         return jsonify({"error": str(exc)}), 400
 
     restaurant_id = payload.get("restaurant_id")
-    if restaurant_id is not None:
-        try:
-            import classify
+    if restaurant_id is not None and (
+        not isinstance(restaurant_id, int) or isinstance(restaurant_id, bool)
+    ):
+        return jsonify({"error": "restaurant_id must be an integer."}), 400
 
-            result = classify.run(
-                restaurant_id=restaurant_id, provider=requested_provider
-            )
-        except SystemExit as exc:  # e.g. restaurant has no menu text yet
-            return jsonify({"error": str(exc)}), 400
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 502
-        return jsonify(result)
-
-    restaurant_ids = payload.get("restaurant_ids")
+    restaurant_ids = None if restaurant_id is not None else payload.get("restaurant_ids")
     if restaurant_ids is not None and (
         not isinstance(restaurant_ids, list)
         or not restaurant_ids
@@ -557,6 +589,10 @@ def run_classify() -> object:
         return jsonify({"error": "restaurant_ids must be 1-100 integer IDs."}), 400
     if restaurant_ids is not None:
         restaurant_ids = list(dict.fromkeys(restaurant_ids))
+
+    parallel = payload.get("parallel", 3)
+    if not isinstance(parallel, int) or isinstance(parallel, bool) or not 1 <= parallel <= 6:
+        return jsonify({"error": "parallel must be an integer from 1 to 6."}), 400
 
     with _classify_lock:
         if _classify_state["running"]:
@@ -574,10 +610,16 @@ def run_classify() -> object:
         _classify_cancel.clear()
     threading.Thread(
         target=_classify_worker,
-        args=(bool(payload.get("all")), restaurant_ids, requested_provider),
+        args=(
+            bool(payload.get("all")),
+            restaurant_ids,
+            requested_provider,
+            restaurant_id,
+            parallel,
+        ),
         daemon=True,
     ).start()
-    return jsonify({"started": True}), 202
+    return jsonify({"started": True, "provider": provider}), 202
 
 
 @app.post("/api/classify/stop")

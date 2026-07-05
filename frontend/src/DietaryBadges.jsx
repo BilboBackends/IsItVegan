@@ -4,26 +4,19 @@ const BADGES = [
   ["nut_status", "Nut-free", "bg-orange-50 text-orange-800"],
 ];
 
-export default function DietaryBadges({ dish, includeMeals = false }) {
-  const badges = BADGES.filter(([field]) => dish[field] === "free").map(
-    ([field, label, style]) => ({
-      key: field,
-      label,
-      style,
-      title: "Inferred from menu ingredients; confirm allergy and cross-contact needs with the restaurant",
-    })
-  );
+export default function DietaryBadges({ dish, maxBadges = Infinity }) {
+  const badges = [];
   // A side/accompaniment is not a meal — surface that up front so a bag of
   // chips can't masquerade as a dinner option.
   if (dish.serving_role === "meal") {
-    badges.unshift({
+    badges.push({
       key: "serving-role",
       label: "Full meal",
       style: "bg-emerald-100 text-emerald-800",
       title: "Classified as substantial enough to be a main meal",
     });
   } else if (dish.serving_role === "side") {
-    badges.unshift({
+    badges.push({
       key: "serving-role",
       label: "Side / small plate",
       style: "bg-stone-200 text-stone-700",
@@ -38,20 +31,21 @@ export default function DietaryBadges({ dish, includeMeals = false }) {
       title: "Inferred from the listed ingredients and typical serving",
     });
   }
-  if (includeMeals) {
-    for (const meal of dish.meal_types || []) {
-      badges.push({
-        key: `meal-${meal}`,
-        label: meal,
-        style: "bg-stone-100 text-stone-600 capitalize",
-        title: `Suitable as ${meal}`,
-      });
-    }
-  }
+  badges.push(
+    ...BADGES.filter(([field]) => dish[field] === "free").map(
+      ([field, label, style]) => ({
+        key: field,
+        label,
+        style,
+        title: "Inferred from menu ingredients; confirm allergy and cross-contact needs with the restaurant",
+      })
+    )
+  );
   if (badges.length === 0) return null;
+  const visibleBadges = badges.slice(0, maxBadges);
   return (
     <>
-      {badges.map((badge) => (
+      {visibleBadges.map((badge) => (
         <span
           key={badge.key}
           className={`rounded-full px-2.5 py-1 text-xs font-medium ${badge.style}`}

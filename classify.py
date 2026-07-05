@@ -66,13 +66,22 @@ def run(
     on_progress=None,
     should_stop=None,
     provider: str | None = None,
+    parallel: int = 3,
 ) -> dict:
     """Classify targets; on_progress (optional) receives event dicts so a live
     caller (the Admin dashboard) can show progress and per-restaurant cost:
     {"total": N}, {"current": name}, {"result": {..., "cost": $}}.
-    should_stop (optional) is checked between restaurants so a background job
-    can stop without interrupting an API response or a database write.
+    should_stop (optional) is checked before each new restaurant starts so a
+    background job can stop without interrupting a model call in flight.
+
+    parallel: how many restaurants classify CONCURRENTLY (capped at 6). Model
+    calls are I/O-bound (API/CLI round-trips), so a small worker pool cuts a
+    bulk run's wall time near-linearly. Only the model call runs in worker
+    threads — every SQLite write and progress event happens on this thread,
+    so persistence stays serial and safe.
     """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
     def _emit(event: dict) -> None:
         if on_progress is not None:
             on_progress(event)
@@ -80,7 +89,12 @@ def run(
     db.init_db()
     targets = _targets(restaurant_id, do_all, restaurant_ids)
     _emit({"total": len(targets)})
-    print(f"Classifying {len(targets)} restaurant(s)...\n")
+    workers = max(1, min(int(parallel or 1), 6))
+    print(
+        f"Classifying {len(targets)} restaurant(s)"
+        + (f" ({workers} in parallel)" if workers > 1 else "")
+        + "...\n"
+    )
 
     ok_count = fail_count = dish_count = 0
     total_cost = 0.0
@@ -89,16 +103,11 @@ def run(
     used_provider = provider
     used_billing = None
 
-    for r in targets:
-        if should_stop is not None and should_stop():
-            cancelled = True
-            break
-        _emit({"current": r["name"]})
+    def _classify_target(r: dict):
+        """Worker-thread part: read menu text, call the model. No writes."""
         source = db.get_menu_text(r["id"])
         if source is None:
-            _emit({"result": {"name": r["name"], "ok": False,
-                              "error": "no menu text"}})
-            continue
+            return None, None
         result = classify_menu(
             source["content"],
             restaurant_name=r["name"],
@@ -111,6 +120,16 @@ def run(
             mock=mock,
             provider=provider,
         )
+        return source, result
+
+    def _handle(r: dict, source, result) -> None:
+        """Coordinator-thread part: counters, events, and ALL DB writes."""
+        nonlocal ok_count, fail_count, dish_count, total_cost
+        nonlocal used_provider, used_billing
+        if source is None:
+            _emit({"result": {"name": r["name"], "ok": False,
+                              "error": "no menu text"}})
+            return
         used_provider = result.provider
         used_billing = result.billing
         if not result.ok:
@@ -119,7 +138,7 @@ def run(
             print(f"  [fail] {r['name']} — {result.error}")
             _emit({"result": {"name": r["name"], "ok": False,
                               "error": result.error}})
-            continue
+            return
 
         veganish = sum(
             1
@@ -151,7 +170,7 @@ def run(
         }})
 
         if dry_run:
-            continue
+            return
         classified_at = datetime.now(timezone.utc).isoformat()
         db.record_classify_cost(
             r["id"],
@@ -163,7 +182,12 @@ def run(
         db.delete_dishes_for_restaurant(r["id"])
         for d in result.dishes:
             dish_id = db.upsert_dish(
-                r["id"], d.name, d.description, d.price, category=d.category
+                r["id"],
+                d.name,
+                d.description,
+                d.price,
+                category=d.category,
+                calories=d.calories,
             )
             # Evidence lives in reasoning text; source_id links the verdict to
             # the scraped menu source it came from (explainability, CLAUDE.md).
@@ -186,6 +210,38 @@ def run(
                 meal_types=d.meal_types,
                 key_ingredients=d.key_ingredients,
             )
+
+    queue = list(targets)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending: dict = {}
+
+        def _submit_more() -> None:
+            nonlocal cancelled
+            while queue and len(pending) < workers:
+                if should_stop is not None and should_stop():
+                    cancelled = True
+                    queue.clear()
+                    return
+                target = queue.pop(0)
+                _emit({"current": target["name"]})
+                pending[pool.submit(_classify_target, target)] = target
+
+        _submit_more()
+        while pending:
+            done, _ = wait(list(pending), return_when=FIRST_COMPLETED)
+            for future in done:
+                target = pending.pop(future)
+                try:
+                    source, result = future.result()
+                except Exception as exc:
+                    fail_count += 1
+                    failures.append((target["name"], f"{type(exc).__name__}: {exc}"))
+                    print(f"  [fail] {target['name']} — {exc}")
+                    _emit({"result": {"name": target["name"], "ok": False,
+                                      "error": str(exc)}})
+                    continue
+                _handle(target, source, result)
+            _submit_more()
 
     status = "Stopped" if cancelled else "Done"
     print(
@@ -217,9 +273,14 @@ def main() -> None:
         help="auto | claude | codex | anthropic, or a comma-separated "
         "priority list (e.g. claude,codex). auto = claude, codex, anthropic.",
     )
+    parser.add_argument(
+        "--parallel", type=int, default=3,
+        help="How many restaurants to classify concurrently (1-6, default 3).",
+    )
     args = parser.parse_args()
     run(restaurant_id=args.restaurant_id, do_all=args.all,
-        dry_run=args.dry_run, mock=args.mock, provider=args.provider)
+        dry_run=args.dry_run, mock=args.mock, provider=args.provider,
+        parallel=args.parallel)
 
 
 if __name__ == "__main__":

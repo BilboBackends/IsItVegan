@@ -4,6 +4,7 @@ import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 import { VerdictChip } from "./DishModal.jsx";
+import { calorieLabel } from "./calories.js";
 
 const ISSUES = [
   ["animal_ingredient", "Contains an animal ingredient"],
@@ -88,6 +89,11 @@ export default function DishDetail({
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-extrabold text-stone-900">{dish.name}</h2>
               {dish.price && <span className="font-semibold text-stone-400">{dish.price}</span>}
+              {dish.calories && (
+                <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold text-stone-600">
+                  {calorieLabel(dish.calories)}
+                </span>
+              )}
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-emerald-800">
               {dish.restaurant_name}
@@ -110,7 +116,7 @@ export default function DishDetail({
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           <div className="flex flex-wrap items-center gap-2">
             <VerdictChip verdict={dish.verdict} />
-            <DietaryBadges dish={dish} includeMeals />
+            <DietaryBadges dish={dish} />
             {dish.confidence != null && (
               <span className="text-xs font-semibold text-stone-500">{Math.round(dish.confidence * 100)}% confidence</span>
             )}

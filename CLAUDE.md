@@ -78,7 +78,7 @@ restaurants
   id, name, address, place_id, website_url, lat, lng, last_scraped_at
 
 dishes
-  id, restaurant_id, name, raw_description, price
+  id, restaurant_id, name, raw_description, price, calories, category
 
 sources
   id, dish_id, type (text|image), content (excerpt or image_url), fetched_at

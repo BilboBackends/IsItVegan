@@ -140,15 +140,25 @@ python ingest.py --dry-run
 ```
 
 The scraper follows menu-like links two hops deep (menu index pages link out
-to per-section pages), keeps EVERY page that scores as a menu (lunch, dinner,
-brunch, drinks — stored one source row per page and combined for
-classification), and scores each page with a menu detector (`menu_score.py`)
-— prices, food words, menu-section headers, list structure. Homepage
-marketing copy is rejected rather than fed to Claude. When plain HTTP finds
-nothing convincing — third-party ordering links present, only a single
-section captured, or a suspiciously tiny "menu" — it escalates to a headless
-browser, which also clicks through tabbed menu widgets that keep only the
-active section in the DOM.
+to per-section pages), always probes the conventional `/menu` path (JS-built
+navs hide links from static HTML), keeps EVERY page that scores as a menu
+(lunch, dinner, brunch, drinks — stored one source row per page and combined
+for classification), and scores each page with a menu detector
+(`menu_score.py`) — prices, food words, menu-section headers, list
+structure. Homepage marketing copy is rejected rather than fed to Claude.
+
+Structured data beats DOM scraping when available (`structured_menu.py`):
+every fetched page is mined for schema.org Menu JSON-LD (Popmenu et al.
+embed the FULL menu for SEO) and for ordering-platform state JSON in inline
+scripts — platforms that visibly render 15 items often ship 170 as data.
+
+When plain HTTP finds nothing convincing — third-party ordering links
+present, only a single section captured, or a suspiciously tiny "menu" — it
+escalates to a headless browser, which scrolls in steps banking text so
+lazy-loaded AND virtualized lists (items removed from the DOM as you scroll)
+are captured whole, clicks through tabbed menu widgets, and navigates
+same-page category fragments (Square Online) even when their nav drawer is
+hidden.
 
 Quality is watched two ways so regressions surface without manual deep dives:
 
@@ -188,6 +198,9 @@ gluten, and nut status; protein level; meal-versus-side serving role; likely
 meal contexts; and normalized key ingredients so discovery can improve without
 another model call. Restaurant totals count full vegan meals separately from
 sides and small plates; drinks and desserts are excluded from both totals.
+When a menu explicitly prints calories, the displayed value or range is stored
+verbatim on the dish and shown throughout the consumer menu views; calories are
+never estimated.
 Older classifications default to `unclear` and remain in the meal count until
 that restaurant is reclassified with the expanded schema.
 Structured outputs guarantee valid JSON; truncated
@@ -215,6 +228,17 @@ uses Anthropic when Codex is unavailable before a request starts. Set it to
 also choose per run. Codex runs are ephemeral and read-only and use JSON-schema
 structured output. A failed/limited Codex request never silently falls through
 to a billable Anthropic retry.
+
+Admin classification runs—including a single restaurant's **reclassify**
+button—run in the backend and expose live provider/progress status. Reloading
+the browser reconnects to the active job and does not stop it. Job state is
+currently process-local: restarting or auto-reloading the Flask backend ends
+the worker and cannot resume an in-flight model response.
+
+Admin also shows each stored menu's exact character count, workload band, a
+broad runtime range, and the Anthropic cost estimate when the metered API is
+selected. Runtime is intentionally approximate because provider load and dish
+density can matter as much as raw menu length.
 
 ## Discovery configuration (`.env`)
 

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS dishes (
     name            TEXT NOT NULL,
     raw_description TEXT,
     price           TEXT,
+    calories        TEXT,   -- explicit menu value/range; never estimated
     category        TEXT,   -- food | drink | dessert (NULL = assume food)
     UNIQUE (restaurant_id, name)
 );
@@ -152,6 +153,8 @@ _MIGRATIONS = {
         # food | drink | dessert — drinks are excluded from the headline
         # "vegan options" count (a list of vegan sodas isn't the product).
         "category": "TEXT",
+        # Verbatim calorie value/range when printed on the menu.
+        "calories": "TEXT",
     },
     "classifications": {
         # Ingredient-level discovery attributes inferred alongside the vegan
@@ -482,17 +485,20 @@ def upsert_dish(
     raw_description: str | None,
     price: str | None,
     category: str | None = None,
+    calories: str | None = None,
     db_path: str | None = None,
 ) -> int:
     """Insert or update a dish keyed on (restaurant_id, name); return dish id."""
     with connect(db_path) as conn:
         row = conn.execute(
             """
-            INSERT INTO dishes (restaurant_id, name, raw_description, price, category)
-            VALUES (:rid, :name, :descr, :price, :category)
+            INSERT INTO dishes
+                (restaurant_id, name, raw_description, price, calories, category)
+            VALUES (:rid, :name, :descr, :price, :calories, :category)
             ON CONFLICT (restaurant_id, name) DO UPDATE SET
                 raw_description = excluded.raw_description,
                 price           = excluded.price,
+                calories        = excluded.calories,
                 category        = excluded.category
             RETURNING id
             """,
@@ -501,6 +507,7 @@ def upsert_dish(
                 "name": name,
                 "descr": raw_description,
                 "price": price,
+                "calories": calories,
                 "category": category,
             },
         ).fetchone()
@@ -588,7 +595,8 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT d.id, d.name, d.raw_description, d.price, d.category,
+            SELECT d.id, d.name, d.raw_description, d.price, d.calories,
+                   d.category,
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
@@ -632,7 +640,7 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
         rows = conn.execute(
             """
             SELECT d.id, d.restaurant_id, d.name, d.raw_description,
-                   d.price, d.category,
+                   d.price, d.calories, d.category,
                    c.verdict, c.confidence, c.reasoning, c.model_version,
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,

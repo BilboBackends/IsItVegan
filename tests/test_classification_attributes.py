@@ -29,6 +29,7 @@ def test_dietary_attributes_round_trip_through_dish_reads(tmp_path):
         "tofu, black beans, mushroom",
         "$14",
         category="food",
+        calories="520-610 cal",
         db_path=path,
     )
     db.insert_classification(
@@ -53,11 +54,13 @@ def test_dietary_attributes_round_trip_through_dish_reads(tmp_path):
     assert dish["dairy_status"] == "free"
     assert dish["protein_level"] == "high"
     assert dish["serving_role"] == "meal"
+    assert dish["calories"] == "520-610 cal"
     assert dish["meal_types"] == ["breakfast", "brunch"]
     assert dish["key_ingredients"] == ["tofu", "black bean", "mushroom"]
 
     searchable = db.list_all_dishes(path)[0]
     assert searchable["gluten_status"] == "free"
+    assert searchable["calories"] == "520-610 cal"
     assert searchable["key_ingredients"] == ["tofu", "black bean", "mushroom"]
 
 
@@ -68,6 +71,7 @@ def test_mock_classifier_populates_future_search_attributes():
     dish = result.dishes[0]
     assert dish.dairy_status == "free"
     assert dish.protein_level == "moderate"
+    assert dish.calories == "420 cal"
     assert "chickpea" in dish.key_ingredients
 
 
@@ -78,6 +82,7 @@ def test_provider_output_uses_shared_validation(monkeypatch):
                 "name": "  Tofu Plate  ",
                 "description": "tofu and mushrooms",
                 "price": "$12",
+                "calories": "480 cal",
                 "category": "food",
                 "verdict": "vegan",
                 "confidence": 1.4,
@@ -115,6 +120,7 @@ def test_provider_output_uses_shared_validation(monkeypatch):
     assert result.dishes[0].name == "Tofu Plate"
     assert result.dishes[0].confidence == 1.0
     assert result.dishes[0].serving_role == "meal"
+    assert result.dishes[0].calories == "480 cal"
     assert result.dishes[0].key_ingredients == ["tofu", "mushroom"]
 
 

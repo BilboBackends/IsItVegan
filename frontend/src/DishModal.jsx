@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
+import { calorieLabel } from "./calories.js";
 import { isCountedVegan } from "./verdicts.js";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
@@ -273,6 +274,11 @@ export default function DishModal({ restaurant, onClose }) {
                           {d.price}
                         </span>
                       )}
+                      {d.calories && (
+                        <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                          {calorieLabel(d.calories)}
+                        </span>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <VerdictChip verdict={d.verdict} />
@@ -289,7 +295,7 @@ export default function DishModal({ restaurant, onClose }) {
                     </div>
                   )}
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    <DietaryBadges dish={d} includeMeals />
+                    <DietaryBadges dish={d} maxBadges={3} />
                   </div>
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>

@@ -80,6 +80,7 @@ function searchableText(dish) {
     [
       dish.name,
       dish.raw_description,
+      dish.calories,
       dish.restaurant_name,
       dish.primary_type,
       dish.address,
@@ -90,6 +91,15 @@ function searchableText(dish) {
       .filter(Boolean)
       .join(" ")
   );
+}
+
+export function buildDishSearchIndex(dish) {
+  return {
+    haystack: searchableText(dish),
+    name: normalizeSearch(dish.name),
+    description: normalizeSearch(dish.raw_description),
+    ingredients: normalizeSearch((dish.key_ingredients || []).join(" ")),
+  };
 }
 
 function hasTerm(haystack, term) {
@@ -108,8 +118,8 @@ function looksHighProtein(dish, haystack) {
   return PROTEIN_TERMS.some((term) => haystack.includes(term));
 }
 
-export function dishMatchesQuery(dish, intent) {
-  const haystack = searchableText(dish);
+export function dishMatchesQuery(dish, intent, index = null) {
+  const haystack = index?.haystack ?? searchableText(dish);
   if (intent.veganFriendly && !VEGANISH.has(dish.verdict)) return false;
   if (intent.dairyFree && dish.dairy_status !== "free") return false;
   if (intent.glutenFree && dish.gluten_status !== "free") return false;
@@ -119,11 +129,11 @@ export function dishMatchesQuery(dish, intent) {
   return intent.terms.every((term) => hasTerm(haystack, term));
 }
 
-export function dishSearchScore(dish, rawQuery, intent) {
+export function dishSearchScore(dish, rawQuery, intent, index = null) {
   const query = normalizeSearch(rawQuery);
-  const name = normalizeSearch(dish.name);
-  const description = normalizeSearch(dish.raw_description);
-  const ingredients = normalizeSearch((dish.key_ingredients || []).join(" "));
+  const name = index?.name ?? normalizeSearch(dish.name);
+  const description = index?.description ?? normalizeSearch(dish.raw_description);
+  const ingredients = index?.ingredients ?? normalizeSearch((dish.key_ingredients || []).join(" "));
   let score = 0;
   if (name === query) score += 100;
   else if (query && name.startsWith(query)) score += 70;

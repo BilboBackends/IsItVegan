@@ -3,6 +3,7 @@ import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 import { VerdictChip } from "./DishModal.jsx";
+import { loadDishes } from "./dishData.js";
 
 export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }) {
   const [restaurants, setRestaurants] = useState([]);
@@ -12,11 +13,11 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
   useEffect(() => {
     Promise.all([
       fetch("/api/restaurants").then((response) => response.json()),
-      fetch("/api/dishes").then((response) => response.json()),
+      loadDishes(),
     ])
       .then(([restaurantData, dishData]) => {
         setRestaurants(restaurantData.restaurants || []);
-        setDishes(dishData.dishes || []);
+        setDishes(dishData);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -99,7 +100,10 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
                         {dish.name}
                       </a>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
-                        <span>{dish.restaurant_name}</span>
+                        <span>
+                          <span className="font-medium text-stone-400">Restaurant:</span>{" "}
+                          {dish.restaurant_name}
+                        </span>
                         <VerdictChip verdict={dish.verdict} />
                         {dish.price && <span>{dish.price}</span>}
                       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
@@ -8,16 +8,20 @@ import { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, relativeDate } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import { calorieLabel } from "./calories.js";
 import { parsePriceValue } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
 import {
+  buildDishSearchIndex,
   dishMatchesQuery,
   dishSearchScore,
   parseDishQuery,
   queryIntentLabels,
 } from "./dishSearch.js";
+import { loadDishes } from "./dishData.js";
 
 const MAITLAND = { lat: 28.6278, lng: -81.3631 };
+const RESULTS_PAGE_SIZE = 120;
 const RANGES = [
   { miles: 0, label: "Any distance" },
   { miles: 1, label: "Within 1 mi" },
@@ -102,9 +106,11 @@ export default function DishExplore({
     () => window.matchMedia("(min-width: 1024px)").matches
   );
   const [focus, setFocus] = useState(null);
+  const [visibleLimit, setVisibleLimit] = useState(RESULTS_PAGE_SIZE);
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
+  const loadMoreRef = useRef(null);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -138,12 +144,8 @@ export default function DishExplore({
   }
 
   useEffect(() => {
-    fetch("/api/dishes")
-      .then((res) => {
-        if (!res.ok) throw new Error(`API ${res.status}`);
-        return res.json();
-      })
-      .then((data) => setDishes(data.dishes || []))
+    loadDishes()
+      .then(setDishes)
       .catch((e) => setError(e.message || "Could not load the dish database."))
       .finally(() => setLoading(false));
   }, []);
@@ -191,11 +193,18 @@ export default function DishExplore({
     [dishes, origin]
   );
 
-  const parsedQuery = useMemo(() => parseDishQuery(query), [query]);
+  // Keep typing responsive while React computes a result set for the latest
+  // settled query. The normalized index itself is built only once per fetch.
+  const deferredQuery = useDeferredValue(query);
+  const searchIndex = useMemo(
+    () => new Map(dishes.map((dish) => [dish.id, buildDishSearchIndex(dish)])),
+    [dishes]
+  );
+  const parsedQuery = useMemo(() => parseDishQuery(deferredQuery), [deferredQuery]);
   const queryIntent = useMemo(() => queryIntentLabels(parsedQuery), [parsedQuery]);
 
   const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferredQuery.trim().toLowerCase();
     const out = dishesWithDistance.filter((dish) => {
       if (verdict !== "all" && dish.verdict !== verdict) return false;
       if (categoryOf(dish) !== category) return false;
@@ -209,14 +218,28 @@ export default function DishExplore({
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) return false;
       if (maxMiles > 0 && (dish.distance == null || dish.distance > maxMiles)) return false;
       if (!q) return true;
-      return dishMatchesQuery(dish, parsedQuery);
+      return dishMatchesQuery(dish, parsedQuery, searchIndex.get(dish.id));
     });
+
+    // The old comparator recalculated and renormalized both dishes on every
+    // comparison (O(n log n) expensive text work). Compute each score once.
+    const relevanceScores = q
+      ? new Map(
+          out.map((dish) => [
+            dish.id,
+            dishSearchScore(
+              dish,
+              deferredQuery,
+              parsedQuery,
+              searchIndex.get(dish.id)
+            ),
+          ])
+        )
+      : null;
 
     return out.sort((a, b) => {
       if (q) {
-        const relevance =
-          dishSearchScore(b, query, parsedQuery) -
-          dishSearchScore(a, query, parsedQuery);
+        const relevance = relevanceScores.get(b.id) - relevanceScores.get(a.id);
         if (relevance) return relevance;
       }
       if (sortBy === "restaurant") {
@@ -248,8 +271,9 @@ export default function DishExplore({
     });
   }, [
     dishesWithDistance,
-    query,
+    deferredQuery,
     parsedQuery,
+    searchIndex,
     verdict,
     category,
     servingRole,
@@ -260,9 +284,48 @@ export default function DishExplore({
     sortBy,
   ]);
 
+  useEffect(() => {
+    setVisibleLimit(RESULTS_PAGE_SIZE);
+  }, [
+    deferredQuery,
+    verdict,
+    category,
+    servingRole,
+    maxPrice,
+    restaurant,
+    cuisine,
+    maxMiles,
+    sortBy,
+  ]);
+
+  const visibleDishes = useMemo(
+    () => shown.slice(0, visibleLimit),
+    [shown, visibleLimit]
+  );
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || visibleLimit >= shown.length) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisibleLimit((current) =>
+            Math.min(current + RESULTS_PAGE_SIZE, shown.length)
+          );
+        }
+      },
+      { rootMargin: "500px" }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [shown.length, visibleLimit]);
+
   const selectedDish = dishesWithDistance.find((dish) => dish.id === selectedDishId) || null;
 
-  const veganCount = dishes.filter(isCountedVegan).length;
+  const veganCount = useMemo(
+    () => dishes.filter(isCountedVegan).length,
+    [dishes]
+  );
 
   const selectedRestaurant =
     restaurant === "all"
@@ -732,7 +795,11 @@ export default function DishExplore({
           ) : (
             <>
           <div className="mb-2 flex items-center justify-between text-xs font-medium uppercase tracking-wide text-stone-400">
-            <span>{shown.length.toLocaleString()} menu item{shown.length === 1 ? "" : "s"}</span>
+            <span>
+              {query !== deferredQuery
+                ? "Updating results…"
+                : `${shown.length.toLocaleString()} menu item${shown.length === 1 ? "" : "s"}`}
+            </span>
             {(query || verdict !== "all" || category !== "food" || servingRole !== "all" || restaurant !== "all" || cuisine !== "all" || maxMiles > 0) && (
               <button onClick={clearFilters} className="normal-case tracking-normal text-emerald-700 hover:underline">
                 Clear filters
@@ -740,7 +807,7 @@ export default function DishExplore({
             )}
           </div>
           <ol className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm divide-y divide-stone-100">
-            {shown.map((dish) => {
+            {visibleDishes.map((dish) => {
               const details = splitReasoning(dish.reasoning);
               const cuisine = prettyType(dish.primary_type);
               return (
@@ -755,6 +822,11 @@ export default function DishExplore({
                           {dish.name}
                         </button>
                         {dish.price && <span className="text-sm font-medium text-stone-400">{dish.price}</span>}
+                        {dish.calories && (
+                          <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold text-stone-500">
+                            {calorieLabel(dish.calories)}
+                          </span>
+                        )}
                       </div>
                       {dish.raw_description && (
                         <p className="mt-1 text-sm leading-relaxed text-stone-600">{dish.raw_description}</p>
@@ -779,13 +851,13 @@ export default function DishExplore({
                     <button
                       onClick={() => showRestaurantItems(dish.restaurant_id)}
                       className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-800 hover:bg-emerald-100"
-                      title={`Show every item from ${dish.restaurant_name}`}
+                      title={`Restaurant — show every menu item from ${dish.restaurant_name}`}
                     >
+                      <span className="font-medium text-emerald-600">Restaurant:</span>{" "}
                       {dish.restaurant_name}
                     </button>
                     {cuisine && <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-600">{cuisine}</span>}
-                    <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-500">{categoryOf(dish)}</span>
-                    <DietaryBadges dish={dish} includeMeals />
+                    <DietaryBadges dish={dish} maxBadges={3} />
                     <RatingBadge
                       rating={dish.rating}
                       userRatingCount={dish.user_rating_count}
@@ -793,9 +865,6 @@ export default function DishExplore({
                     />
                     <OpenStatusBadge openNow={dish.open_now} enrichedAt={dish.enriched_at} />
                     <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
-                    {dish.serves_vegetarian === 1 && (
-                      <span className="rounded-full bg-lime-50 px-2.5 py-1 font-medium text-lime-800">veg-friendly restaurant</span>
-                    )}
                   </div>
 
                   {(details.reasoning || details.evidence) && (
@@ -833,6 +902,14 @@ export default function DishExplore({
               );
             })}
           </ol>
+          {visibleDishes.length < shown.length && (
+            <div
+              ref={loadMoreRef}
+              className="py-4 text-center text-xs font-medium text-stone-400"
+            >
+              Showing {visibleDishes.length.toLocaleString()} of {shown.length.toLocaleString()} — loading more as you scroll…
+            </div>
+          )}
             </>
           )}
         </div>

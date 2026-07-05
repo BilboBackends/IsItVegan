@@ -85,6 +85,7 @@ def _persist(
             dish.description,
             dish.price,
             category=dish.category,
+            calories=dish.calories,
         )
         reasoning = dish.reasoning
         if dish.evidence:

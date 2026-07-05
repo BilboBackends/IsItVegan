@@ -99,6 +99,34 @@ function classificationDate(value) {
   });
 }
 
+function menuWorkload(value) {
+  const chars = Number(value) || 0;
+  const formatted =
+    chars >= 10_000
+      ? `${Math.round(chars / 1000)}k chars`
+      : chars >= 1000
+        ? `${(chars / 1000).toFixed(1)}k chars`
+        : `${chars.toLocaleString()} chars`;
+  if (chars <= 0) {
+    return { formatted, label: "No menu", runtime: "—", style: "bg-slate-100 text-slate-500" };
+  }
+  if (chars <= 5000) {
+    return { formatted, label: "Small", runtime: "<2 min", style: "bg-emerald-100 text-emerald-800" };
+  }
+  if (chars <= 15_000) {
+    return { formatted, label: "Medium", runtime: "2–5 min", style: "bg-sky-100 text-sky-800" };
+  }
+  if (chars <= 30_000) {
+    return { formatted, label: "Large", runtime: "4–8 min", style: "bg-amber-100 text-amber-800" };
+  }
+  return {
+    formatted,
+    label: chars > 50_000 ? "Very large · 50k cap" : "Very large",
+    runtime: "7–12+ min",
+    style: "bg-rose-100 text-rose-800",
+  };
+}
+
 // Live progress for a background pipeline job (bulk scrape / bulk classify).
 // `job` is the polled /api/<job>/status payload; classify jobs also carry a
 // running API-cost total and per-restaurant costs.
@@ -107,10 +135,17 @@ function JobProgressPanel({ job, title, onStop }) {
   return (
     <section className="mb-6 rounded-xl border border-emerald-200 bg-white p-4 shadow-sm">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
-        <span className="font-semibold text-slate-900">
-          {title}…{" "}
-          {job.total != null ? `${job.done} of ${job.total}` : "preparing"}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold text-slate-900">
+            {title}…{" "}
+            {job.total != null ? `${job.done} of ${job.total}` : "preparing"}
+          </span>
+          {job.provider && (
+            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-bold text-violet-800">
+              {PROVIDER_LABELS[job.provider] || job.provider}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-slate-500">
             <span className="font-semibold text-emerald-700">{job.succeeded} ok</span>
@@ -150,9 +185,12 @@ function JobProgressPanel({ job, title, onStop }) {
         />
       </div>
       {job.current && (
-        <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
           <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
           now: <span className="font-medium text-slate-700">{job.current}</span>
+          <span className="text-slate-400">
+            · waiting for {PROVIDER_LABELS[job.provider] || "the provider"} response
+          </span>
         </div>
       )}
       {job.recent?.length > 0 && (
@@ -256,8 +294,8 @@ export default function Admin() {
 
   useEffect(() => {
     loadData();
-    // If a bulk scrape/classify is already running (e.g. the page was
-    // reloaded mid-run), pick the progress views back up.
+    // If a background scrape/classification is already running (including a
+    // one-row reclassify), reconnect after a browser reload.
     (async () => {
       try {
         const res = await fetch("/api/ingest/status");
@@ -526,8 +564,10 @@ export default function Admin() {
   }
 
   async function runRowAction(r, action) {
-    // action: "ingest" (rescrape menu) | "classify" (re-run Claude verdicts)
+    // Classification uses the shared background job so progress survives a
+    // browser refresh; ingestion remains a synchronous one-row debug action.
     setRowBusy({ id: r.id, action });
+    if (action === "classify") setClassifying(true);
     setNotice(null);
     setError(null);
     try {
@@ -541,20 +581,19 @@ export default function Admin() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `${action} failed (${res.status})`);
-      setNotice(
-        action === "ingest"
-          ? `Rescraped ${r.name}: ${data.succeeded ? "menu found" : "no menu found"}${
-              data.failures?.[0] ? ` — ${data.failures[0].error}` : ""
-            }`
-          : `Reclassified ${r.name}: ${data.dishes} dishes` +
-            (data.billing === "api"
-              ? ` (~$${data.cost.toFixed(2)} API cost)`
-              : ` via ${PROVIDER_LABELS[data.provider] || "subscription"}`) +
-            `.`
-      );
-      await loadData();
+      if (action === "classify") {
+        await pollClassify();
+      } else {
+        setNotice(
+          `Rescraped ${r.name}: ${data.succeeded ? "menu found" : "no menu found"}${
+            data.failures?.[0] ? ` — ${data.failures[0].error}` : ""
+          }`
+        );
+        await loadData();
+      }
     } catch (e) {
       setError(`${r.name}: ${e.message}`);
+      if (action === "classify") setClassifying(false);
     } finally {
       setRowBusy(null);
     }
@@ -788,6 +827,13 @@ export default function Admin() {
       selectedRestaurants
         .filter((restaurant) => restaurant.has_menu_text)
         .reduce((sum, restaurant) => sum + (restaurant.classify_estimate || 0), 0),
+    [selectedRestaurants]
+  );
+  const selectedClassifyChars = useMemo(
+    () =>
+      selectedRestaurants
+        .filter((restaurant) => restaurant.has_menu_text)
+        .reduce((sum, restaurant) => sum + (restaurant.menu_chars || 0), 0),
     [selectedRestaurants]
   );
   const allFilteredSelected =
@@ -1240,6 +1286,9 @@ export default function Admin() {
             }
           >
             Reclassify ({selectedClassifyIds.length}
+            {selectedClassifyIds.length > 0
+              ? ` · ${menuWorkload(selectedClassifyChars).formatted}`
+              : ""}
             {classifierUsesApi
               ? ` · ~$${selectedClassifyCost.toFixed(2)}`
               : ` · ${classifierProviderLabel}`})
@@ -1266,7 +1315,7 @@ export default function Admin() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1680px] text-left text-sm">
+              <table className="w-full min-w-[1840px] text-left text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="w-10 px-3 py-3 text-center font-medium">
@@ -1287,6 +1336,7 @@ export default function Admin() {
                     <th className="px-4 py-3 font-medium">Veg?</th>
                     <th className="px-4 py-3 font-medium">Address</th>
                     <th className="px-4 py-3 font-medium">Website</th>
+                    <th className="px-4 py-3 font-medium">Menu size / estimate</th>
                     <th className="px-4 py-3 font-medium">Menu score</th>
                     <th className="px-4 py-3 font-medium">Last classified</th>
                     <th className="px-4 py-3 font-medium">Vegan meals / sides</th>
@@ -1310,7 +1360,7 @@ export default function Admin() {
                       <Fragment key={group.label}>
                         {groupBy !== "none" && (
                           <tr className="bg-slate-100/90">
-                            <td colSpan={12} className="px-3 py-2">
+                            <td colSpan={13} className="px-3 py-2">
                               <div className="flex items-center gap-2">
                                 <input
                                   type="checkbox"
@@ -1428,6 +1478,36 @@ export default function Admin() {
                           <span className="text-slate-300">—</span>
                         )}
                       </td>
+                      <td className="min-w-40 px-4 py-3">
+                        {r.has_menu_text ? (() => {
+                          const workload = menuWorkload(r.menu_chars);
+                          return (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-semibold tabular-nums text-slate-700">
+                                  {workload.formatted}
+                                </span>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${workload.style}`}>
+                                  {workload.label}
+                                </span>
+                              </div>
+                              <div
+                                className="text-[11px] text-slate-400"
+                                title="Very rough runtime; provider speed, load, and number of dishes can change it substantially"
+                              >
+                                rough time {workload.runtime}
+                              </div>
+                              <div className="text-[11px] font-semibold text-violet-600">
+                                {classifierUsesApi
+                                  ? `Anthropic est ~$${(r.classify_estimate ?? 0).toFixed(2)}`
+                                  : classifierProviderLabel}
+                              </div>
+                            </div>
+                          );
+                        })() : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {r.menu_score != null ? (
                           <span
@@ -1529,7 +1609,7 @@ export default function Admin() {
                           </button>
                           <button
                             onClick={() => runRowAction(r, "classify")}
-                            disabled={rowBusy !== null || !r.has_menu_text}
+                            disabled={classifying || rowBusy !== null || !r.has_menu_text}
                             title={
                               r.has_menu_text
                                 ? classifierUsesApi
@@ -1799,14 +1879,35 @@ export default function Admin() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <h2 className="font-semibold text-slate-900">
-                Scraped menu — {menuFor.name}
-                {menuScore != null && (
-                  <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
-                    menu score {menuScore.toFixed(2)}
-                  </span>
-                )}
-              </h2>
+              <div>
+                <h2 className="font-semibold text-slate-900">
+                  Scraped menu — {menuFor.name}
+                </h2>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                  {menuScore != null && (
+                    <span className="rounded bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700">
+                      menu score {menuScore.toFixed(2)}
+                    </span>
+                  )}
+                  {menuFor.has_menu_text && (() => {
+                    const workload = menuWorkload(menuFor.menu_chars);
+                    return (
+                      <>
+                        <span className="font-semibold text-slate-600">{workload.formatted}</span>
+                        <span className={`rounded-full px-2 py-0.5 font-bold ${workload.style}`}>
+                          {workload.label}
+                        </span>
+                        <span className="text-slate-400">roughly {workload.runtime}</span>
+                        <span className="font-semibold text-violet-600">
+                          {classifierUsesApi
+                            ? `Anthropic est ~$${(menuFor.classify_estimate ?? 0).toFixed(2)}`
+                            : classifierProviderLabel}
+                        </span>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
               <button
                 onClick={() => setMenuFor(null)}
                 className="text-slate-400 hover:text-slate-700"
