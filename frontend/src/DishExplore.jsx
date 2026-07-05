@@ -110,6 +110,9 @@ export default function DishExplore({
   const [selectedDishId, setSelectedDishId] = useState(null);
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   const [mobileView, setMobileView] = useState("list");
+  // Phones: filters collapse behind a disclosure (a swipe strip was
+  // undiscoverable); desktop always shows them inline.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(
     () => window.matchMedia("(min-width: 1024px)").matches
   );
@@ -607,12 +610,11 @@ export default function DishExplore({
 
       <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
         <div className="space-y-3">
-          {/* On phones the view toggle gets its OWN ROW below the filters —
-              sharing the row squeezed it on top of the selects. From sm up it
-              sits inline at the right, as before. */}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
-            <div className="relative min-w-64 flex-1 max-sm:min-w-[75vw]">
+          {/* Phones: full-width search, then a compact collapsible filter
+              section (wrapping — all visible when open). Desktop:
+              sm:contents dissolves the wrapper into the old inline row. */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative w-full sm:min-w-64 sm:w-auto sm:flex-1">
               <span className="pointer-events-none absolute left-3 top-2.5 text-stone-400">⌕</span>
               <input
                 autoFocus
@@ -623,6 +625,33 @@ export default function DishExplore({
                 className="w-full rounded-full border border-stone-300 bg-white py-2 pl-9 pr-4 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
               />
             </div>
+            <button
+              onClick={() => setFiltersOpen((v) => !v)}
+              className="flex w-full items-center justify-between rounded-full border border-stone-200 bg-white px-4 py-1.5 text-xs font-semibold text-stone-600 shadow-sm sm:hidden"
+            >
+              <span>
+                Filters
+                {(restaurant !== "all" ? 1 : 0) +
+                  (cuisine !== "all" ? 1 : 0) +
+                  (servingRole !== "all" ? 1 : 0) +
+                  (maxPrice > 0 ? 1 : 0) +
+                  (maxMiles > 0 ? 1 : 0) >
+                  0 &&
+                  ` · ${
+                    (restaurant !== "all" ? 1 : 0) +
+                    (cuisine !== "all" ? 1 : 0) +
+                    (servingRole !== "all" ? 1 : 0) +
+                    (maxPrice > 0 ? 1 : 0) +
+                    (maxMiles > 0 ? 1 : 0)
+                  } active`}
+              </span>
+              <span className="text-stone-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
+            </button>
+            <div
+              className={`flex flex-wrap items-center gap-2 sm:contents ${
+                filtersOpen ? "" : "max-sm:hidden"
+              }`}
+            >
             <select
               value={restaurant}
               onChange={(event) => {
@@ -714,19 +743,6 @@ export default function DishExplore({
             >
               {locating ? "Locating…" : "Near me"}
             </button>
-          </div>
-            <div className="flex shrink-0 self-end overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm sm:ml-auto sm:self-auto lg:hidden">
-              {["list", "map"].map((view) => (
-                <button
-                  key={view}
-                  onClick={() => setMobileView(view)}
-                  className={`px-3 py-2 text-sm font-semibold capitalize sm:px-4 ${
-                    mobileView === view ? "bg-emerald-700 text-white" : "text-stone-600"
-                  }`}
-                >
-                  {view}
-                </button>
-              ))}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
@@ -884,6 +900,15 @@ export default function DishExplore({
           )}
         </div>
       </div>
+
+      {/* Floating view flip (phones/tablets) — thumb-reachable and
+          unmissable; desktop shows both panes so it doesn't render. */}
+      <button
+        onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
+        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+      >
+        {mobileView === "list" ? "🗺 Map" : "☰ List"}
+      </button>
 
       {error && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

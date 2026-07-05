@@ -96,6 +96,9 @@ export default function Explore({
   const [originLabel, setOriginLabel] = useState("Maitland");
   const [locating, setLocating] = useState(false);
   const [view, setView] = useState("list"); // mobile toggle; desktop shows both
+  // Phones: filters collapse behind a disclosure (a swipe strip was
+  // undiscoverable); desktop always shows them inline.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [isDesktop, setIsDesktop] = useState(
     () => window.matchMedia("(min-width: 1024px)").matches
   );
@@ -583,18 +586,43 @@ export default function Explore({
 
       {/* Filter bar */}
       <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
-        {/* On phones the view toggle gets its OWN ROW below the filters —
-            sharing the row squeezed it on top of the selects. From sm up it
-            sits inline at the right, as before. */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
+        {/* Phones: full-width search, then a compact collapsible filter
+            section (wrapping — everything visible when open, nothing hidden
+            behind a scroll). Desktop: sm:contents dissolves the wrapper so
+            the layout is exactly the old inline flex-wrap row. */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name, cuisine, address…"
-            className="w-56 sm:w-full sm:max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+            className="w-full sm:max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
           />
+          <button
+            onClick={() => setFiltersOpen((v) => !v)}
+            className="flex w-full items-center justify-between rounded-full border border-stone-200 bg-white px-4 py-1.5 text-xs font-semibold text-stone-600 shadow-sm sm:hidden"
+          >
+            <span>
+              Filters
+              {(cuisine !== "all" ? 1 : 0) +
+                (openFilter !== "all" ? 1 : 0) +
+                (priceTier > 0 ? 1 : 0) +
+                (maxMiles > 0 ? 1 : 0) >
+                0 &&
+                ` · ${
+                  (cuisine !== "all" ? 1 : 0) +
+                  (openFilter !== "all" ? 1 : 0) +
+                  (priceTier > 0 ? 1 : 0) +
+                  (maxMiles > 0 ? 1 : 0)
+                } active`}
+            </span>
+            <span className="text-stone-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
+          </button>
+          <div
+            className={`flex flex-wrap items-center gap-2 sm:contents ${
+              filtersOpen ? "" : "max-sm:hidden"
+            }`}
+          >
           <select
             value={cuisine}
             onChange={(event) => setCuisine(event.target.value)}
@@ -664,22 +692,17 @@ export default function Explore({
             from {originLabel}
           </span>
           </div>
-          {/* Mobile/tablet-only view toggle; desktop shows both panes */}
-          <div className="flex shrink-0 self-end overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm sm:ml-auto sm:self-auto lg:hidden">
-            {["list", "map"].map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={`px-3 py-2 text-sm font-semibold capitalize sm:px-4 ${
-                  view === v ? "bg-emerald-700 text-white" : "text-stone-600"
-                }`}
-              >
-                {v}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
+
+      {/* Floating view flip (phones/tablets) — thumb-reachable and
+          unmissable; desktop shows both panes so it doesn't render. */}
+      <button
+        onClick={() => setView(view === "list" ? "map" : "list")}
+        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+      >
+        {view === "list" ? "🗺 Map" : "☰ List"}
+      </button>
 
       {error && (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
