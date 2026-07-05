@@ -4,8 +4,6 @@ Finds vegan-friendly dishes at restaurants by analyzing menu text and photos,
 even when a restaurant doesn't market itself as vegan. See [CLAUDE.md](CLAUDE.md)
 for the full product spec and pipeline design.
 
-**Current phase: Phase 3 — dish classification (Maitland, FL).**
-Phase 0 (discovery) and Phase 1 (menu-text ingestion) are complete.
 
 ## Setup
 
