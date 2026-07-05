@@ -113,27 +113,64 @@ def run(
 
     for t in targets:
         _emit({"current": t["name"]})
-        result = scrape_menu_text(t["website_url"])
+        crawl_profile = db.get_crawl_profile(t["id"])
+        result = scrape_menu_text(
+            t["website_url"], crawl_context=crawl_profile
+        )
         if result.ok:
             succeeded += 1
             pages = result.pages or [(result.menu_url or result.url, result.text)]
+            changed = (
+                not crawl_profile
+                or not crawl_profile.get("content_hash")
+                or crawl_profile.get("content_hash") != result.content_hash
+            )
+            route = "learned route" if result.used_learned_context else "discovery"
             print(
                 f"  [menu] {t['name']}  "
                 f"(score {result.menu_score:.2f}, {len(pages)} page(s), "
-                f"{result.char_count} chars)"
+                f"{result.char_count} chars, {result.crawl_method}/{route}, "
+                f"{'changed' if changed else 'unchanged'})"
             )
             if not dry_run:
                 # One source row per kept page; stale pages from earlier
                 # scrapes are pruned so classification sees the current menu.
                 db.replace_menu_texts(t["id"], pages, fetched_at=now)
+                # Immutable version history: only distinct content adds a
+                # row, so the table reads as "every time the menu changed".
+                if result.content_hash:
+                    db.record_menu_version(
+                        t["id"],
+                        result.text,
+                        result.content_hash,
+                        menu_score=result.menu_score,
+                        char_count=result.char_count,
+                        fetched_at=now,
+                    )
+                db.record_crawl_success(
+                    t["id"],
+                    menu_urls=[page_url for page_url, _ in pages],
+                    crawl_method=result.crawl_method or "http",
+                    content_hash=result.content_hash or "",
+                    menu_score=result.menu_score,
+                    char_count=result.char_count,
+                    crawled_at=now,
+                )
             _emit({"result": {
                 "name": t["name"], "ok": True,
                 "pages": len(pages), "chars": result.char_count,
                 "score": result.menu_score,
+                "method": result.crawl_method,
+                "learned_route": result.used_learned_context,
+                "changed": changed,
             }})
         else:
             failed += 1
             failures.append((t["name"], result.error or "unknown error"))
+            if not dry_run:
+                db.record_crawl_failure(
+                    t["id"], result.error or "unknown error", attempted_at=now
+                )
             print(f"  [fail] {t['name']}  — {result.error}")
             _emit({"result": {
                 "name": t["name"], "ok": False, "error": result.error,

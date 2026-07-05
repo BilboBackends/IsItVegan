@@ -83,6 +83,10 @@ dishes
 sources
   id, dish_id, type (text|image), content (excerpt or image_url), fetched_at
 
+crawl_profiles
+  restaurant_id, menu_urls, crawl_method, content_hash, menu_score, char_count,
+  last_attempt_at, last_success_at, consecutive_failures, last_error
+
 classifications
   id, dish_id, verdict, confidence, reasoning, source_id, model_version, created_at,
   dairy_status, gluten_status, nut_status, protein_level, serving_role,
@@ -108,7 +112,9 @@ classifications
   mock-first approach used in the Quickbase tooling project.
 - Re-scraping: menus and photos change. Design ingestion so it can be
   re-run per-restaurant on a schedule (weekly/monthly) without duplicating
-  existing dishes — upsert on (restaurant_id, dish_name).
+  existing dishes — upsert on (restaurant_id, dish_name). Successful crawls
+  persist their validated route/method as context for the next scheduled run;
+  stale learned routes must fall back to full discovery automatically.
 
 ## Explicit Non-Goals for MVP
 

@@ -147,6 +147,26 @@ for classification), and scores each page with a menu detector
 (`menu_score.py`) — prices, food words, menu-section headers, list
 structure. Homepage marketing copy is rejected rather than fed to Claude.
 
+Every distinct menu capture is also stored as an immutable `menu_versions`
+row (identical recrawls add nothing), and classification is change-aware:
+menus whose text is unchanged since their last classification are SKIPPED
+outright, and changed menus run in DELTA mode — the model sees the previous
+dish inventory and emits only new/changed dishes plus removed names (output
+tokens dominate cost, so a 3-dish change costs ~3 dishes, not ~150).
+Suspicious deltas (most of the menu "removed") fall back to a full pass;
+`--full` forces one. Every transition is recorded in `dish_changes`
+(added / removed / price_changed / verdict_changed) — the longitudinal
+record of how menus and prices drift, exposed at
+`/api/restaurants/<id>/menu-versions` and `.../dish-changes`.
+
+Every successful scrape also updates a persistent `crawl_profiles` row with
+the validated menu-page URLs, successful transport (`http` or `headless`),
+menu score/size, and a normalized content fingerprint. The next scheduled
+recrawl tries that learned route first instead of rediscovering the menu from
+the homepage. If it no longer produces a valid menu, the normal discovery
+ladder runs and automatically replaces the stale profile with the new route.
+Temporary failures are recorded without erasing the last known-good context.
+
 Structured data beats DOM scraping when available (`structured_menu.py`):
 every fetched page is mined for schema.org Menu JSON-LD (Popmenu et al.
 embed the FULL menu for SEO) and for ordering-platform state JSON in inline

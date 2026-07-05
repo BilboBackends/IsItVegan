@@ -239,6 +239,23 @@ mean food; a vegan soda is not a "vegan option".
 elaboration — the verdict, a reason, done.
 - Extract every dish on the menu, not a sample."""
 
+# Delta mode: the menu changed since the last classification; only the
+# changes need tokens. Output cost dominates (~100 tokens/dish), so emitting
+# 5 changed dishes instead of re-emitting 150 unchanged ones is the saving.
+_DELTA_INSTRUCTIONS = """
+DELTA MODE — this menu was classified before. You are given the previously
+classified dishes as "name | price | verdict" lines, and the CURRENT menu
+text. Compare them:
+- Output in `dishes` ONLY items that are NEW (not in the previous list) or
+  CHANGED (different price or description on the current menu, or your
+  verdict/attributes would now differ). Emit each as a complete dish object.
+- Output in `removed_dish_names` the EXACT previous names of dishes that no
+  longer appear on the current menu. Copy names verbatim from the previous
+  list — matching is exact.
+- Dishes that are unchanged must NOT be output anywhere.
+- If nothing changed, return empty `dishes` and empty `removed_dish_names`.
+- A renamed dish is a removal of the old name plus a new dish."""
+
 
 @dataclass
 class ClassifiedDish:
@@ -272,6 +289,9 @@ class ClassificationResult:
     cost_estimate: float = 0.0  # USD, approximate list price
     provider: str = "anthropic"
     billing: str = "api"
+    # Delta mode only: prior dish names the model says left the menu.
+    removed_dish_names: list[str] = field(default_factory=list)
+    mode: str = "full"  # full | delta
 
 
 def result_from_data(
@@ -284,8 +304,13 @@ def result_from_data(
     output_tokens: int = 0,
     cost_estimate: float = 0.0,
     stop_reason: str | None = None,
+    mode: str = "full",
 ) -> ClassificationResult:
-    """Validate provider/file-exchange JSON into the shared result model."""
+    """Validate provider/file-exchange JSON into the shared result model.
+
+    In delta mode an empty dish list is a legitimate answer ("nothing
+    changed"), and removed_dish_names is honored.
+    """
     dishes: list[ClassifiedDish] = []
     raw_dishes = data.get("dishes", []) if isinstance(data, dict) else []
     for dish in raw_dishes:
@@ -366,7 +391,17 @@ def result_from_data(
                 key_ingredients=list(dict.fromkeys(key_ingredients)),
             )
         )
-    if not dishes:
+    removed_names: list[str] = []
+    if mode == "delta" and isinstance(data, dict):
+        raw_removed = data.get("removed_dish_names")
+        if isinstance(raw_removed, list):
+            removed_names = [
+                str(value).strip()
+                for value in raw_removed
+                if str(value).strip()
+            ]
+
+    if not dishes and mode != "delta":
         return ClassificationResult(
             ok=False,
             error="No valid dishes extracted",
@@ -387,7 +422,28 @@ def result_from_data(
         cost_estimate=cost_estimate,
         provider=provider,
         billing=billing,
+        removed_dish_names=removed_names,
+        mode=mode,
     )
+
+
+def _delta_schema() -> dict:
+    """The full-menu schema plus removed_dish_names, dishes allowed empty."""
+    item_schema = _SCHEMA["properties"]["dishes"]["items"]
+    return {
+        "type": "object",
+        "properties": {
+            "dishes": {"type": "array", "items": item_schema},
+            "removed_dish_names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "EXACT names from the previous dish list that "
+                "no longer appear on the current menu.",
+            },
+        },
+        "required": ["dishes", "removed_dish_names"],
+        "additionalProperties": False,
+    }
 
 
 def classify_menu(
@@ -398,8 +454,15 @@ def classify_menu(
     serves_vegetarian: bool | None = None,
     mock: bool = False,
     provider: str | None = None,
+    prior_dishes: dict[str, dict] | None = None,
 ) -> ClassificationResult:
-    """Extract + classify all dishes in menu_text. Never raises."""
+    """Extract + classify all dishes in menu_text. Never raises.
+
+    prior_dishes ({name: {price, verdict}}) switches on DELTA mode: the model
+    sees the previous inventory and emits only new/changed dishes plus the
+    names of removed ones — output tokens dominate this task's cost, so an
+    unchanged-but-for-three-dishes menu costs ~3 dishes, not ~150.
+    """
     if mock:
         return ClassificationResult(
             ok=True,
@@ -443,18 +506,32 @@ def classify_menu(
         context_bits.append(f"Google's summary: {editorial_summary}")
 
     menu = menu_text[:_MAX_MENU_CHARS]
+    delta = bool(prior_dishes)
     prompt = (
         "\n".join(context_bits)
         + "\n\nMenu text scraped from the restaurant's website:\n\n"
         + menu
     )
+    system_prompt = _SYSTEM
+    schema = _SCHEMA
+    if delta:
+        system_prompt = _SYSTEM + "\n" + _DELTA_INSTRUCTIONS
+        schema = _delta_schema()
+        inventory = "\n".join(
+            f"{name} | {info.get('price') or '-'} | {info.get('verdict') or '-'}"
+            for name, info in sorted(prior_dishes.items())
+        )
+        prompt += (
+            "\n\nPREVIOUSLY CLASSIFIED DISHES (name | price | verdict):\n"
+            + inventory
+        )
 
     try:
         response = run_provider(
             requested=provider,
-            system_prompt=_SYSTEM,
+            system_prompt=system_prompt,
             user_prompt=prompt,
-            schema=_SCHEMA,
+            schema=schema,
         )
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
@@ -477,6 +554,7 @@ def classify_menu(
 
     return result_from_data(
         data,
+        mode="delta" if delta else "full",
         provider=response.provider,
         model=response.model,
         billing=response.billing,

@@ -77,6 +77,53 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sources_restaurant_url
     ON sources (restaurant_id, url)
     WHERE restaurant_id IS NOT NULL;
 
+-- What worked the last time this restaurant was crawled. Recrawls try these
+-- validated menu pages/method first, then fall back to full discovery if the
+-- site changed. `menu_urls` is a JSON array because menus often span sections.
+CREATE TABLE IF NOT EXISTS crawl_profiles (
+    restaurant_id       INTEGER PRIMARY KEY REFERENCES restaurants(id)
+                        ON DELETE CASCADE,
+    menu_urls            TEXT NOT NULL DEFAULT '[]',
+    crawl_method         TEXT,
+    content_hash         TEXT,
+    menu_score           REAL,
+    char_count           INTEGER,
+    last_attempt_at      TEXT,
+    last_success_at      TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_error           TEXT
+);
+
+-- Every DISTINCT menu capture, kept forever: raw material for menu history,
+-- price-fluctuation analysis, and delta classification. Recrawls that find
+-- identical content don't add rows (UNIQUE on the fingerprint).
+CREATE TABLE IF NOT EXISTS menu_versions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
+    content_hash  TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    menu_score    REAL,
+    char_count    INTEGER,
+    fetched_at    TEXT NOT NULL,
+    UNIQUE (restaurant_id, content_hash)
+);
+
+-- Dish-level differences between successive classified menus: what appeared,
+-- what vanished, what changed price or verdict. Not user-facing (yet) — this
+-- is the longitudinal record of how menus drift.
+CREATE TABLE IF NOT EXISTS dish_changes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER NOT NULL REFERENCES restaurants(id) ON DELETE CASCADE,
+    observed_at   TEXT NOT NULL,
+    change_type   TEXT NOT NULL CHECK (change_type IN
+                      ('added', 'removed', 'price_changed', 'verdict_changed')),
+    dish_name     TEXT NOT NULL,
+    old_price     TEXT,
+    new_price     TEXT,
+    old_verdict   TEXT,
+    new_verdict   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS classifications (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     dish_id       INTEGER NOT NULL REFERENCES dishes(id),
@@ -148,6 +195,9 @@ _MIGRATIONS = {
         # usage) — shown next to the per-row reclassify button in Admin.
         "last_classify_cost": "REAL",
         "last_classify_provider": "TEXT",
+        # Hash of the menu text the last classification ran on — when a
+        # recrawl produces identical text, reclassification is skipped.
+        "last_classified_hash": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -270,6 +320,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                        WHERE d.restaurant_id = r.id
                    ) AS last_classified_at,
                    r.last_classify_cost, r.last_classify_provider,
+                   r.last_classified_hash,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -444,6 +495,301 @@ def replace_menu_texts(
             params,
         )
         conn.execute(f"DELETE FROM sources WHERE {stale_predicate}", params)
+
+
+def get_crawl_profile(
+    restaurant_id: int, db_path: str | None = None
+) -> dict | None:
+    """Return the crawler's last learned successful route for a restaurant."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM crawl_profiles WHERE restaurant_id = ?",
+            (restaurant_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    profile = dict(row)
+    profile["menu_urls"] = _decode_json_list(profile.get("menu_urls"))
+    return profile
+
+
+def record_crawl_success(
+    restaurant_id: int,
+    *,
+    menu_urls: list[str],
+    crawl_method: str,
+    content_hash: str,
+    menu_score: float,
+    char_count: int,
+    crawled_at: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    """Learn a validated crawl route, replacing an older/stale profile."""
+    timestamp = crawled_at or datetime.now(timezone.utc).isoformat()
+    urls = list(dict.fromkeys(url for url in menu_urls if url))
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO crawl_profiles
+                (restaurant_id, menu_urls, crawl_method, content_hash,
+                 menu_score, char_count, last_attempt_at, last_success_at,
+                 consecutive_failures, last_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            ON CONFLICT (restaurant_id) DO UPDATE SET
+                menu_urls = excluded.menu_urls,
+                crawl_method = excluded.crawl_method,
+                content_hash = excluded.content_hash,
+                menu_score = excluded.menu_score,
+                char_count = excluded.char_count,
+                last_attempt_at = excluded.last_attempt_at,
+                last_success_at = excluded.last_success_at,
+                consecutive_failures = 0,
+                last_error = NULL
+            """,
+            (
+                restaurant_id,
+                json.dumps(urls),
+                crawl_method,
+                content_hash,
+                float(menu_score),
+                int(char_count),
+                timestamp,
+                timestamp,
+            ),
+        )
+
+
+def record_crawl_failure(
+    restaurant_id: int,
+    error: str,
+    *,
+    attempted_at: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    """Record a failed attempt without discarding the last successful route."""
+    timestamp = attempted_at or datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO crawl_profiles
+                (restaurant_id, menu_urls, last_attempt_at,
+                 consecutive_failures, last_error)
+            VALUES (?, '[]', ?, 1, ?)
+            ON CONFLICT (restaurant_id) DO UPDATE SET
+                last_attempt_at = excluded.last_attempt_at,
+                consecutive_failures = crawl_profiles.consecutive_failures + 1,
+                last_error = excluded.last_error
+            """,
+            (restaurant_id, timestamp, (error or "unknown crawl failure")[:1000]),
+        )
+
+
+def record_menu_version(
+    restaurant_id: int,
+    content: str,
+    content_hash: str,
+    *,
+    menu_score: float | None = None,
+    char_count: int | None = None,
+    fetched_at: str | None = None,
+    db_path: str | None = None,
+) -> bool:
+    """Store a menu capture as an immutable version; True when it's new.
+
+    Identical recrawls (same fingerprint) don't add rows, so the table reads
+    as "every time this menu actually changed".
+    """
+    timestamp = fetched_at or datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO menu_versions
+                (restaurant_id, content_hash, content, menu_score,
+                 char_count, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                restaurant_id,
+                content_hash,
+                content,
+                menu_score,
+                char_count if char_count is not None else len(content),
+                timestamp,
+            ),
+        )
+    return cur.rowcount > 0
+
+
+def list_menu_versions(
+    restaurant_id: int, *, include_content: bool = False, db_path: str | None = None
+) -> list[dict]:
+    """A restaurant's distinct menu captures, newest first."""
+    columns = "id, restaurant_id, content_hash, menu_score, char_count, fetched_at"
+    if include_content:
+        columns += ", content"
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT {columns} FROM menu_versions
+            WHERE restaurant_id = ?
+            ORDER BY fetched_at DESC, id DESC
+            """,
+            (restaurant_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def snapshot_dishes(restaurant_id: int, db_path: str | None = None) -> dict[str, dict]:
+    """Current dishes keyed by name with price + latest verdict — the
+    'before' picture for computing dish changes across a reclassification."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT d.name, d.price, c.verdict
+            FROM dishes d
+            LEFT JOIN classifications c ON c.id = (
+                SELECT id FROM classifications
+                WHERE dish_id = d.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            WHERE d.restaurant_id = ?
+            """,
+            (restaurant_id,),
+        ).fetchall()
+    return {r["name"]: {"price": r["price"], "verdict": r["verdict"]} for r in rows}
+
+
+def compute_dish_changes(
+    prior: dict[str, dict], current: dict[str, dict]
+) -> list[dict]:
+    """Diff two dish snapshots ({name: {price, verdict}}) into change rows."""
+    changes: list[dict] = []
+    for name, now_ in current.items():
+        before = prior.get(name)
+        if before is None:
+            changes.append(
+                {
+                    "change_type": "added",
+                    "dish_name": name,
+                    "new_price": now_.get("price"),
+                    "new_verdict": now_.get("verdict"),
+                }
+            )
+            continue
+        if (before.get("price") or None) != (now_.get("price") or None):
+            changes.append(
+                {
+                    "change_type": "price_changed",
+                    "dish_name": name,
+                    "old_price": before.get("price"),
+                    "new_price": now_.get("price"),
+                    "old_verdict": before.get("verdict"),
+                    "new_verdict": now_.get("verdict"),
+                }
+            )
+        elif (before.get("verdict") or None) != (now_.get("verdict") or None):
+            changes.append(
+                {
+                    "change_type": "verdict_changed",
+                    "dish_name": name,
+                    "old_price": before.get("price"),
+                    "new_price": now_.get("price"),
+                    "old_verdict": before.get("verdict"),
+                    "new_verdict": now_.get("verdict"),
+                }
+            )
+    for name, before in prior.items():
+        if name not in current:
+            changes.append(
+                {
+                    "change_type": "removed",
+                    "dish_name": name,
+                    "old_price": before.get("price"),
+                    "old_verdict": before.get("verdict"),
+                }
+            )
+    return changes
+
+
+def record_dish_changes(
+    restaurant_id: int,
+    changes: list[dict],
+    observed_at: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    timestamp = observed_at or datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO dish_changes
+                (restaurant_id, observed_at, change_type, dish_name,
+                 old_price, new_price, old_verdict, new_verdict)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    restaurant_id,
+                    timestamp,
+                    c["change_type"],
+                    c["dish_name"],
+                    c.get("old_price"),
+                    c.get("new_price"),
+                    c.get("old_verdict"),
+                    c.get("new_verdict"),
+                )
+                for c in changes
+            ],
+        )
+
+
+def list_dish_changes(
+    restaurant_id: int, *, limit: int = 200, db_path: str | None = None
+) -> list[dict]:
+    """A restaurant's dish-change history, newest first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT observed_at, change_type, dish_name,
+                   old_price, new_price, old_verdict, new_verdict
+            FROM dish_changes
+            WHERE restaurant_id = ?
+            ORDER BY observed_at DESC, id DESC
+            LIMIT ?
+            """,
+            (restaurant_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_dish(restaurant_id: int, name: str, db_path: str | None = None) -> bool:
+    """Surgically remove one dish (delta reclassification's 'removed' path).
+
+    Same care as delete_dishes_for_restaurant: reports keep their dish_name
+    but drop the FK link; classifications go with the dish.
+    """
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM dishes WHERE restaurant_id = ? AND name = ?",
+            (restaurant_id, name),
+        ).fetchone()
+        if row is None:
+            return False
+        dish_id = row["id"]
+        conn.execute("UPDATE reports SET dish_id = NULL WHERE dish_id = ?", (dish_id,))
+        conn.execute("DELETE FROM classifications WHERE dish_id = ?", (dish_id,))
+        conn.execute("DELETE FROM dishes WHERE id = ?", (dish_id,))
+    return True
+
+
+def set_last_classified_hash(
+    restaurant_id: int, content_hash: str | None, db_path: str | None = None
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE restaurants SET last_classified_hash = ? WHERE id = ?",
+            (content_hash, restaurant_id),
+        )
 
 
 def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None:

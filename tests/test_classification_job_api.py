@@ -58,8 +58,8 @@ def test_single_restaurant_reclassification_starts_reconnectable_job(monkeypatch
     assert len(FakeThread.created) == 1
     thread = FakeThread.created[0]
     assert thread.started is True
-    # (do_all, restaurant_ids, provider, restaurant_id, parallel)
-    assert thread.args == (False, None, "codex", 42, 3)
+    # (do_all, restaurant_ids, provider, restaurant_id, parallel, mode)
+    assert thread.args == (False, None, "codex", 42, 3, "auto")
 
     # A newly loaded Admin page sees the same running job through status.
     status = client.get("/api/classify/status").get_json()

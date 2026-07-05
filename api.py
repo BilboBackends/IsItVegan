@@ -499,6 +499,7 @@ def _classify_worker(
     provider: str | None,
     restaurant_id: int | None = None,
     parallel: int = 3,
+    mode: str = "auto",
 ) -> None:
     import classify
 
@@ -530,6 +531,7 @@ def _classify_worker(
             should_stop=_classify_cancel.is_set,
             provider=provider,
             parallel=parallel,
+            mode=mode,
         )
         with _classify_lock:
             _classify_state["summary"] = {
@@ -594,6 +596,10 @@ def run_classify() -> object:
     if not isinstance(parallel, int) or isinstance(parallel, bool) or not 1 <= parallel <= 6:
         return jsonify({"error": "parallel must be an integer from 1 to 6."}), 400
 
+    mode = payload.get("mode", "auto")
+    if mode not in ("auto", "full"):
+        return jsonify({"error": "mode must be auto or full."}), 400
+
     with _classify_lock:
         if _classify_state["running"]:
             return jsonify({"error": "A classification run is already running."}), 409
@@ -616,10 +622,30 @@ def run_classify() -> object:
             requested_provider,
             restaurant_id,
             parallel,
+            mode,
         ),
         daemon=True,
     ).start()
     return jsonify({"started": True, "provider": provider}), 202
+
+
+@app.get("/api/restaurants/<int:restaurant_id>/menu-versions")
+def restaurant_menu_versions(restaurant_id: int) -> object:
+    """Distinct menu captures over time (newest first). ?full=1 for content."""
+    db.init_db()
+    include_content = request.args.get("full") == "1"
+    versions = db.list_menu_versions(
+        restaurant_id, include_content=include_content
+    )
+    return jsonify({"count": len(versions), "versions": versions})
+
+
+@app.get("/api/restaurants/<int:restaurant_id>/dish-changes")
+def restaurant_dish_changes(restaurant_id: int) -> object:
+    """Dish-level menu drift: added/removed dishes, price/verdict changes."""
+    db.init_db()
+    changes = db.list_dish_changes(restaurant_id)
+    return jsonify({"count": len(changes), "changes": changes})
 
 
 @app.post("/api/classify/stop")

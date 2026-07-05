@@ -23,6 +23,7 @@ Known limitations (CLAUDE.md open questions), still handled as failures:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse
@@ -177,6 +178,10 @@ class ScrapeResult:
     # Menu-likeness of the kept text (0..1) and whether it cleared threshold.
     menu_score: float = 0.0
     is_menu: bool = False
+    # Successful transport, persisted by ingest as context for the next crawl.
+    crawl_method: str | None = None  # http | headless | mock
+    used_learned_context: bool = False
+    content_hash: str | None = None
 
 
 def _extract_text(html: str) -> str:
@@ -513,12 +518,120 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     return pages, third_party
 
 
+def _profile_urls(crawl_context: dict | None) -> list[str]:
+    if not crawl_context:
+        return []
+    values = crawl_context.get("menu_urls")
+    if not isinstance(values, list):
+        return []
+    return list(
+        dict.fromkeys(
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip()
+        )
+    )
+
+
+def _collect_known_http(
+    urls: list[str], timeout: float
+) -> list[tuple[str, str]]:
+    """Fetch previously validated menu pages directly, skipping discovery."""
+    pages: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": _USER_AGENT},
+    ) as client:
+        for saved_url in urls[:_MAX_HTTP_FETCHES]:
+            # #structured-menu is our synthetic source marker, not a real
+            # server route. Fetching its base recreates both DOM and embedded
+            # structured candidates.
+            fetch_url = saved_url.removesuffix("#structured-menu")
+            normalized = fetch_url.rstrip("/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            page = _fetch(client, fetch_url)
+            if page.html is not None:
+                pages.extend(_pages_from_html(fetch_url, page.html))
+            else:
+                text = _fetched_to_text(page)
+                if text:
+                    pages.append((fetch_url, text))
+    return pages
+
+
+def _collect_known_headless(urls: list[str]) -> list[tuple[str, str]]:
+    """Render previously validated JS menu pages directly."""
+    pages: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for saved_url in urls[:9]:
+        fetch_url = saved_url.removesuffix("#structured-menu")
+        normalized = fetch_url.rstrip("/")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        html, _ = fetch_rendered_html(
+            fetch_url, settle_ms=6_000, tab_words=_TAB_WORDS
+        )
+        if html is not None:
+            pages.extend(_pages_from_html(fetch_url, html))
+    return pages
+
+
+def _try_learned_context(
+    home_url: str,
+    crawl_context: dict | None,
+    *,
+    timeout: float,
+    use_headless: bool,
+) -> ScrapeResult | None:
+    """Try the last successful route; return None when rediscovery is needed."""
+    urls = _profile_urls(crawl_context)
+    method = (crawl_context or {}).get("crawl_method")
+    if not urls or method not in {"http", "headless"}:
+        return None
+    if method == "headless":
+        if not use_headless or not is_available():
+            return None
+        pages = _collect_known_headless(urls)
+    else:
+        pages = _collect_known_http(urls, timeout)
+    if not pages:
+        return None
+    result = _finish(
+        home_url,
+        pages,
+        [],
+        status_code=200,
+        crawl_method=method,
+        used_learned_context=True,
+    )
+    if not result.ok:
+        return None
+    # A JS widget can render only its first category and still look menu-like.
+    # Treat a major size regression as a stale route and run full discovery;
+    # if the menu genuinely shrank, discovery will find the same smaller copy
+    # and the new profile will then replace the old one.
+    previous_chars = (crawl_context or {}).get("char_count")
+    if (
+        isinstance(previous_chars, int)
+        and previous_chars >= 1_200
+        and result.char_count < previous_chars * 0.55
+    ):
+        return None
+    return result
+
+
 def scrape_menu_text(
     url: str,
     *,
     timeout: float = 20.0,
     use_headless: bool = True,
     mock_html: str | None = None,
+    crawl_context: dict | None = None,
 ) -> ScrapeResult:
     """Scrape a restaurant site for menu text, following menu links one level.
 
@@ -530,7 +643,13 @@ def scrape_menu_text(
     Pass mock_html to skip the network entirely (no link-following, no headless).
     """
     if mock_html is not None:
-        return _finish(url, [(url, _extract_text(mock_html))], [], status_code=None)
+        return _finish(
+            url,
+            [(url, _extract_text(mock_html))],
+            [],
+            status_code=None,
+            crawl_method="mock",
+        )
 
     # Google sometimes lists a social profile as the "website". There is no
     # menu behind these (and their text scores menu-ish enough to slip
@@ -544,13 +663,26 @@ def scrape_menu_text(
             "Photo fallback candidate.",
         )
 
+    learned = _try_learned_context(
+        url,
+        crawl_context,
+        timeout=timeout,
+        use_headless=use_headless,
+    )
+    if learned is not None:
+        return learned
+
     pages, third_party, tp_urls, landing = _collect_http(url, timeout)
 
     # If the landing page itself was fetchable, try scoring the HTTP result.
     http_result = None
     if pages is not None:
         http_result = _finish(
-            url, pages, third_party, status_code=landing.status_code
+            url,
+            pages,
+            third_party,
+            status_code=landing.status_code,
+            crawl_method="http",
         )
         # A merely-adequate score with third-party ordering links around is
         # suspicious (often homepage/marketing copy scoring on section names,
@@ -593,7 +725,11 @@ def scrape_menu_text(
         )
 
     headless_result = _finish(
-        url, hl_pages, hl_third_party or third_party, status_code=200
+        url,
+        hl_pages,
+        hl_third_party or third_party,
+        status_code=200,
+        crawl_method="headless",
     )
     # Prefer a real menu; when both attempts found one, keep whichever
     # captured more of it (headless often finds sections HTTP can't see,
@@ -616,6 +752,8 @@ def _finish(
     pages: list[tuple[str, str]],
     third_party_hosts: list[str],
     status_code: int | None,
+    crawl_method: str = "http",
+    used_learned_context: bool = False,
 ) -> ScrapeResult:
     """Score every fetched page, keep ALL menu-like ones, decide ok/fail.
 
@@ -688,6 +826,15 @@ def _finish(
     else:
         combined = best_text
 
+    normalized_parts = sorted(
+        {
+            re.sub(r"\s+", " ", page_text).strip().casefold()
+            for _, page_text in kept
+            if page_text.strip()
+        }
+    )
+    content_hash = hashlib.sha256("\n".join(normalized_parts).encode("utf-8")).hexdigest()
+
     return ScrapeResult(
         url=best_url,
         ok=True,
@@ -700,4 +847,7 @@ def _finish(
         text=combined,
         char_count=len(combined),
         pages=kept,
+        crawl_method=crawl_method,
+        used_learned_context=used_learned_context,
+        content_hash=content_hash,
     )
