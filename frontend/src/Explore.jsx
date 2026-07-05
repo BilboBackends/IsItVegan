@@ -386,14 +386,6 @@ export default function Explore({
         const actions = addSection();
         const row = document.createElement("div");
         row.style.cssText = "display:flex;gap:14px;align-items:center";
-        if (analyzed) {
-          const btn = document.createElement("button");
-          btn.textContent = "See dishes →";
-          btn.style.cssText =
-            "color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-          btn.onclick = () => setDishesFor(r);
-          row.append(btn);
-        }
         if (r.website_url) {
           const site = document.createElement("a");
           site.textContent = "Website ↗";
@@ -405,6 +397,14 @@ export default function Explore({
           site.onmouseenter = () => (site.style.color = "#047857");
           site.onmouseleave = () => (site.style.color = "#57534e");
           row.append(site);
+        }
+        if (analyzed) {
+          const btn = document.createElement("button");
+          btn.textContent = "See dishes →";
+          btn.style.cssText =
+            "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
+          btn.onclick = () => setDishesFor(r);
+          row.append(btn);
         }
         actions.append(row);
       }
