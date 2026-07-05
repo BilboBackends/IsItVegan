@@ -460,6 +460,9 @@ export default function Admin() {
   // full = re-extract everything; auto = skip unchanged menus and classify
   // only the changes (delta) when a prior inventory exists.
   const [classifyMode, setClassifyMode] = useState("auto");
+  // Concurrency: sequential when subscription quota is running low — one
+  // restaurant either finishes or doesn't, instead of several dying mid-run.
+  const [classifyParallel, setClassifyParallel] = useState(3);
   const [menuText, setMenuText] = useState(null);
   const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
@@ -631,7 +634,11 @@ export default function Admin() {
       const res = await fetch("/api/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: classifierProvider, mode: classifyMode }),
+        body: JSON.stringify({
+          provider: classifierProvider,
+          mode: classifyMode,
+          parallel: classifyParallel,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Classify failed (${res.status})`);
@@ -1128,6 +1135,7 @@ export default function Admin() {
           restaurant_ids: selectedClassifyIds,
           provider: classifierProvider,
           mode: classifyMode,
+          parallel: classifyParallel,
         }),
       });
       const data = await response.json();
@@ -1223,6 +1231,19 @@ export default function Admin() {
             >
               <option value="auto">Changes only</option>
               <option value="full">Full re-extraction</option>
+            </select>
+            <select
+              value={classifyParallel}
+              onChange={(event) => setClassifyParallel(Number(event.target.value))}
+              disabled={classifying}
+              className="rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm font-semibold text-violet-800 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400"
+              aria-label="Classification concurrency"
+              title="How many restaurants classify at once. One at a time when your subscription window is nearly used up — each restaurant either completes or doesn't, instead of several dying mid-run together; the finished ones are saved either way."
+            >
+              <option value={1}>1 at a time</option>
+              <option value={2}>2 in parallel</option>
+              <option value={3}>3 in parallel</option>
+              <option value={6}>6 in parallel</option>
             </select>
             <button
               onClick={runClassify}
