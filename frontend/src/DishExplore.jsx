@@ -605,7 +605,7 @@ export default function DishExplore({
         </p>
       </div>}
 
-      <div className="sticky top-[113px] z-10 -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
+      <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
         <div className="space-y-3">
           {/* The view toggle lives OUTSIDE the swipeable strip so it's always
               visible on phones — pinned right while the filters scroll. */}
