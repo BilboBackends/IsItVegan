@@ -60,6 +60,9 @@ export default function DishModal({ restaurant, onClose }) {
   const [tab, setTab] = useState("food");
   const [filter, setFilter] = useState("all");
   const [servingFilter, setServingFilter] = useState("all");
+  // Phones only: the two filter rows start collapsed behind a "Filters"
+  // disclosure so the dish list gets the space; desktop always shows them.
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -67,6 +70,7 @@ export default function DishModal({ restaurant, onClose }) {
     setDishes([]);
     setFilter("all");
     setServingFilter("all");
+    setFiltersOpen(false);
     fetch(`/api/restaurants/${restaurant.id}/dishes`)
       .then((res) => (res.ok ? res.json() : { dishes: [] }))
       .then((data) => {
@@ -200,8 +204,27 @@ export default function DishModal({ restaurant, onClose }) {
           })}
         </div>
 
+        {/* Mobile-only disclosure for the filter rows; the active count
+            keeps collapsed filters from being forgotten. */}
+        <button
+          onClick={() => setFiltersOpen((v) => !v)}
+          className="flex w-full items-center justify-between border-b border-slate-100 px-4 py-2 text-xs font-semibold text-slate-600 sm:hidden"
+        >
+          <span>
+            Filters
+            {(filter !== "all" ? 1 : 0) +
+              (tab === "food" && servingFilter !== "all" ? 1 : 0) >
+              0 &&
+              ` · ${
+                (filter !== "all" ? 1 : 0) +
+                (tab === "food" && servingFilter !== "all" ? 1 : 0)
+              } active`}
+          </span>
+          <span className="text-slate-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
+        </button>
+
         {/* Verdict filter */}
-        <div className="flex gap-2 border-b border-slate-100 px-4 py-2">
+        <div className={`flex gap-2 border-b border-slate-100 px-4 py-2 ${filtersOpen ? "" : "max-sm:hidden"}`}>
           {FILTERS.map((f) => (
             <button
               key={f.key}
@@ -218,7 +241,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {tab === "food" && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2">
+          <div className={`flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2 ${filtersOpen ? "" : "max-sm:hidden"}`}>
             <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
               Show
             </span>
