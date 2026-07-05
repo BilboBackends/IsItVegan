@@ -131,10 +131,10 @@ export default function DishModal({ restaurant, onClose }) {
       onClick={onClose}
     >
       <div
-        className="flex w-full max-w-3xl flex-col bg-white shadow-xl max-sm:h-dvh max-sm:max-h-none max-sm:rounded-none sm:max-h-[85vh] sm:rounded-xl"
+        className="flex w-full max-w-3xl flex-col bg-white shadow-xl max-sm:h-full max-sm:max-h-none max-sm:rounded-none sm:max-h-[85vh] sm:rounded-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 max-sm:px-3 max-sm:py-2">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 max-sm:px-3">
           <div>
             <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
@@ -201,7 +201,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {/* Verdict filter */}
-        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 px-4 py-2 max-sm:px-3 max-sm:py-1.5 [&>*]:shrink-0">
+        <div className="flex gap-2 overflow-x-auto border-b border-slate-100 px-4 py-2 max-sm:px-3 [&>*]:shrink-0">
           {FILTERS.map((f) => (
             <button
               key={f.key}
@@ -218,7 +218,7 @@ export default function DishModal({ restaurant, onClose }) {
         </div>
 
         {tab === "food" && (
-          <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-100 bg-slate-50/70 px-4 py-2 max-sm:px-3 max-sm:py-1.5 [&>*]:shrink-0 sm:flex-wrap">
+          <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-100 bg-slate-50/70 px-4 py-2 max-sm:px-3 [&>*]:shrink-0 sm:flex-wrap">
             <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
               Show
             </span>
