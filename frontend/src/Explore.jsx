@@ -288,30 +288,82 @@ export default function Explore({
         offset: [0, -10],
       });
 
+      // Popup: three tidy sections (identity / status / vegan) plus an
+      // actions row, separated by hairlines instead of a loose stack.
       const el = document.createElement("div");
-      el.style.minWidth = "180px";
+      el.style.cssText = "min-width:200px;max-width:250px";
+
+      const addSection = () => {
+        const s = document.createElement("div");
+        s.style.cssText = "padding:6px 0 5px;border-top:1px solid #e7e5e4";
+        el.append(s);
+        return s;
+      };
+
+      // — Identity —
+      const head = document.createElement("div");
+      head.style.cssText = "padding-bottom:6px";
       const title = document.createElement("div");
-      title.style.cssText = "font-weight:700;font-size:14px";
+      title.style.cssText = "font-weight:700;font-size:14px;color:#1c1917";
       title.textContent = r.name || "";
       const sub = document.createElement("div");
-      sub.style.cssText = "color:#57534e;font-size:12px;text-transform:capitalize";
+      sub.style.cssText =
+        "color:#78716c;font-size:12px;text-transform:capitalize;margin-top:1px";
       sub.textContent =
         (prettyType(r.primary_type) || "restaurant") +
         (priceLevelSymbol(r.price_level)
           ? ` · ${priceLevelSymbol(r.price_level)}`
           : "");
-      const address = document.createElement("a");
-      address.style.cssText =
-        "display:block;margin-top:3px;color:#0369a1;font-size:12px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
-      address.textContent = r.address || "";
-      address.href =
-        `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.address || r.name || "")}` +
-        (r.place_id ? `&query_place_id=${encodeURIComponent(r.place_id)}` : "");
-      address.target = "_blank";
-      address.rel = "noopener noreferrer";
-      address.title = "Open address in Google Maps";
+      head.append(title, sub);
+      if (r.address) {
+        const address = document.createElement("a");
+        address.style.cssText =
+          "display:block;margin-top:2px;color:#0369a1;font-size:11px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
+        address.textContent = r.address;
+        address.href =
+          `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.address || r.name || "")}` +
+          (r.place_id ? `&query_place_id=${encodeURIComponent(r.place_id)}` : "");
+        address.target = "_blank";
+        address.rel = "noopener noreferrer";
+        address.title = "Open address in Google Maps";
+        head.append(address);
+      }
+      el.append(head);
+
+      // — Status: open state · today's hours, then rating —
+      const openState = currentOpenState(r.open_now, r.enriched_at, r.opening_hours);
+      const todayHours = todayOpeningHours(r.opening_hours);
+      const googleRating = ratingText(r.rating, r.user_rating_count);
+      if (openState != null || todayHours || googleRating) {
+        const status = addSection();
+        if (openState != null || todayHours) {
+          const row = document.createElement("div");
+          row.style.cssText = "font-size:12px;font-weight:600;color:#57534e";
+          if (openState != null) {
+            const state = document.createElement("span");
+            state.style.cssText = `font-weight:700;color:${
+              openState ? "#047857" : "#be123c"
+            }`;
+            state.textContent = openState ? "Open now" : "Closed";
+            row.append(state);
+            if (todayHours) row.append(" · ");
+          }
+          if (todayHours) row.append(`Today: ${todayHours}`);
+          status.append(row);
+        }
+        if (googleRating) {
+          const rating = document.createElement("div");
+          rating.style.cssText =
+            "margin-top:2px;color:#78716c;font-size:12px;font-weight:600";
+          rating.textContent = `${googleRating} Google`;
+          status.append(rating);
+        }
+      }
+
+      // — Vegan —
+      const vegan = addSection();
       const count = document.createElement("div");
-      count.style.cssText = `margin-top:4px;font-size:13px;font-weight:600;color:${
+      count.style.cssText = `font-size:13px;font-weight:600;color:${
         (r.vegan_options || 0) > 0 ? "#047857" : "#57534e"
       }`;
       count.textContent = analyzed
@@ -320,48 +372,41 @@ export default function Explore({
             ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
             : "")
         : "Menu not analyzed yet";
-      el.append(title, sub);
-      if (r.address) el.append(address);
-      el.append(count);
-      const googleRating = ratingText(r.rating, r.user_rating_count);
-      if (googleRating) {
-        const rating = document.createElement("div");
-        rating.style.cssText =
-          "margin-top:4px;color:#78716c;font-size:12px;font-weight:600";
-        rating.textContent = `${googleRating} Google`;
-        el.append(rating);
-      }
-      const openState = currentOpenState(r.open_now, r.enriched_at, r.opening_hours);
-      if (openState != null) {
-        const status = document.createElement("div");
-        status.style.cssText = `margin-top:3px;font-size:12px;font-weight:700;color:${
-          openState ? "#047857" : "#be123c"
-        }`;
-        status.textContent = openState ? "Open now" : "Closed";
-        el.append(status);
-      }
-      const todayHours = todayOpeningHours(r.opening_hours);
-      if (todayHours) {
-        const hours = document.createElement("div");
-        hours.style.cssText =
-          "margin-top:3px;color:#57534e;font-size:12px;font-weight:600";
-        hours.textContent = `Today: ${todayHours}`;
-        el.append(hours);
-      }
+      vegan.append(count);
       const checked = relativeDate(r.menu_fetched_at);
       if (checked) {
         const freshness = document.createElement("div");
-        freshness.style.cssText = "margin-top:3px;color:#a8a29e;font-size:11px";
+        freshness.style.cssText = "margin-top:2px;color:#a8a29e;font-size:11px";
         freshness.textContent = `Menu checked ${checked}`;
-        el.append(freshness);
+        vegan.append(freshness);
       }
-      if (analyzed) {
-        const btn = document.createElement("button");
-        btn.textContent = "See dishes →";
-        btn.style.cssText =
-          "margin-top:6px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-        btn.onclick = () => setDishesFor(r);
-        el.append(btn);
+
+      // — Actions: See dishes · Website —
+      if (analyzed || r.website_url) {
+        const actions = addSection();
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:14px;align-items:center";
+        if (analyzed) {
+          const btn = document.createElement("button");
+          btn.textContent = "See dishes →";
+          btn.style.cssText =
+            "color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
+          btn.onclick = () => setDishesFor(r);
+          row.append(btn);
+        }
+        if (r.website_url) {
+          const site = document.createElement("a");
+          site.textContent = "Website ↗";
+          site.style.cssText =
+            "color:#57534e;font-weight:700;font-size:13px;text-decoration:none";
+          site.href = r.website_url;
+          site.target = "_blank";
+          site.rel = "noopener noreferrer";
+          site.onmouseenter = () => (site.style.color = "#047857");
+          site.onmouseleave = () => (site.style.color = "#57534e");
+          row.append(site);
+        }
+        actions.append(row);
       }
       marker.bindPopup(el, { closeButton: false });
     });
