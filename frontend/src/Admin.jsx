@@ -455,6 +455,8 @@ export default function Admin() {
   const [query, setQuery] = useState("");
   const [operationalFilter, setOperationalFilter] = useState("all");
   const [groupBy, setGroupBy] = useState("none");
+  const [sortBy, setSortBy] = useState("recent");
+  const [tableView, setTableView] = useState("active"); // active | archived
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [historyFor, setHistoryFor] = useState(null); // menu-history modal
   // full = re-extract everything; auto = skip unchanged menus and classify
@@ -830,6 +832,21 @@ export default function Admin() {
     }
   }
 
+  async function toggleArchived(restaurant) {
+    const archived = !restaurant.archived;
+    const response = await fetch(`/api/restaurants/${restaurant.id}/archived`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived }),
+    });
+    if (!response.ok) return;
+    setRestaurants((current) =>
+      current.map((item) =>
+        item.id === restaurant.id ? { ...item, archived: archived ? 1 : 0 } : item
+      )
+    );
+  }
+
   async function toggleVisibility(restaurant) {
     const hidden = !Boolean(restaurant.consumer_hidden);
     const response = await fetch(`/api/restaurants/${restaurant.id}/visibility`, {
@@ -943,10 +960,17 @@ export default function Admin() {
   const classifierProviderLabel =
     PROVIDER_LABELS[resolvedClassifierProvider] || "No provider available";
 
+  const archivedCount = useMemo(
+    () => restaurants.filter((restaurant) => restaurant.archived).length,
+    [restaurants]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const qualityIds = new Set(menuQuality.map((finding) => finding.restaurant_id));
-    return restaurants.filter((restaurant) => {
+    const list = restaurants.filter((restaurant) => {
+      // Archived rows live on their own page; everything else never sees them.
+      if (Boolean(restaurant.archived) !== (tableView === "archived")) return false;
       if (
         q &&
         !restaurant.name?.toLowerCase().includes(q) &&
@@ -969,7 +993,38 @@ export default function Admin() {
       if (operationalFilter === "quality") return qualityIds.has(restaurant.id);
       return true;
     });
-  }, [restaurants, query, operationalFilter, menuQuality]);
+
+    // Nulls always sink to the bottom, whatever the direction — "sort by
+    // last classified" should read as a clean timeline, not nulls-first.
+    const time = (value) => (value ? new Date(value).getTime() : null);
+    const byNullable = (extract, direction) => (a, b) => {
+      const va = extract(a);
+      const vb = extract(b);
+      if (va == null && vb == null) return a.name.localeCompare(b.name);
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return direction * (va - vb) || a.name.localeCompare(b.name);
+    };
+    if (sortBy === "name") {
+      return [...list].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    }
+    if (sortBy === "classified_desc") {
+      return [...list].sort(byNullable((r) => time(r.last_classified_at), -1));
+    }
+    if (sortBy === "classified_asc") {
+      return [...list].sort(byNullable((r) => time(r.last_classified_at), 1));
+    }
+    if (sortBy === "scraped_desc") {
+      return [...list].sort(byNullable((r) => time(r.menu_fetched_at), -1));
+    }
+    if (sortBy === "menu_size") {
+      return [...list].sort(byNullable((r) => r.menu_chars, -1));
+    }
+    if (sortBy === "vegan_meals") {
+      return [...list].sort(byNullable((r) => r.vegan_options ?? 0, -1));
+    }
+    return list; // "recent" — the API's last_scraped_at order
+  }, [restaurants, query, operationalFilter, menuQuality, tableView, sortBy]);
 
   const groupedFiltered = useMemo(() => {
     if (groupBy === "none") return [{ label: "All restaurants", items: filtered }];
@@ -1003,7 +1058,9 @@ export default function Admin() {
     const result = [...groups.entries()].map(([label, items]) => ({
       label,
       items:
-        groupBy === "classification_age"
+        // An explicit sort choice wins inside groups too; the default
+        // classification-age grouping keeps its newest-first convention.
+        groupBy === "classification_age" && sortBy === "recent"
           ? [...items].sort(
               (a, b) =>
                 new Date(b.last_classified_at || 0).getTime() -
@@ -1025,7 +1082,7 @@ export default function Admin() {
       result.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
     }
     return result;
-  }, [filtered, groupBy]);
+  }, [filtered, groupBy, sortBy]);
 
   const selectableFiltered = useMemo(
     () =>
@@ -1468,6 +1525,29 @@ export default function Admin() {
         )}
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-lg border border-slate-300">
+            {[
+              ["active", `Active (${restaurants.length - archivedCount})`],
+              ["archived", `Archived (${archivedCount})`],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTableView(key)}
+                className={`px-3 py-2 text-sm font-semibold transition ${
+                  tableView === key
+                    ? "bg-slate-800 text-white"
+                    : "bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+                title={
+                  key === "archived"
+                    ? "Listings you'll never need (7-Eleven and friends): out of this table, Explore, and every bulk run — data kept"
+                    : "The working set"
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <input
             type="text"
             value={query}
@@ -1504,12 +1584,27 @@ export default function Admin() {
             <option value="freshness">Group by menu freshness</option>
             <option value="classification_age">Group by last classified</option>
           </select>
-          {(query || operationalFilter !== "all" || groupBy !== "none") && (
+          <select
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            aria-label="Sort restaurants"
+          >
+            <option value="recent">Sort: Recently scraped</option>
+            <option value="name">Sort: Name A–Z</option>
+            <option value="classified_desc">Sort: Last classified (newest)</option>
+            <option value="classified_asc">Sort: Last classified (oldest)</option>
+            <option value="scraped_desc">Sort: Menu fetched (newest)</option>
+            <option value="menu_size">Sort: Menu size</option>
+            <option value="vegan_meals">Sort: Vegan meals</option>
+          </select>
+          {(query || operationalFilter !== "all" || groupBy !== "none" || sortBy !== "recent") && (
             <button
               onClick={() => {
                 setQuery("");
                 setOperationalFilter("all");
                 setGroupBy("none");
+                setSortBy("recent");
               }}
               className="text-xs font-semibold text-slate-500 hover:text-slate-800 hover:underline"
             >
@@ -1838,6 +1933,17 @@ export default function Admin() {
                             className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
                           >
                             🕘 history
+                          </button>
+                          <button
+                            onClick={() => toggleArchived(r)}
+                            title={
+                              r.archived
+                                ? "Restore this listing to the active table (and to pipeline/consumer eligibility rules)"
+                                : "Archive: remove from this table, Explore, and all bulk runs — data is kept and it can be restored anytime"
+                            }
+                            className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+                          >
+                            {r.archived ? "restore" : "archive"}
                           </button>
                           <button
                             onClick={() => toggleVisibility(r)}

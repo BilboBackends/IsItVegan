@@ -198,6 +198,9 @@ _MIGRATIONS = {
         # Hash of the menu text the last classification ran on — when a
         # recrawl produces identical text, reclassification is skipped.
         "last_classified_hash": "TEXT",
+        # Archived listings leave the Admin working set AND all consumer
+        # views/pipeline runs (7-Eleven and friends). Data is kept.
+        "archived": "INTEGER NOT NULL DEFAULT 0",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -320,7 +323,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                        WHERE d.restaurant_id = r.id
                    ) AS last_classified_at,
                    r.last_classify_cost, r.last_classify_provider,
-                   r.last_classified_hash,
+                   r.last_classified_hash, r.archived,
                    EXISTS (
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -399,6 +402,19 @@ def record_classify_cost(
             """,
             (None if cost is None else round(cost, 3), provider, restaurant_id),
         )
+
+
+def set_restaurant_archived(
+    restaurant_id: int, archived: bool, db_path: str | None = None
+) -> bool:
+    """Archive/restore a listing. Archived rows keep all their data but
+    leave the Admin working set, consumer views, and bulk pipeline runs."""
+    with connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE restaurants SET archived = ? WHERE id = ?",
+            (int(archived), restaurant_id),
+        )
+    return cur.rowcount > 0
 
 
 def set_restaurant_hidden(
@@ -994,6 +1010,7 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    c.key_ingredients,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
+                   r.archived,
                    r.serves_vegetarian,
                    r.price_level, r.primary_type, r.rating,
                    r.user_rating_count, r.open_now, r.opening_hours,

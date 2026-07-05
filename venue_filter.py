@@ -19,6 +19,7 @@ def is_consumer_food_venue(place: dict) -> bool:
     a primary type during enrichment. Admin always retains every row.
     """
     return (
-        not bool(place.get("consumer_hidden"))
+        not bool(place.get("archived"))
+        and not bool(place.get("consumer_hidden"))
         and place.get("primary_type") not in EXCLUDED_PRIMARY_TYPES
     )

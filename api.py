@@ -394,6 +394,19 @@ def update_restaurant_visibility(restaurant_id: int) -> object:
     return jsonify({"id": restaurant_id, "hidden": payload["hidden"]})
 
 
+@app.patch("/api/restaurants/<int:restaurant_id>/archived")
+def update_restaurant_archived(restaurant_id: int) -> object:
+    """Archive/restore a listing. Archived rows keep their data but leave
+    the Admin working set, consumer views, and bulk pipeline runs."""
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("archived"), bool):
+        return jsonify({"error": "archived must be true or false."}), 400
+    if not db.set_restaurant_archived(restaurant_id, payload["archived"]):
+        return jsonify({"error": "Restaurant not found."}), 404
+    return jsonify({"id": restaurant_id, "archived": payload["archived"]})
+
+
 @app.patch("/api/restaurants/<int:restaurant_id>/refresh-enabled")
 def update_restaurant_refresh_enabled(restaurant_id: int) -> object:
     db.init_db()
