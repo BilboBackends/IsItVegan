@@ -66,6 +66,222 @@ function UsageBar({ window: w }) {
   );
 }
 
+const CHANGE_STYLES = {
+  added: "bg-emerald-100 text-emerald-800",
+  removed: "bg-rose-100 text-rose-700",
+  price_changed: "bg-amber-100 text-amber-800",
+  verdict_changed: "bg-violet-100 text-violet-800",
+};
+
+function changeDetail(change) {
+  if (change.change_type === "price_changed") {
+    return `${change.old_price || "—"} → ${change.new_price || "—"}`;
+  }
+  if (change.change_type === "verdict_changed") {
+    return `${(change.old_verdict || "?").replaceAll("_", " ")} → ${(
+      change.new_verdict || "?"
+    ).replaceAll("_", " ")}`;
+  }
+  if (change.change_type === "added") return change.new_price || "";
+  return change.old_price || "";
+}
+
+// Menu history per restaurant: distinct raw-menu versions (immutable, one
+// per actual content change) + the dish-change log (added/removed/price/
+// verdict transitions recorded at each reclassification).
+function HistoryModal({ restaurant, onClose }) {
+  const [versions, setVersions] = useState(null);
+  const [changes, setChanges] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [contents, setContents] = useState(null); // version id -> raw text
+
+  useEffect(() => {
+    if (!restaurant) return;
+    setVersions(null);
+    setChanges(null);
+    setExpandedId(null);
+    setContents(null);
+    fetch(`/api/restaurants/${restaurant.id}/menu-versions`)
+      .then((res) => (res.ok ? res.json() : { versions: [] }))
+      .then((data) => setVersions(data.versions || []))
+      .catch(() => setVersions([]));
+    fetch(`/api/restaurants/${restaurant.id}/dish-changes`)
+      .then((res) => (res.ok ? res.json() : { changes: [] }))
+      .then((data) => setChanges(data.changes || []))
+      .catch(() => setChanges([]));
+  }, [restaurant]);
+
+  async function toggleVersion(id) {
+    if (expandedId === id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(id);
+    if (contents === null) {
+      try {
+        const res = await fetch(
+          `/api/restaurants/${restaurant.id}/menu-versions?full=1`
+        );
+        const data = await res.json();
+        const map = {};
+        for (const v of data.versions || []) map[v.id] = v.content;
+        setContents(map);
+      } catch {
+        setContents({});
+      }
+    }
+  }
+
+  if (!restaurant) return null;
+
+  const changeGroups = [];
+  if (changes) {
+    const byTime = new Map();
+    for (const change of changes) {
+      if (!byTime.has(change.observed_at)) {
+        const group = { at: change.observed_at, items: [] };
+        byTime.set(change.observed_at, group);
+        changeGroups.push(group);
+      }
+      byTime.get(change.observed_at).items.push(change);
+    }
+  }
+  const stamp = (value) =>
+    new Date(value).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <h2 className="font-semibold text-slate-900">
+            Menu history — {restaurant.name}
+          </h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+            ✕
+          </button>
+        </div>
+        <div className="space-y-5 overflow-y-auto p-4">
+          <section>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+              Menu versions
+              <span className="ml-1.5 font-medium normal-case">
+                — one row per actual content change; identical recrawls add nothing
+              </span>
+            </h3>
+            {versions === null ? (
+              <div className="text-sm text-slate-400">Loading…</div>
+            ) : versions.length === 0 ? (
+              <div className="text-sm text-slate-400">
+                No versions captured yet — recording starts with the next crawl
+                of this restaurant.
+              </div>
+            ) : (
+              <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {versions.map((v, i) => (
+                  <li key={v.id} className="px-3 py-2">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <span className="font-medium text-slate-800">
+                        {stamp(v.fetched_at)}
+                      </span>
+                      {i === 0 && (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-emerald-700">
+                          current
+                        </span>
+                      )}
+                      <span className="text-xs text-slate-400">
+                        {v.char_count?.toLocaleString()} chars
+                        {v.menu_score != null && ` · score ${v.menu_score.toFixed(2)}`}
+                        {" · "}
+                        <span className="font-mono">{v.content_hash?.slice(0, 10)}</span>
+                      </span>
+                      <button
+                        onClick={() => toggleVersion(v.id)}
+                        className="ml-auto text-xs font-semibold text-emerald-700 hover:underline"
+                      >
+                        {expandedId === v.id ? "hide text" : "view text"}
+                      </button>
+                    </div>
+                    {expandedId === v.id && (
+                      <pre className="mt-2 max-h-72 overflow-y-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-3 font-mono text-xs text-slate-700">
+                        {contents === null
+                          ? "Loading…"
+                          : contents[v.id] || "(content unavailable)"}
+                      </pre>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+              Dish changes
+              <span className="ml-1.5 font-medium normal-case">
+                — recorded at each reclassification of a changed menu
+              </span>
+            </h3>
+            {changes === null ? (
+              <div className="text-sm text-slate-400">Loading…</div>
+            ) : changeGroups.length === 0 ? (
+              <div className="text-sm text-slate-400">
+                No dish changes recorded yet — they accumulate as changed menus
+                are reclassified.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {changeGroups.map((group) => (
+                  <div key={group.at} className="rounded-lg border border-slate-200">
+                    <div className="border-b border-slate-100 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-500">
+                      {stamp(group.at)} · {group.items.length} change
+                      {group.items.length === 1 ? "" : "s"}
+                    </div>
+                    <ul className="divide-y divide-slate-50">
+                      {group.items.map((change, idx) => (
+                        <li
+                          key={`${change.dish_name}-${idx}`}
+                          className="flex flex-wrap items-baseline gap-2 px-3 py-1.5 text-sm"
+                        >
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                              CHANGE_STYLES[change.change_type] ||
+                              "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {change.change_type.replaceAll("_", " ")}
+                          </span>
+                          <span className="font-medium text-slate-800">
+                            {change.dish_name}
+                          </span>
+                          <span className="text-xs text-slate-400">
+                            {changeDetail(change)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatCard({ label, value, hint }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -240,6 +456,7 @@ export default function Admin() {
   const [operationalFilter, setOperationalFilter] = useState("all");
   const [groupBy, setGroupBy] = useState("none");
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
+  const [historyFor, setHistoryFor] = useState(null); // menu-history modal
   const [menuText, setMenuText] = useState(null);
   const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
@@ -1576,6 +1793,13 @@ export default function Admin() {
                             view menu
                           </button>
                           <button
+                            onClick={() => setHistoryFor(r)}
+                            title="Menu versions over time and the dish-change log (added/removed dishes, price moves)"
+                            className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+                          >
+                            🕘 history
+                          </button>
+                          <button
                             onClick={() => toggleVisibility(r)}
                             disabled={!r.is_consumer_venue && !r.consumer_hidden}
                             title={
@@ -1867,6 +2091,10 @@ export default function Admin() {
 
       {dishesFor && (
         <DishModal restaurant={dishesFor} onClose={() => setDishesFor(null)} />
+      )}
+
+      {historyFor && (
+        <HistoryModal restaurant={historyFor} onClose={() => setHistoryFor(null)} />
       )}
 
       {menuFor && (
