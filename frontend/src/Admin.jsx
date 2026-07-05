@@ -457,6 +457,9 @@ export default function Admin() {
   const [groupBy, setGroupBy] = useState("none");
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [historyFor, setHistoryFor] = useState(null); // menu-history modal
+  // full = re-extract everything; auto = skip unchanged menus and classify
+  // only the changes (delta) when a prior inventory exists.
+  const [classifyMode, setClassifyMode] = useState("auto");
   const [menuText, setMenuText] = useState(null);
   const [menuScore, setMenuScore] = useState(null);
   const [menuLoading, setMenuLoading] = useState(false);
@@ -628,7 +631,7 @@ export default function Admin() {
       const res = await fetch("/api/classify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: classifierProvider }),
+        body: JSON.stringify({ provider: classifierProvider, mode: classifyMode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Classify failed (${res.status})`);
@@ -793,11 +796,10 @@ export default function Admin() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           restaurant_id: r.id,
-          // An explicit human click means "actually redo it" — full mode
-          // bypasses the unchanged-menu skip and the delta shortcut, so
-          // classifier improvements reach menus that haven't changed.
+          // The mode toggle decides: full re-extraction (classifier changed,
+          // menu didn't) vs changes-only (skip unchanged, delta the rest).
           ...(action === "classify"
-            ? { provider: classifierProvider, mode: "full" }
+            ? { provider: classifierProvider, mode: classifyMode }
             : {}),
         }),
       });
@@ -1125,10 +1127,7 @@ export default function Admin() {
         body: JSON.stringify({
           restaurant_ids: selectedClassifyIds,
           provider: classifierProvider,
-          // Explicit selection = full re-extraction: the point of manually
-          // reclassifying is picking up classifier changes, which the
-          // unchanged-menu skip would otherwise ignore.
-          mode: "full",
+          mode: classifyMode,
         }),
       });
       const data = await response.json();
@@ -1213,6 +1212,17 @@ export default function Admin() {
               >
                 Anthropic API
               </option>
+            </select>
+            <select
+              value={classifyMode}
+              onChange={(event) => setClassifyMode(event.target.value)}
+              disabled={classifying}
+              className="rounded-lg border border-violet-300 bg-white px-3 py-2 text-sm font-semibold text-violet-800 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400"
+              aria-label="Reclassification mode"
+              title="Changes only: skip menus whose text is unchanged and classify only the differences (cheapest). Full: re-extract everything with the current classifier — use after classifier changes, since unchanged menus keep old verdicts otherwise."
+            >
+              <option value="auto">Changes only</option>
+              <option value="full">Full re-extraction</option>
             </select>
             <button
               onClick={runClassify}
@@ -1850,7 +1860,9 @@ export default function Admin() {
                                         r.classify_estimate ?? 0.1
                                       ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars)`
                                     : `Re-run classification with your ${classifierProviderLabel}`) +
-                                  " — full re-extraction, even if the menu text is unchanged"
+                                  (classifyMode === "full"
+                                    ? " — full re-extraction, even if the menu text is unchanged"
+                                    : " — changes only; skipped when the menu text is unchanged")
                                 : "No menu text to classify"
                             }
                             className="rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
