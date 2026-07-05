@@ -200,10 +200,8 @@ export default function DishModal({ restaurant, onClose }) {
           })}
         </div>
 
-        {/* Filters — verdict chips and (on the food tab) meal/side chips
-            share ONE row, divided by a hairline. Scrolls horizontally when
-            it can't fit, so it never grows taller. */}
-        <div className="flex items-center gap-2 overflow-x-auto border-b border-slate-100 px-4 py-2 [&>*]:shrink-0">
+        {/* Verdict filter */}
+        <div className="flex gap-2 border-b border-slate-100 px-4 py-2">
           {FILTERS.map((f) => (
             <button
               key={f.key}
@@ -217,36 +215,32 @@ export default function DishModal({ restaurant, onClose }) {
               {f.label}
             </button>
           ))}
-          {tab === "food" && (
-            <>
-              <span className="h-4 w-px bg-slate-200" aria-hidden="true" />
-              {[
-                ["all", "All food", verdictShown.length],
-                ["meal", "Meals", mealItems.length],
-                ["side", "Sides", sideItems.length],
-              ].map(([key, label, count]) => (
-                <button
-                  key={key}
-                  onClick={() => setServingFilter(key)}
-                  title={
-                    key === "side"
-                      ? "Sides, snacks, and small plates"
-                      : key === "meal"
-                        ? "Substantial dishes intended as a main"
-                        : "Everything on the food tab"
-                  }
-                  className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
-                    servingFilter === key
-                      ? "bg-slate-800 text-white"
-                      : "border border-slate-200 bg-white text-slate-600 hover:border-slate-400"
-                  }`}
-                >
-                  {label} <span className="ml-1 opacity-70">{count}</span>
-                </button>
-              ))}
-            </>
-          )}
         </div>
+
+        {tab === "food" && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2">
+            <span className="mr-1 text-[11px] font-bold uppercase tracking-wide text-slate-400">
+              Show
+            </span>
+            {[
+              ["all", "All food", verdictShown.length],
+              ["meal", "Full meals", mealItems.length],
+              ["side", "Sides & small plates", sideItems.length],
+            ].map(([key, label, count]) => (
+              <button
+                key={key}
+                onClick={() => setServingFilter(key)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
+                  servingFilter === key
+                    ? "bg-slate-800 text-white"
+                    : "border border-slate-200 bg-white text-slate-600 hover:border-slate-400"
+                }`}
+              >
+                {label} <span className="ml-1 opacity-70">{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="overflow-y-auto p-4">
           {loading ? (
