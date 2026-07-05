@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import { apiUrl } from "./staticData.js";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
@@ -10,6 +12,8 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
   const [restaurants, setRestaurants] = useState([]);
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const mapEl = useRef(null);
+  const mapRef = useRef(null);
 
   useEffect(() => {
     Promise.all([
@@ -32,6 +36,79 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
     [dishes, favorites.dishes]
   );
 
+  // Saved map: emerald count-pins where the saved dishes are, stone pins
+  // for saved restaurants with no saved dish. Rebuilt on every change —
+  // trivial at favorites scale.
+  useEffect(() => {
+    if (loading || !mapEl.current) return;
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+    const groups = new Map();
+    for (const dish of savedDishes) {
+      if (dish.lat == null || dish.lng == null) continue;
+      if (!groups.has(dish.restaurant_id)) {
+        groups.set(dish.restaurant_id, {
+          name: dish.restaurant_name,
+          lat: dish.lat,
+          lng: dish.lng,
+          count: 0,
+        });
+      }
+      groups.get(dish.restaurant_id).count += 1;
+    }
+    for (const restaurant of savedRestaurants) {
+      if (restaurant.lat == null || restaurant.lng == null) continue;
+      if (!groups.has(restaurant.id)) {
+        groups.set(restaurant.id, {
+          name: restaurant.name,
+          lat: restaurant.lat,
+          lng: restaurant.lng,
+          count: 0,
+        });
+      }
+    }
+    const pins = [...groups.values()];
+    if (pins.length === 0) return;
+    const map = L.map(mapEl.current, { scrollWheelZoom: true });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors",
+    }).addTo(map);
+    map.fitBounds(pins.map((p) => [p.lat, p.lng]), {
+      padding: [40, 40],
+      maxZoom: 15,
+    });
+    for (const p of pins) {
+      const isDishPin = p.count > 0;
+      const marker = L.marker([p.lat, p.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="display:flex;align-items:center;justify-content:center;background:${
+            isDishPin ? "#047857" : "#78716c"
+          };color:#fff;border:2px solid #fff;border-radius:9999px;min-width:22px;height:22px;padding:0 3px;font-size:11px;font-weight:700;box-shadow:0 1px 4px rgba(0,0,0,.4)">${
+            isDishPin ? p.count : "♥"
+          }</div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        }),
+      }).addTo(map);
+      marker.bindTooltip(
+        isDishPin
+          ? `${p.name} — ${p.count} saved item${p.count === 1 ? "" : "s"}`
+          : `${p.name} — saved restaurant`,
+        { direction: "top", offset: [0, -10] }
+      );
+    }
+    mapRef.current = map;
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, [loading, savedDishes, savedRestaurants]);
+
   if (loading) {
     return <div className="mx-auto max-w-5xl p-12 text-center text-stone-400">Loading Saved…</div>;
   }
@@ -50,6 +127,13 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
         </div>
       ) : (
         <div className="space-y-8">
+          {(savedDishes.some((d) => d.lat != null) ||
+            savedRestaurants.some((r) => r.lat != null)) && (
+            <div
+              ref={mapEl}
+              className="z-0 h-72 overflow-hidden rounded-2xl border border-stone-200 shadow-sm"
+            />
+          )}
           <section>
             <h2 className="mb-3 text-lg font-extrabold text-stone-900">
               Restaurants <span className="text-sm font-normal text-stone-400">{savedRestaurants.length}</span>

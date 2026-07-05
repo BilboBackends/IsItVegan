@@ -726,17 +726,17 @@ export default function Explore({
               </option>
             ))}
           </select>
-          <button
-            onClick={useMyLocation}
-            disabled={locating}
-            className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 shadow-sm hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
-            title={`Distances measured from ${originLabel}`}
-          >
-            {locating ? "Locating…" : "📍 Near me"}
-          </button>
-          <span className="hidden text-xs text-stone-400 sm:inline">
-            from {originLabel}
-          </span>
+          <div className="flex items-center gap-1.5 whitespace-nowrap">
+            <button
+              onClick={useMyLocation}
+              disabled={locating}
+              className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 shadow-sm hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
+              title={`Distances measured from ${originLabel}`}
+            >
+              {locating ? "Locating…" : "📍 Near me"}
+            </button>
+            <span className="text-xs text-stone-400">from {originLabel}</span>
+          </div>
           </div>
         </div>
       </div>

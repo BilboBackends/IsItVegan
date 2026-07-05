@@ -5,6 +5,7 @@ import { FreshnessBadge, OpenStatusBadge, TodayHours } from "./RestaurantMeta.js
 import { calorieLabel } from "./calories.js";
 import { isCountedVegan } from "./verdicts.js";
 import { fetchRestaurantDishes } from "./staticData.js";
+import ThumbVote from "./ThumbVote.jsx";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
 // dishes for the given restaurant; every verdict shows confidence, reasoning,
@@ -316,6 +317,7 @@ export default function DishModal({ restaurant, onClose }) {
                           {Math.round(d.confidence * 100)}%
                         </span>
                       )}
+                      <ThumbVote dishId={d.id} />
                     </div>
                   </div>
                   {d.raw_description && (

@@ -553,6 +553,23 @@ _REPORT_TYPES = {
 }
 
 
+@app.post("/api/dish-votes")
+def dish_vote_endpoint() -> object:
+    """Record a thumbs up/down for a dish (local app only; the public static
+    site keeps votes in the browser)."""
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    dish_id = payload.get("dish_id")
+    vote = payload.get("vote")
+    if not isinstance(dish_id, int) or isinstance(dish_id, bool):
+        return jsonify({"error": "dish_id must be an integer."}), 400
+    if vote not in ("up", "down"):
+        return jsonify({"error": "vote must be 'up' or 'down'."}), 400
+    if not db.record_dish_vote(dish_id, vote):
+        return jsonify({"error": "Dish not found."}), 404
+    return jsonify({"ok": True})
+
+
 @app.post("/api/reports")
 def create_report() -> object:
     db.init_db()

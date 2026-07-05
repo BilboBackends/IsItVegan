@@ -146,6 +146,18 @@ CREATE TABLE IF NOT EXISTS classifications (
     key_ingredients TEXT NOT NULL DEFAULT '[]'
 );
 
+-- Lightweight thumbs from dish rows (agree/disagree with a verdict or
+-- just liked/disliked the dish). Votes also live in the visitor's
+-- localStorage; this table only records what the LOCAL app sees.
+CREATE TABLE IF NOT EXISTS dish_votes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    dish_id       INTEGER REFERENCES dishes(id) ON DELETE SET NULL,
+    dish_name     TEXT,
+    restaurant_id INTEGER,
+    vote          TEXT NOT NULL CHECK (vote IN ('up', 'down')),
+    created_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS reports (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     restaurant_id INTEGER NOT NULL REFERENCES restaurants(id),
@@ -1084,6 +1096,31 @@ def restaurants_needing_refresh(
                 {"id": row["id"], "name": row["name"], "website_url": row["website_url"]}
             )
     return targets
+
+
+def record_dish_vote(dish_id: int, vote: str, db_path: str | None = None) -> bool:
+    """Store a thumbs up/down for a dish; dish name/restaurant are copied so
+    the signal survives dish re-snapshots. False when the dish is unknown."""
+    with connect(db_path) as conn:
+        dish = conn.execute(
+            "SELECT name, restaurant_id FROM dishes WHERE id = ?", (dish_id,)
+        ).fetchone()
+        if dish is None:
+            return False
+        conn.execute(
+            """
+            INSERT INTO dish_votes (dish_id, dish_name, restaurant_id, vote, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                dish_id,
+                dish["name"],
+                dish["restaurant_id"],
+                vote,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+    return True
 
 
 def create_report(

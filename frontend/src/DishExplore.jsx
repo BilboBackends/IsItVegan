@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
+import ThumbVote from "./ThumbVote.jsx";
 import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
@@ -974,6 +975,7 @@ export default function DishExplore({
                           {Math.round(dish.confidence * 100)}%
                         </span>
                       )}
+                      <ThumbVote dishId={dish.id} />
                       <FavoriteButton
                         active={favorites.dishes.includes(dish.id)}
                         onClick={() => toggleDish(dish.id)}
