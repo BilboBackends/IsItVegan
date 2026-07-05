@@ -793,7 +793,12 @@ export default function Admin() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           restaurant_id: r.id,
-          ...(action === "classify" ? { provider: classifierProvider } : {}),
+          // An explicit human click means "actually redo it" — full mode
+          // bypasses the unchanged-menu skip and the delta shortcut, so
+          // classifier improvements reach menus that haven't changed.
+          ...(action === "classify"
+            ? { provider: classifierProvider, mode: "full" }
+            : {}),
         }),
       });
       const data = await res.json();
@@ -1120,6 +1125,10 @@ export default function Admin() {
         body: JSON.stringify({
           restaurant_ids: selectedClassifyIds,
           provider: classifierProvider,
+          // Explicit selection = full re-extraction: the point of manually
+          // reclassifying is picking up classifier changes, which the
+          // unchanged-menu skip would otherwise ignore.
+          mode: "full",
         }),
       });
       const data = await response.json();
@@ -1836,11 +1845,12 @@ export default function Admin() {
                             disabled={classifying || rowBusy !== null || !r.has_menu_text}
                             title={
                               r.has_menu_text
-                                ? classifierUsesApi
-                                  ? `Re-run classification with Anthropic (est ~$${(
-                                      r.classify_estimate ?? 0.1
-                                    ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars)`
-                                  : `Re-run classification with your ${classifierProviderLabel}`
+                                ? (classifierUsesApi
+                                    ? `Re-run classification with Anthropic (est ~$${(
+                                        r.classify_estimate ?? 0.1
+                                      ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars)`
+                                    : `Re-run classification with your ${classifierProviderLabel}`) +
+                                  " — full re-extraction, even if the menu text is unchanged"
                                 : "No menu text to classify"
                             }
                             className="rounded border border-emerald-200 px-2 py-0.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
