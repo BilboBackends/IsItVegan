@@ -583,7 +583,10 @@ export default function Explore({
 
       {/* Filter bar */}
       <div className="sticky top-[113px] z-10 -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
-        <div className="flex items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
+        {/* The view toggle lives OUTSIDE the swipeable strip so it's always
+            visible on phones — pinned right while the filters scroll. */}
+        <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <input
             type="text"
             value={query}
@@ -659,13 +662,14 @@ export default function Explore({
           <span className="hidden text-xs text-stone-400 sm:inline">
             from {originLabel}
           </span>
-          {/* Mobile-only view toggle; desktop shows both panes */}
-          <div className="ml-auto flex overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm lg:hidden">
+          </div>
+          {/* Mobile/tablet-only view toggle; desktop shows both panes */}
+          <div className="ml-auto flex shrink-0 overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm lg:hidden">
             {["list", "map"].map((v) => (
               <button
                 key={v}
                 onClick={() => setView(v)}
-                className={`px-4 py-2 text-sm font-semibold capitalize ${
+                className={`px-3 py-2 text-sm font-semibold capitalize sm:px-4 ${
                   view === v ? "bg-emerald-700 text-white" : "text-stone-600"
                 }`}
               >

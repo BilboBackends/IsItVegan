@@ -607,7 +607,10 @@ export default function DishExplore({
 
       <div className="sticky top-[113px] z-10 -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
         <div className="space-y-3">
-          <div className="flex gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
+          {/* The view toggle lives OUTSIDE the swipeable strip so it's always
+              visible on phones — pinned right while the filters scroll. */}
+          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
             <div className="relative min-w-64 flex-1 max-sm:min-w-[75vw]">
               <span className="pointer-events-none absolute left-3 top-2.5 text-stone-400">⌕</span>
               <input
@@ -710,12 +713,13 @@ export default function DishExplore({
             >
               {locating ? "Locating…" : "Near me"}
             </button>
-            <div className="ml-auto flex overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm lg:hidden">
+          </div>
+            <div className="ml-auto flex shrink-0 overflow-hidden rounded-full border border-stone-300 bg-white shadow-sm lg:hidden">
               {["list", "map"].map((view) => (
                 <button
                   key={view}
                   onClick={() => setMobileView(view)}
-                  className={`px-4 py-2 text-sm font-semibold capitalize ${
+                  className={`px-3 py-2 text-sm font-semibold capitalize sm:px-4 ${
                     mobileView === view ? "bg-emerald-700 text-white" : "text-stone-600"
                   }`}
                 >
