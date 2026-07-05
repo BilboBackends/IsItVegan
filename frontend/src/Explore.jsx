@@ -7,7 +7,10 @@ import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
   OpenStatusBadge,
+  TodayHours,
+  currentOpenState,
   relativeDate,
+  todayOpeningHours,
 } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
@@ -87,6 +90,7 @@ export default function Explore({
   const [cuisine, setCuisine] = useState("all");
   const [sortBy, setSortBy] = useState("vegan");
   const [priceTier, setPriceTier] = useState(0);
+  const [openFilter, setOpenFilter] = useState("all");
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
@@ -173,6 +177,17 @@ export default function Explore({
     if (cuisine !== "all") {
       out = out.filter((restaurant) => cuisineLabel(restaurant.primary_type) === cuisine);
     }
+    if (openFilter !== "all") {
+      const expected = openFilter === "open";
+      out = out.filter(
+        (restaurant) =>
+          currentOpenState(
+            restaurant.open_now,
+            restaurant.enriched_at,
+            restaurant.opening_hours
+          ) === expected
+      );
+    }
     if (maxMiles > 0) {
       out = out.filter((r) => r.distance != null && r.distance <= maxMiles);
     }
@@ -205,7 +220,7 @@ export default function Explore({
       }
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enriched, query, cuisine, maxMiles, sortBy, priceTier]);
+  }, [enriched, query, cuisine, openFilter, maxMiles, sortBy, priceTier]);
 
   const showMap = isDesktop || view === "map";
 
@@ -281,6 +296,16 @@ export default function Explore({
         (priceLevelSymbol(r.price_level)
           ? ` · ${priceLevelSymbol(r.price_level)}`
           : "");
+      const address = document.createElement("a");
+      address.style.cssText =
+        "display:block;margin-top:3px;color:#0369a1;font-size:12px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
+      address.textContent = r.address || "";
+      address.href =
+        `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.address || r.name || "")}` +
+        (r.place_id ? `&query_place_id=${encodeURIComponent(r.place_id)}` : "");
+      address.target = "_blank";
+      address.rel = "noopener noreferrer";
+      address.title = "Open address in Google Maps";
       const count = document.createElement("div");
       count.style.cssText = `margin-top:4px;font-size:13px;font-weight:600;color:${
         (r.vegan_options || 0) > 0 ? "#047857" : "#57534e"
@@ -291,7 +316,9 @@ export default function Explore({
             ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
             : "")
         : "Menu not analyzed yet";
-      el.append(title, sub, count);
+      el.append(title, sub);
+      if (r.address) el.append(address);
+      el.append(count);
       const googleRating = ratingText(r.rating, r.user_rating_count);
       if (googleRating) {
         const rating = document.createElement("div");
@@ -300,15 +327,22 @@ export default function Explore({
         rating.textContent = `${googleRating} Google`;
         el.append(rating);
       }
-      const hoursFresh =
-        r.enriched_at && Date.now() - new Date(r.enriched_at).getTime() < 86_400_000;
-      if (r.open_now != null && hoursFresh) {
+      const openState = currentOpenState(r.open_now, r.enriched_at, r.opening_hours);
+      if (openState != null) {
         const status = document.createElement("div");
         status.style.cssText = `margin-top:3px;font-size:12px;font-weight:700;color:${
-          r.open_now ? "#047857" : "#be123c"
+          openState ? "#047857" : "#be123c"
         }`;
-        status.textContent = r.open_now ? "Open now" : "Closed";
+        status.textContent = openState ? "Open now" : "Closed";
         el.append(status);
+      }
+      const todayHours = todayOpeningHours(r.opening_hours);
+      if (todayHours) {
+        const hours = document.createElement("div");
+        hours.style.cssText =
+          "margin-top:3px;color:#57534e;font-size:12px;font-weight:600";
+        hours.textContent = `Today: ${todayHours}`;
+        el.append(hours);
       }
       const checked = relativeDate(r.menu_fetched_at);
       if (checked) {
@@ -441,15 +475,28 @@ export default function Explore({
           </span>
         )}
       </div>
+      {r.address && (
+        <div className="mt-1 line-clamp-2 text-xs leading-snug text-stone-500">
+          {r.address}
+        </div>
+      )}
       <RatingBadge
         rating={r.rating}
         userRatingCount={r.user_rating_count}
         className="mt-1"
       />
       <div className="mt-1.5 flex flex-wrap gap-1.5">
-        <OpenStatusBadge openNow={r.open_now} enrichedAt={r.enriched_at} />
+        <OpenStatusBadge
+          openNow={r.open_now}
+          enrichedAt={r.enriched_at}
+          openingHours={r.opening_hours}
+        />
         <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
       </div>
+      <TodayHours
+        openingHours={r.opening_hours}
+        className="mt-1.5 block text-xs font-medium text-stone-600"
+      />
       {r.editorial_summary && (
         <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
           {r.editorial_summary}
@@ -488,7 +535,7 @@ export default function Explore({
               target="_blank"
               rel="noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="text-xs font-semibold text-stone-400 transition hover:text-emerald-700 hover:underline"
+              className="text-xs font-semibold text-stone-700 underline decoration-stone-300 underline-offset-2 transition hover:text-emerald-700 hover:decoration-emerald-400"
             >
               Website ↗
             </a>
@@ -520,7 +567,7 @@ export default function Explore({
     <div className={`mx-auto max-w-7xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
       {/* Hero */}
       {!embedded && <div className="mb-6">
-        <h1 className="text-3xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
+        <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
           Find <span className="text-emerald-700">vegan-friendly</span> dishes
           near you
         </h1>
@@ -536,13 +583,13 @@ export default function Explore({
 
       {/* Filter bar */}
       <div className="sticky top-[113px] z-10 -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name, cuisine, address…"
-            className="w-full max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+            className="w-56 sm:w-full sm:max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
           />
           <select
             value={cuisine}
@@ -554,6 +601,17 @@ export default function Explore({
             {cuisines.map((label) => (
               <option key={label} value={label}>{label}</option>
             ))}
+          </select>
+          <select
+            value={openFilter}
+            onChange={(event) => setOpenFilter(event.target.value)}
+            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            aria-label="Filter by current opening status"
+            title="Calculated from listed weekly hours; recent Google status is used as a fallback"
+          >
+            <option value="all">Any open status</option>
+            <option value="open">Open now</option>
+            <option value="closed">Closed now</option>
           </select>
           <select
             value={sortBy}

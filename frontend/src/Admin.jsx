@@ -459,6 +459,9 @@ export default function Admin() {
   const [tableView, setTableView] = useState("active"); // active | archived
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [historyFor, setHistoryFor] = useState(null); // menu-history modal
+  const [deleteFor, setDeleteFor] = useState(null); // restaurant pending permanent deletion
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
   // full = re-extract everything; auto = skip unchanged menus and classify
   // only the changes (delta) when a prior inventory exists.
   const [classifyMode, setClassifyMode] = useState("auto");
@@ -485,6 +488,7 @@ export default function Admin() {
   const [classifying, setClassifying] = useState(false);
   const [menuQuality, setMenuQuality] = useState([]); // automated audit flags
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [qualityBusy, setQualityBusy] = useState(null);
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [selectedIds, setSelectedIds] = useState([]);
   const [classifierProvider, setClassifierProvider] = useState("auto");
@@ -679,6 +683,46 @@ export default function Admin() {
     if (response.ok) setReports((current) => current.filter((report) => report.id !== id));
   }
 
+  async function reviewMenuQuality(finding, status) {
+    setQualityBusy(finding.restaurant_id);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/menu-quality/${finding.restaurant_id}/review`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status, fingerprint: finding.fingerprint }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save review.");
+      await loadData();
+    } catch (reviewError) {
+      setError(reviewError.message);
+    } finally {
+      setQualityBusy(null);
+    }
+  }
+
+  async function reopenMenuQuality(finding) {
+    setQualityBusy(finding.restaurant_id);
+    setError(null);
+    try {
+      const response = await fetch(
+        `/api/menu-quality/${finding.restaurant_id}/review`,
+        { method: "DELETE" }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not reopen warning.");
+      await loadData();
+    } catch (reviewError) {
+      setError(reviewError.message);
+    } finally {
+      setQualityBusy(null);
+    }
+  }
+
   async function runEnrich() {
     setEnriching(true);
     setNotice(null);
@@ -847,6 +891,34 @@ export default function Admin() {
     );
   }
 
+  async function permanentlyDeleteRestaurant() {
+    if (!deleteFor || deleteConfirm !== deleteFor.name) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/restaurants/${deleteFor.id}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm_name: deleteConfirm }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Restaurant deletion failed.");
+      const deleted = data.deleted;
+      setDeleteFor(null);
+      setDeleteConfirm("");
+      setSelectedIds((current) => current.filter((id) => id !== deleted.id));
+      setNotice(
+        `Permanently deleted ${deleted.name}: ${deleted.dishes} dishes, ` +
+          `${deleted.classifications} classifications, and ${deleted.menu_versions} menu versions removed.`
+      );
+      await loadData();
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function toggleVisibility(restaurant) {
     const hidden = !Boolean(restaurant.consumer_hidden);
     const response = await fetch(`/api/restaurants/${restaurant.id}/visibility`, {
@@ -965,9 +1037,22 @@ export default function Admin() {
     [restaurants]
   );
 
+  const activeMenuQuality = useMemo(
+    () => menuQuality.filter((finding) => !finding.review_status),
+    [menuQuality]
+  );
+  const knownMenuIssues = useMemo(
+    () => menuQuality.filter((finding) => finding.review_status === "known_issue"),
+    [menuQuality]
+  );
+  const verifiedMenus = useMemo(
+    () => menuQuality.filter((finding) => finding.review_status === "verified"),
+    [menuQuality]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const qualityIds = new Set(menuQuality.map((finding) => finding.restaurant_id));
+    const qualityIds = new Set(activeMenuQuality.map((finding) => finding.restaurant_id));
     const list = restaurants.filter((restaurant) => {
       // Archived rows live on their own page; everything else never sees them.
       if (Boolean(restaurant.archived) !== (tableView === "archived")) return false;
@@ -1024,7 +1109,7 @@ export default function Admin() {
       return [...list].sort(byNullable((r) => r.vegan_options ?? 0, -1));
     }
     return list; // "recent" — the API's last_scraped_at order
-  }, [restaurants, query, operationalFilter, menuQuality, tableView, sortBy]);
+  }, [restaurants, query, operationalFilter, activeMenuQuality, tableView, sortBy]);
 
   const groupedFiltered = useMemo(() => {
     if (groupBy === "none") return [{ label: "All restaurants", items: filtered }];
@@ -1207,16 +1292,16 @@ export default function Admin() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <div className="w-full max-w-none px-4 py-8 sm:px-6 lg:px-8">
+      <div className="w-full max-w-none px-2 py-4 sm:px-6 sm:py-8 lg:px-8">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold">VeganFind — Pipeline Dashboard</h1>
+            <h1 className="text-lg font-bold sm:text-2xl">VeganFind — Pipeline Dashboard</h1>
             <p className="text-sm text-slate-500">
               Discovery · menu scraping · dish classification
               {config?.city ? ` · ${config.city}, FL` : ""}
             </p>
           </div>
-          <div className="flex flex-wrap justify-end gap-2">
+          <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">
             <button
               onClick={() => {
                 setAddOpen(true);
@@ -1460,38 +1545,107 @@ export default function Admin() {
                 </span>
               </h2>
               <span className="rounded-full bg-orange-200 px-2 py-0.5 text-xs font-bold text-orange-900">
-                {menuQuality.length} {qualityOpen ? "▾" : "▸"}
+                {activeMenuQuality.length} active
+                {knownMenuIssues.length > 0 && ` · ${knownMenuIssues.length} known`}{" "}
+                {qualityOpen ? "▾" : "▸"}
               </span>
             </button>
             {qualityOpen && (
-              <div className="mt-3 space-y-2">
-                {menuQuality.map((f) => (
-                  <div
-                    key={f.restaurant_id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white p-3 text-sm shadow-sm"
-                  >
-                    <div>
-                      <div className="font-bold text-slate-900">{f.name}</div>
-                      <ul className="mt-0.5 text-xs text-orange-800">
-                        {f.flags.map((flag) => (
-                          <li key={flag}>• {flag}</li>
-                        ))}
-                      </ul>
+              <div className="mt-3 space-y-3">
+                {activeMenuQuality.length === 0 && (
+                  <div className="rounded-lg bg-white px-3 py-2 text-sm font-medium text-emerald-700 shadow-sm">
+                    No unreviewed menu warnings.
+                  </div>
+                )}
+                {activeMenuQuality.map((f) => (
+                  <div key={f.restaurant_id} className="rounded-lg bg-white p-3 text-sm shadow-sm">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="font-bold text-slate-900">{f.name}</div>
+                        <ul className="mt-0.5 text-xs text-orange-800">
+                          {f.flags.map((flag) => <li key={flag}>• {flag}</li>)}
+                        </ul>
+                      </div>
+                      <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">
+                        <button
+                          onClick={() => {
+                            const restaurant = restaurants.find((item) => item.id === f.restaurant_id);
+                            if (restaurant) runRowAction(restaurant, "ingest");
+                          }}
+                          disabled={rowBusy !== null || qualityBusy !== null}
+                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {rowBusy?.id === f.restaurant_id && rowBusy.action === "ingest"
+                            ? "scraping…"
+                            : "↻ Rescrape"}
+                        </button>
+                        <button
+                          onClick={() => reviewMenuQuality(f, "verified")}
+                          disabled={qualityBusy !== null || rowBusy !== null}
+                          className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          title="The stored menu is correct; hide this warning until its content changes"
+                        >
+                          ✓ Menu is correct
+                        </button>
+                        <button
+                          onClick={() => reviewMenuQuality(f, "known_issue")}
+                          disabled={qualityBusy !== null || rowBusy !== null}
+                          className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          title="The menu is incomplete or wrong, but there is no current solution"
+                        >
+                          No current solution
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      onClick={() => {
-                        const r = restaurants.find((x) => x.id === f.restaurant_id);
-                        if (r) runRowAction(r, "ingest");
-                      }}
-                      disabled={rowBusy !== null}
-                      className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {rowBusy?.id === f.restaurant_id && rowBusy.action === "ingest"
-                        ? "scraping…"
-                        : "↻ rescrape"}
-                    </button>
                   </div>
                 ))}
+
+                {knownMenuIssues.length > 0 && (
+                  <details className="rounded-lg border border-amber-200 bg-amber-50/70 p-3">
+                    <summary className="cursor-pointer text-sm font-bold text-amber-900">
+                      Known issues — no current solution ({knownMenuIssues.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {knownMenuIssues.map((finding) => (
+                        <div key={finding.restaurant_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-white p-2.5 text-sm">
+                          <div>
+                            <div className="font-bold text-slate-800">{finding.name}</div>
+                            <div className="text-xs text-amber-800">{finding.flags.join(" · ")}</div>
+                          </div>
+                          <button
+                            onClick={() => reopenMenuQuality(finding)}
+                            disabled={qualityBusy !== null}
+                            className="text-xs font-bold text-amber-800 underline disabled:opacity-40"
+                          >
+                            Reopen warning
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {verifiedMenus.length > 0 && (
+                  <details className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3">
+                    <summary className="cursor-pointer text-sm font-bold text-emerald-800">
+                      Verified correct ({verifiedMenus.length})
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {verifiedMenus.map((finding) => (
+                        <div key={finding.restaurant_id} className="flex items-center justify-between gap-2 rounded-lg bg-white p-2.5 text-sm">
+                          <span className="font-bold text-slate-800">{finding.name}</span>
+                          <button
+                            onClick={() => reopenMenuQuality(finding)}
+                            disabled={qualityBusy !== null}
+                            className="text-xs font-bold text-emerald-700 underline disabled:opacity-40"
+                          >
+                            Reopen warning
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             )}
           </section>
@@ -1524,7 +1678,7 @@ export default function Admin() {
           </section>
         )}
 
-        <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="mb-3 flex items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <div className="flex overflow-hidden rounded-lg border border-slate-300">
             {[
               ["active", `Active (${restaurants.length - archivedCount})`],
@@ -1616,7 +1770,7 @@ export default function Admin() {
           </span>
         </div>
 
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+        <div className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm max-sm:overflow-x-auto max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <span className="mr-1 text-sm font-semibold text-slate-700">
             {selectedIds.length} selected
           </span>
@@ -1692,7 +1846,10 @@ export default function Admin() {
                     <th className="px-4 py-3 font-medium">Menu score</th>
                     <th className="px-4 py-3 font-medium">Last classified</th>
                     <th className="px-4 py-3 font-medium">Vegan meals / sides</th>
-                    <th className="sticky right-0 z-10 min-w-[430px] border-l border-slate-200 bg-slate-50 px-4 py-3 font-medium shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)]">
+                    {/* Sticky pinning only from sm up: on a phone a pinned
+                        430px column covers the whole viewport and makes the
+                        table look unscrollable. */}
+                    <th className="z-10 border-l border-slate-200 bg-slate-50 px-4 py-3 font-medium sm:sticky sm:right-0 sm:min-w-[430px] sm:shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.45)]">
                       Actions
                     </th>
                   </tr>
@@ -1796,7 +1953,11 @@ export default function Admin() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col items-start gap-1">
-                          <OpenStatusBadge openNow={r.open_now} enrichedAt={r.enriched_at} />
+                          <OpenStatusBadge
+                            openNow={r.open_now}
+                            enrichedAt={r.enriched_at}
+                            openingHours={r.opening_hours}
+                          />
                           <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
                         </div>
                       </td>
@@ -1913,7 +2074,7 @@ export default function Admin() {
                           <span className="text-xs text-slate-300">—</span>
                         )}
                       </td>
-                      <td className="sticky right-0 z-[1] min-w-[430px] whitespace-nowrap border-l border-slate-100 bg-white px-4 py-3 shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)] group-hover:bg-slate-50">
+                      <td className="z-[1] whitespace-nowrap border-l border-slate-100 bg-white px-4 py-3 group-hover:bg-slate-50 sm:sticky sm:right-0 sm:min-w-[430px] sm:shadow-[-8px_0_12px_-12px_rgba(15,23,42,0.35)]">
                         <div className="flex gap-1.5">
                           <button
                             onClick={() => openMenu(r)}
@@ -1962,6 +2123,17 @@ export default function Admin() {
                               : r.consumer_hidden
                                 ? "show"
                                 : "hide"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setDeleteFor(r);
+                              setDeleteConfirm("");
+                            }}
+                            disabled={rowBusy !== null || ingesting || classifying || deleting}
+                            title="Permanently delete this restaurant and all related data"
+                            className="rounded border border-rose-200 px-2 py-0.5 text-xs text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            delete
                           </button>
                           <button
                             onClick={() => runRowAction(r, "ingest")}
@@ -2035,6 +2207,64 @@ export default function Admin() {
           )}
         </div>
       </div>
+
+      {deleteFor && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/50 p-4"
+          onClick={() => {
+            if (!deleting) {
+              setDeleteFor(null);
+              setDeleteConfirm("");
+            }
+          }}
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              permanentlyDeleteRestaurant();
+            }}
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-md rounded-xl bg-white p-5 shadow-2xl"
+          >
+            <h2 className="text-lg font-bold text-rose-800">Permanently delete restaurant?</h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600">
+              This permanently removes <strong>{deleteFor.name}</strong>, its menu sources,
+              dishes, classifications, reports, crawl history, and menu history. This cannot
+              be undone. Use Archive instead if you may want the data later.
+            </p>
+            <label className="mt-4 block text-xs font-bold text-slate-700">
+              Type <span className="select-all text-rose-700">{deleteFor.name}</span> to confirm
+              <input
+                autoFocus
+                value={deleteConfirm}
+                onChange={(event) => setDeleteConfirm(event.target.value)}
+                className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-rose-500 focus:ring-1 focus:ring-rose-500"
+                autoComplete="off"
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDeleteFor(null);
+                  setDeleteConfirm("");
+                }}
+                disabled={deleting}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={deleting || deleteConfirm !== deleteFor.name}
+                className="rounded-lg bg-rose-700 px-4 py-2 text-sm font-bold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+              >
+                {deleting ? "Deleting…" : "Delete permanently"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {addOpen && (
         <div

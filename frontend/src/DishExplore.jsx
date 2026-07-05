@@ -4,9 +4,15 @@ import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
-import { VerdictChip } from "./DishModal.jsx";
+import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
-import { FreshnessBadge, OpenStatusBadge, relativeDate } from "./RestaurantMeta.jsx";
+import {
+  FreshnessBadge,
+  OpenStatusBadge,
+  currentOpenState,
+  relativeDate,
+  todayOpeningHours,
+} from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 import { calorieLabel } from "./calories.js";
 import { parsePriceValue } from "./price.js";
@@ -95,12 +101,14 @@ export default function DishExplore({
   const [maxPrice, setMaxPrice] = useState(0); // 0 = any; else dollar cap
   const [restaurant, setRestaurant] = useState("all");
   const [cuisine, setCuisine] = useState("all");
+  const [openFilter, setOpenFilter] = useState("all");
   const [sortBy, setSortBy] = useState("name");
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
   const [locating, setLocating] = useState(false);
   const [selectedDishId, setSelectedDishId] = useState(null);
+  const [menuRestaurant, setMenuRestaurant] = useState(null);
   const [mobileView, setMobileView] = useState("list");
   const [isDesktop, setIsDesktop] = useState(
     () => window.matchMedia("(min-width: 1024px)").matches
@@ -123,6 +131,7 @@ export default function DishExplore({
     const syncDishFromHash = () => {
       const match = window.location.hash.match(/^#dishes\?dish=(\d+)/);
       setSelectedDishId(match ? Number(match[1]) : null);
+      if (match) setMenuRestaurant(null);
     };
     syncDishFromHash();
     window.addEventListener("hashchange", syncDishFromHash);
@@ -153,13 +162,34 @@ export default function DishExplore({
   const restaurants = useMemo(() => {
     const byId = new Map();
     for (const dish of dishes) {
-      byId.set(dish.restaurant_id, {
-        id: dish.restaurant_id,
-        name: dish.restaurant_name,
-      });
+      let item = byId.get(dish.restaurant_id);
+      if (!item) {
+        item = {
+          id: dish.restaurant_id,
+          name: dish.restaurant_name,
+          rating: dish.rating,
+          user_rating_count: dish.user_rating_count,
+          open_now: dish.open_now,
+          opening_hours: dish.opening_hours,
+          enriched_at: dish.enriched_at,
+          menu_fetched_at: dish.menu_fetched_at,
+          vegan_options: 0,
+          vegan_sides: 0,
+        };
+        byId.set(dish.restaurant_id, item);
+      }
+      if (categoryOf(dish) === "food" && isCountedVegan(dish)) {
+        if (dish.serving_role === "side") item.vegan_sides += 1;
+        else item.vegan_options += 1;
+      }
     }
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
   }, [dishes]);
+
+  const restaurantById = useMemo(
+    () => new Map(restaurants.map((item) => [item.id, item])),
+    [restaurants]
+  );
 
   const categoryCounts = useMemo(() => {
     const counts = { food: 0, dessert: 0, drink: 0 };
@@ -173,10 +203,17 @@ export default function DishExplore({
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) {
         continue;
       }
+      if (
+        openFilter !== "all" &&
+        currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
+          (openFilter === "open")
+      ) {
+        continue;
+      }
       counts[categoryOf(dish)] += 1;
     }
     return counts;
-  }, [dishes, restaurant, cuisine]);
+  }, [dishes, restaurant, cuisine, openFilter]);
 
   const cuisines = useMemo(() => cuisineOptions(dishes), [dishes]);
 
@@ -216,6 +253,11 @@ export default function DishExplore({
       if (maxPrice > 0 && (dish.priceValue == null || dish.priceValue > maxPrice)) return false;
       if (restaurant !== "all" && String(dish.restaurant_id) !== restaurant) return false;
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) return false;
+      if (
+        openFilter !== "all" &&
+        currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
+          (openFilter === "open")
+      ) return false;
       if (maxMiles > 0 && (dish.distance == null || dish.distance > maxMiles)) return false;
       if (!q) return true;
       return dishMatchesQuery(dish, parsedQuery, searchIndex.get(dish.id));
@@ -241,6 +283,12 @@ export default function DishExplore({
       if (q) {
         const relevance = relevanceScores.get(b.id) - relevanceScores.get(a.id);
         if (relevance) return relevance;
+      }
+      // The default food list remains complete, but substantial meals lead;
+      // sides and small plates follow instead of being mixed alphabetically.
+      if (category === "food" && servingRole === "all") {
+        const roleOrder = Number(a.serving_role === "side") - Number(b.serving_role === "side");
+        if (roleOrder) return roleOrder;
       }
       if (sortBy === "restaurant") {
         return (
@@ -280,6 +328,7 @@ export default function DishExplore({
     maxPrice,
     restaurant,
     cuisine,
+    openFilter,
     maxMiles,
     sortBy,
   ]);
@@ -294,6 +343,7 @@ export default function DishExplore({
     maxPrice,
     restaurant,
     cuisine,
+    openFilter,
     maxMiles,
     sortBy,
   ]);
@@ -333,7 +383,8 @@ export default function DishExplore({
       : restaurants.find((item) => String(item.id) === restaurant);
   const hasActiveFilters =
     Boolean(query.trim()) || verdict !== "all" || servingRole !== "all" ||
-    maxPrice > 0 || restaurant !== "all" || cuisine !== "all" || maxMiles > 0;
+    maxPrice > 0 || restaurant !== "all" || cuisine !== "all" ||
+    openFilter !== "all" || maxMiles > 0;
 
   const mappedRestaurants = useMemo(() => {
     const groups = new Map();
@@ -346,17 +397,20 @@ export default function DishExplore({
         groups.set(dish.restaurant_id, {
           id: dish.restaurant_id,
           name: dish.restaurant_name,
+          address: dish.address,
           lat: dish.lat,
           lng: dish.lng,
           count: 1,
           distance: dish.distance,
           rating: dish.rating,
           userRatingCount: dish.user_rating_count,
+          openingHours: dish.opening_hours,
+          restaurant: restaurantById.get(dish.restaurant_id),
         });
       }
     }
     return [...groups.values()];
-  }, [shown]);
+  }, [shown, restaurantById]);
 
   const showMap = isDesktop || mobileView === "map";
 
@@ -412,6 +466,16 @@ export default function DishExplore({
       const title = document.createElement("div");
       title.style.cssText = "font-weight:700;font-size:14px";
       title.textContent = item.name;
+      const address = document.createElement("a");
+      address.style.cssText =
+        "display:block;margin-top:3px;color:#0369a1;font-size:12px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
+      address.textContent = item.address || "";
+      address.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+        item.address || item.name || ""
+      )}`;
+      address.target = "_blank";
+      address.rel = "noopener noreferrer";
+      address.title = "Open address in Google Maps";
       const count = document.createElement("div");
       count.style.cssText = "margin-top:3px;color:#57534e;font-size:12px";
       count.textContent = `${item.count} matching menu item${item.count === 1 ? "" : "s"}`;
@@ -419,7 +483,9 @@ export default function DishExplore({
       distance.style.cssText =
         "margin-top:3px;color:#78716c;font-size:12px;font-weight:600";
       distance.textContent = `${item.distance.toFixed(1)} mi from ${originLabel}`;
-      popup.append(title, count, distance);
+      popup.append(title);
+      if (item.address) popup.append(address);
+      popup.append(count, distance);
       const googleRating = ratingText(item.rating, item.userRatingCount);
       if (googleRating) {
         const rating = document.createElement("div");
@@ -427,6 +493,14 @@ export default function DishExplore({
           "margin-top:3px;color:#78716c;font-size:12px;font-weight:600";
         rating.textContent = `${googleRating} Google`;
         popup.append(rating);
+      }
+      const todayHours = todayOpeningHours(item.openingHours);
+      if (todayHours) {
+        const hours = document.createElement("div");
+        hours.style.cssText =
+          "margin-top:3px;color:#57534e;font-size:12px;font-weight:600";
+        hours.textContent = `Today: ${todayHours}`;
+        popup.append(hours);
       }
       const button = document.createElement("button");
       button.textContent = `Show all ${item.count} in the list →`;
@@ -436,6 +510,14 @@ export default function DishExplore({
         showRestaurantItems(item.id);
       };
       popup.append(button);
+      if (item.restaurant) {
+        const menuButton = document.createElement("button");
+        menuButton.textContent = "View full menu →";
+        menuButton.style.cssText =
+          "display:block;margin-top:5px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
+        menuButton.onclick = () => setMenuRestaurant(item.restaurant);
+        popup.append(menuButton);
+      }
       marker.bindPopup(popup, { closeButton: false });
     }
 
@@ -473,6 +555,7 @@ export default function DishExplore({
   function showRestaurantItems(restaurantId) {
     setRestaurant(String(restaurantId));
     setCuisine("all");
+    setOpenFilter("all");
     setQuery("");
     setVerdict("all");
     setServingRole("all");
@@ -502,6 +585,7 @@ export default function DishExplore({
     setMaxPrice(0);
     setRestaurant("all");
     setCuisine("all");
+    setOpenFilter("all");
     setMaxMiles(0);
   }
 
@@ -511,7 +595,7 @@ export default function DishExplore({
         <div className="mb-2 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-emerald-800">
           Search every menu at once
         </div>
-        <h1 className="text-3xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
+        <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
           What are you craving?
         </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-500">
@@ -523,8 +607,8 @@ export default function DishExplore({
 
       <div className="sticky top-[113px] z-10 -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
         <div className="space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <div className="relative min-w-64 flex-1">
+          <div className="flex gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
+            <div className="relative min-w-64 flex-1 max-sm:min-w-[75vw]">
               <span className="pointer-events-none absolute left-3 top-2.5 text-stone-400">⌕</span>
               <input
                 autoFocus
@@ -559,6 +643,17 @@ export default function DishExplore({
               {cuisines.map((label) => (
                 <option key={label} value={label}>{label}</option>
               ))}
+            </select>
+            <select
+              value={openFilter}
+              onChange={(event) => setOpenFilter(event.target.value)}
+              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              aria-label="Filter by current opening status"
+              title="Calculated from listed weekly hours; recent Google status is used as a fallback"
+            >
+              <option value="all">Any open status</option>
+              <option value="open">Open now</option>
+              <option value="closed">Closed now</option>
             </select>
             {category === "food" && (
               <select
@@ -754,6 +849,16 @@ export default function DishExplore({
                   <span aria-hidden="true" className="text-base leading-none">×</span>
                 </button>
               )}
+              {openFilter !== "all" && (
+                <button
+                  onClick={() => setOpenFilter("all")}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+                  title="Remove opening-status filter"
+                >
+                  Status: {openFilter === "open" ? "Open now" : "Closed now"}
+                  <span aria-hidden="true" className="text-base leading-none">×</span>
+                </button>
+              )}
               {maxMiles > 0 && (
                 <button
                   onClick={() => setMaxMiles(0)}
@@ -800,7 +905,7 @@ export default function DishExplore({
                 ? "Updating results…"
                 : `${shown.length.toLocaleString()} menu item${shown.length === 1 ? "" : "s"}`}
             </span>
-            {(query || verdict !== "all" || category !== "food" || servingRole !== "all" || restaurant !== "all" || cuisine !== "all" || maxMiles > 0) && (
+            {(query || verdict !== "all" || category !== "food" || servingRole !== "all" || restaurant !== "all" || cuisine !== "all" || openFilter !== "all" || maxMiles > 0) && (
               <button onClick={clearFilters} className="normal-case tracking-normal text-emerald-700 hover:underline">
                 Clear filters
               </button>
@@ -863,7 +968,11 @@ export default function DishExplore({
                       userRatingCount={dish.user_rating_count}
                       className="rounded-full bg-amber-50 px-2.5 py-1"
                     />
-                    <OpenStatusBadge openNow={dish.open_now} enrichedAt={dish.enriched_at} />
+                    <OpenStatusBadge
+                      openNow={dish.open_now}
+                      enrichedAt={dish.enriched_at}
+                      openingHours={dish.opening_hours}
+                    />
                     <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
                   </div>
 
@@ -940,6 +1049,13 @@ export default function DishExplore({
           onToggleFavorite={() => toggleDish(selectedDish.id)}
           restaurantFavorite={favorites.restaurants.includes(selectedDish.restaurant_id)}
           onToggleRestaurant={() => toggleRestaurant(selectedDish.restaurant_id)}
+        />
+      )}
+
+      {menuRestaurant && (
+        <DishModal
+          restaurant={menuRestaurant}
+          onClose={() => setMenuRestaurant(null)}
         />
       )}
     </div>

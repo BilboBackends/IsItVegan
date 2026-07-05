@@ -42,7 +42,7 @@ export default function ExploreHub({ view = "restaurants" }) {
     <div>
       <div className="mx-auto max-w-7xl px-4 pt-8">
         <div className="mb-5">
-          <h1 className="text-3xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
+          <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
             Find <span className="text-emerald-700">vegan-friendly</span> food near you
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-500">

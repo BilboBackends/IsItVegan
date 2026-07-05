@@ -106,6 +106,38 @@ def test_audit_flags_tiny_and_priceless_menus(test_db):
     assert "Healthy Menu" not in findings
 
 
+def test_quality_review_persists_but_reopens_when_menu_changes(test_db):
+    _add_restaurant(test_db, 1, "Reviewed Cafe", "https://reviewed.example")
+    db.replace_menu_texts(
+        1,
+        [("https://reviewed.example/menu", "Tiny menu\nSoup\nSalad")],
+        fetched_at="2026-07-05T00:00:00+00:00",
+        db_path=test_db,
+    )
+    finding = next(item for item in audit_menus(test_db) if item["restaurant_id"] == 1)
+    db.set_menu_quality_review(
+        1,
+        fingerprint=finding["fingerprint"],
+        status="verified",
+        db_path=test_db,
+    )
+
+    reviewed = next(item for item in audit_menus(test_db) if item["restaurant_id"] == 1)
+    assert reviewed["review_status"] == "verified"
+
+    # A later crawl changes the evidence, so the old human decision must not
+    # silently hide the new warning.
+    db.replace_menu_texts(
+        1,
+        [("https://reviewed.example/menu", "Different tiny menu\nPasta\nRice")],
+        fetched_at="2026-07-06T00:00:00+00:00",
+        db_path=test_db,
+    )
+    changed = next(item for item in audit_menus(test_db) if item["restaurant_id"] == 1)
+    assert changed["fingerprint"] != finding["fingerprint"]
+    assert changed["review_status"] is None
+
+
 def test_audit_flags_duplicate_menus_across_restaurants(test_db):
     # Two locations storing byte-identical text = a generic platform page
     # (the 7-Eleven case), not either restaurant's menu.

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
-import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
+import { FreshnessBadge, OpenStatusBadge, TodayHours } from "./RestaurantMeta.jsx";
 import { calorieLabel } from "./calories.js";
 import { isCountedVegan } from "./verdicts.js";
 
@@ -153,9 +153,14 @@ export default function DishModal({ restaurant, onClose }) {
               <OpenStatusBadge
                 openNow={restaurant.open_now}
                 enrichedAt={restaurant.enriched_at}
+                openingHours={restaurant.opening_hours}
               />
               <FreshnessBadge fetchedAt={restaurant.menu_fetched_at} compact />
             </div>
+            <TodayHours
+              openingHours={restaurant.opening_hours}
+              className="mt-1 block text-xs font-medium text-slate-500"
+            />
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
             ✕

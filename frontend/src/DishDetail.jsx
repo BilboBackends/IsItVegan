@@ -177,7 +177,11 @@ export default function DishDetail({
           <section className="rounded-2xl border border-stone-200 bg-white p-4">
             <div className="flex flex-wrap items-center gap-2">
               <RatingBadge rating={dish.rating} userRatingCount={dish.user_rating_count} />
-              <OpenStatusBadge openNow={dish.open_now} enrichedAt={dish.enriched_at} />
+              <OpenStatusBadge
+                openNow={dish.open_now}
+                enrichedAt={dish.enriched_at}
+                openingHours={dish.opening_hours}
+              />
               <FreshnessBadge fetchedAt={dish.menu_fetched_at} />
             </div>
             {dish.address && <p className="mt-2 text-sm text-stone-500">{dish.address}</p>}

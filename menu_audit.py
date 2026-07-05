@@ -16,6 +16,7 @@ so the follow-up is one click, not an investigation.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 import db
@@ -72,6 +73,7 @@ def audit_menus(db_path: str | None = None) -> list[dict]:
     restaurants = [
         r for r in db.list_restaurants(db_path) if is_consumer_food_venue(r)
     ]
+    reviews = db.list_menu_quality_reviews(db_path)
 
     with db.connect(db_path) as conn:
         per_restaurant: dict[int, dict] = {}
@@ -143,11 +145,32 @@ def audit_menus(db_path: str | None = None) -> list[dict]:
                     content_owner[digest] = (rid, r["name"])
 
             if flags:
+                fingerprint = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "website_url": r.get("website_url"),
+                            "sources": [
+                                [source.get("url"), source.get("content")]
+                                for source in sources
+                            ],
+                            "flags": sorted(flags),
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                review = reviews.get(rid)
+                if review and review.get("fingerprint") != fingerprint:
+                    review = None
                 findings.append(
                     {
                         "restaurant_id": rid,
                         "name": r["name"],
                         "flags": flags,
+                        "fingerprint": fingerprint,
+                        "review_status": review.get("status") if review else None,
+                        "review_note": review.get("note") if review else None,
+                        "reviewed_at": review.get("reviewed_at") if review else None,
                     }
                 )
 

@@ -158,6 +158,18 @@ CREATE TABLE IF NOT EXISTS reports (
     created_at    TEXT NOT NULL,
     resolved_at   TEXT
 );
+
+-- Human disposition of an automated menu-audit finding. The fingerprint
+-- binds the decision to the exact menu/flags reviewed; changed source text or
+-- changed audit findings automatically become active again.
+CREATE TABLE IF NOT EXISTS menu_quality_reviews (
+    restaurant_id INTEGER PRIMARY KEY REFERENCES restaurants(id)
+                  ON DELETE CASCADE,
+    fingerprint   TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('verified', 'known_issue')),
+    note          TEXT,
+    reviewed_at   TEXT NOT NULL
+);
 """
 
 
@@ -1099,6 +1111,143 @@ def create_report(
             ),
         ).fetchone()
     return row[0]
+
+
+def list_menu_quality_reviews(db_path: str | None = None) -> dict[int, dict]:
+    """Latest human menu-audit disposition, keyed by restaurant id."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM menu_quality_reviews ORDER BY reviewed_at DESC"
+        ).fetchall()
+    return {row["restaurant_id"]: dict(row) for row in rows}
+
+
+def set_menu_quality_review(
+    restaurant_id: int,
+    *,
+    fingerprint: str,
+    status: str,
+    note: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    if status not in {"verified", "known_issue"}:
+        raise ValueError("status must be verified or known_issue")
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO menu_quality_reviews
+                (restaurant_id, fingerprint, status, note, reviewed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (restaurant_id) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                status = excluded.status,
+                note = excluded.note,
+                reviewed_at = excluded.reviewed_at
+            """,
+            (
+                restaurant_id,
+                fingerprint,
+                status,
+                (note or "").strip()[:1000] or None,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def clear_menu_quality_review(
+    restaurant_id: int, db_path: str | None = None
+) -> bool:
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM menu_quality_reviews WHERE restaurant_id = ?",
+            (restaurant_id,),
+        )
+    return cursor.rowcount > 0
+
+
+def delete_restaurant(
+    restaurant_id: int,
+    *,
+    expected_name: str,
+    db_path: str | None = None,
+) -> dict | None:
+    """Permanently remove a restaurant and every dependent record.
+
+    The exact name is checked inside the same transaction as the deletes. This
+    is intentionally separate from archive/hide, both of which preserve data.
+    """
+    with connect(db_path) as conn:
+        restaurant = conn.execute(
+            "SELECT id, name FROM restaurants WHERE id = ?", (restaurant_id,)
+        ).fetchone()
+        if restaurant is None:
+            return None
+        if expected_name != restaurant["name"]:
+            raise ValueError("Restaurant name confirmation does not match.")
+
+        counts = {
+            "dishes": conn.execute(
+                "SELECT COUNT(*) FROM dishes WHERE restaurant_id = ?",
+                (restaurant_id,),
+            ).fetchone()[0],
+            "sources": conn.execute(
+                """
+                SELECT COUNT(*) FROM sources
+                WHERE restaurant_id = ? OR dish_id IN
+                    (SELECT id FROM dishes WHERE restaurant_id = ?)
+                """,
+                (restaurant_id, restaurant_id),
+            ).fetchone()[0],
+            "classifications": conn.execute(
+                """
+                SELECT COUNT(*) FROM classifications WHERE dish_id IN
+                    (SELECT id FROM dishes WHERE restaurant_id = ?)
+                """,
+                (restaurant_id,),
+            ).fetchone()[0],
+            "reports": conn.execute(
+                "SELECT COUNT(*) FROM reports WHERE restaurant_id = ?",
+                (restaurant_id,),
+            ).fetchone()[0],
+            "menu_versions": conn.execute(
+                "SELECT COUNT(*) FROM menu_versions WHERE restaurant_id = ?",
+                (restaurant_id,),
+            ).fetchone()[0],
+            "dish_changes": conn.execute(
+                "SELECT COUNT(*) FROM dish_changes WHERE restaurant_id = ?",
+                (restaurant_id,),
+            ).fetchone()[0],
+        }
+
+        # Delete explicit non-cascading relationships first. Some sources are
+        # restaurant-level; others attach directly to a dish.
+        conn.execute("DELETE FROM reports WHERE restaurant_id = ?", (restaurant_id,))
+        conn.execute(
+            """
+            DELETE FROM classifications WHERE dish_id IN
+                (SELECT id FROM dishes WHERE restaurant_id = ?)
+            """,
+            (restaurant_id,),
+        )
+        conn.execute(
+            """
+            DELETE FROM sources
+            WHERE restaurant_id = ? OR dish_id IN
+                (SELECT id FROM dishes WHERE restaurant_id = ?)
+            """,
+            (restaurant_id, restaurant_id),
+        )
+        conn.execute("DELETE FROM dishes WHERE restaurant_id = ?", (restaurant_id,))
+        conn.execute("DELETE FROM crawl_profiles WHERE restaurant_id = ?", (restaurant_id,))
+        conn.execute("DELETE FROM menu_versions WHERE restaurant_id = ?", (restaurant_id,))
+        conn.execute("DELETE FROM dish_changes WHERE restaurant_id = ?", (restaurant_id,))
+        conn.execute(
+            "DELETE FROM menu_quality_reviews WHERE restaurant_id = ?",
+            (restaurant_id,),
+        )
+        conn.execute("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))
+
+    return {"id": restaurant_id, "name": restaurant["name"], **counts}
 
 
 def list_reports(

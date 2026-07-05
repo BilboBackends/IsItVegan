@@ -295,7 +295,55 @@ def menu_quality() -> object:
     """Automated audit of stored menus — flags likely-false/incomplete ones."""
     db.init_db()
     findings = menu_audit.audit_menus()
-    return jsonify({"count": len(findings), "findings": findings})
+    return jsonify({
+        "count": sum(not finding.get("review_status") for finding in findings),
+        "known_issue_count": sum(
+            finding.get("review_status") == "known_issue" for finding in findings
+        ),
+        "verified_count": sum(
+            finding.get("review_status") == "verified" for finding in findings
+        ),
+        "findings": findings,
+    })
+
+
+@app.put("/api/menu-quality/<int:restaurant_id>/review")
+def review_menu_quality(restaurant_id: int) -> object:
+    """Acknowledge the current fingerprint as correct or a known issue."""
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    status = payload.get("status")
+    fingerprint = str(payload.get("fingerprint") or "")
+    if status not in {"verified", "known_issue"}:
+        return jsonify({"error": "status must be verified or known_issue"}), 400
+    current = next(
+        (
+            finding
+            for finding in menu_audit.audit_menus()
+            if finding["restaurant_id"] == restaurant_id
+        ),
+        None,
+    )
+    if current is None:
+        return jsonify({"error": "Current menu-quality finding not found."}), 404
+    if not fingerprint or fingerprint != current["fingerprint"]:
+        return jsonify({"error": "This warning changed; reload and review it again."}), 409
+    db.set_menu_quality_review(
+        restaurant_id,
+        fingerprint=fingerprint,
+        status=status,
+        note=payload.get("note"),
+    )
+    return jsonify({"restaurant_id": restaurant_id, "status": status})
+
+
+@app.delete("/api/menu-quality/<int:restaurant_id>/review")
+def reopen_menu_quality(restaurant_id: int) -> object:
+    """Remove a human disposition so the audit finding becomes active again."""
+    db.init_db()
+    if not db.clear_menu_quality_review(restaurant_id):
+        return jsonify({"error": "Menu-quality review not found."}), 404
+    return jsonify({"restaurant_id": restaurant_id, "status": "active"})
 
 
 @app.post("/api/enrich")
@@ -416,6 +464,32 @@ def update_restaurant_refresh_enabled(restaurant_id: int) -> object:
     if not db.set_restaurant_refresh_enabled(restaurant_id, payload["enabled"]):
         return jsonify({"error": "Restaurant not found."}), 404
     return jsonify({"id": restaurant_id, "refresh_enabled": payload["enabled"]})
+
+
+@app.delete("/api/restaurants/<int:restaurant_id>")
+def permanently_delete_restaurant(restaurant_id: int) -> object:
+    """Permanently delete a restaurant after exact-name confirmation."""
+    db.init_db()
+    with _ingest_lock:
+        if _ingest_state["running"]:
+            return jsonify({"error": "Wait for the active menu scrape to finish."}), 409
+    with _classify_lock:
+        if _classify_state["running"]:
+            return jsonify({"error": "Wait for the active classification to finish."}), 409
+
+    payload = request.get_json(silent=True) or {}
+    confirm_name = payload.get("confirm_name")
+    if not isinstance(confirm_name, str) or not confirm_name:
+        return jsonify({"error": "Type the restaurant name to confirm deletion."}), 400
+    try:
+        deleted = db.delete_restaurant(
+            restaurant_id, expected_name=confirm_name
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if deleted is None:
+        return jsonify({"error": "Restaurant not found."}), 404
+    return jsonify({"deleted": deleted})
 
 
 @app.get("/api/restaurants/<int:restaurant_id>/dishes")

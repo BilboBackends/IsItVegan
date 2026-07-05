@@ -68,7 +68,11 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <RatingBadge rating={restaurant.rating} userRatingCount={restaurant.user_rating_count} />
-                      <OpenStatusBadge openNow={restaurant.open_now} enrichedAt={restaurant.enriched_at} />
+                      <OpenStatusBadge
+                        openNow={restaurant.open_now}
+                        enrichedAt={restaurant.enriched_at}
+                        openingHours={restaurant.opening_hours}
+                      />
                       <FreshnessBadge fetchedAt={restaurant.menu_fetched_at} compact />
                     </div>
                     <div className="mt-3 flex gap-3 text-xs font-bold">
