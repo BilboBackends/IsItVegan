@@ -1,4 +1,6 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import DishModal from "./DishModal.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import {
@@ -278,6 +280,257 @@ function HistoryModal({ restaurant, onClose }) {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// Area prospecting: search any Google Places query ("restaurants on Mills
+// Ave Orlando"), see everything on a map + list — names only — and pull
+// selected places into the pipeline. Scraping/classification run later from
+// the Active table's bulk tools, so pulling 40 names in stays instant.
+function ProspectPanel({ onAdded }) {
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [places, setPlaces] = useState(null);
+  const [selected, setSelected] = useState(() => new Set());
+  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const [error, setError] = useState(null);
+  const mapEl = useRef(null);
+  const mapRef = useRef(null);
+
+  async function runSearch(event) {
+    event?.preventDefault();
+    if (!query.trim()) return;
+    setSearching(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/prospect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: query.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Search failed (${res.status})`);
+      setPlaces(data.places);
+      setSelected(new Set());
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function toggle(place) {
+    if (place.already_added_id) return;
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(place.place_id)) next.delete(place.place_id);
+      else next.add(place.place_id);
+      return next;
+    });
+  }
+
+  const newPlaces = (places || []).filter((p) => !p.already_added_id);
+
+  async function addSelected() {
+    const chosen = (places || []).filter((p) => selected.has(p.place_id));
+    if (chosen.length === 0) return;
+    setAdding(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/restaurants/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Names only: enrichment runs (cheap Google details), scraping and
+        // classification are launched later from the Active table.
+        body: JSON.stringify({ places: chosen, ingest: false, classify: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
+      const byPlaceId = new Map(
+        chosen.map((p, i) => [p.place_id, data.added?.[i]?.id ?? true])
+      );
+      setPlaces((current) =>
+        (current || []).map((p) =>
+          byPlaceId.has(p.place_id)
+            ? { ...p, already_added_id: byPlaceId.get(p.place_id) }
+            : p
+        )
+      );
+      setSelected(new Set());
+      setNotice(
+        `Added ${chosen.length} restaurant(s) — scrape & classify them from ` +
+          `the Active table when ready.`
+      );
+      onAdded?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  // (Re)draw the map whenever results or selection change — trivial at <=60
+  // pins, and far simpler than incremental marker sync.
+  useEffect(() => {
+    if (!mapEl.current || !places || places.length === 0) return;
+    if (mapRef.current) {
+      mapRef.current.remove();
+      mapRef.current = null;
+    }
+    const located = places.filter((p) => p.lat != null && p.lng != null);
+    if (located.length === 0) return;
+    const map = L.map(mapEl.current, { scrollWheelZoom: true });
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors",
+    }).addTo(map);
+    map.fitBounds(located.map((p) => [p.lat, p.lng]), { padding: [30, 30] });
+    for (const p of located) {
+      const color = p.already_added_id
+        ? "#a8a29e"
+        : selected.has(p.place_id)
+          ? "#047857"
+          : "#ffffff";
+      const marker = L.marker([p.lat, p.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `<div style="background:${color};border:2px solid ${
+            p.already_added_id ? "#a8a29e" : "#047857"
+          };border-radius:9999px;width:14px;height:14px;box-shadow:0 1px 3px rgba(0,0,0,.4)"></div>`,
+          iconSize: [14, 14],
+          iconAnchor: [7, 7],
+        }),
+      }).addTo(map);
+      marker.bindTooltip(
+        `${p.name}${p.already_added_id ? " (already added)" : ""}`,
+        { direction: "top", offset: [0, -6] }
+      );
+      marker.on("click", () => toggle(p));
+    }
+    mapRef.current = map;
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [places, selected]);
+
+  return (
+    <div className="space-y-3">
+      <form onSubmit={runSearch} className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={'Try "restaurants on Mills Ave Orlando" or "restaurants in Winter Park"'}
+          className="w-full max-w-lg rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+        />
+        <button
+          type="submit"
+          disabled={searching || !query.trim()}
+          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+        >
+          {searching ? "Searching…" : "Search area"}
+        </button>
+        {places && (
+          <span className="text-sm text-slate-500">
+            {places.length} found · {newPlaces.length} new
+          </span>
+        )}
+      </form>
+
+      {error && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          {notice}
+        </div>
+      )}
+
+      {places && places.length > 0 && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() =>
+                setSelected(new Set(newPlaces.map((p) => p.place_id)))
+              }
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            >
+              Select all new ({newPlaces.length})
+            </button>
+            <button
+              onClick={() => setSelected(new Set())}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            >
+              Clear
+            </button>
+            <button
+              onClick={addSelected}
+              disabled={adding || selected.size === 0}
+              className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {adding
+                ? "Adding…"
+                : `Add ${selected.size} to pipeline (names only)`}
+            </button>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div
+              ref={mapEl}
+              className="z-0 h-[420px] overflow-hidden rounded-xl border border-slate-200"
+            />
+            <div className="max-h-[420px] overflow-y-auto rounded-xl border border-slate-200 bg-white">
+              <ul className="divide-y divide-slate-100">
+                {places.map((p) => (
+                  <li key={p.place_id}>
+                    <label
+                      className={`flex cursor-pointer items-start gap-2 px-3 py-2 text-sm ${
+                        p.already_added_id ? "opacity-50" : "hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        disabled={Boolean(p.already_added_id)}
+                        checked={selected.has(p.place_id)}
+                        onChange={() => toggle(p)}
+                      />
+                      <span>
+                        <span className="font-medium text-slate-900">
+                          {p.name}
+                        </span>
+                        {p.already_added_id && (
+                          <span className="ml-1.5 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-sky-800">
+                            already added
+                          </span>
+                        )}
+                        <span className="block text-xs text-slate-500">
+                          {p.address}
+                        </span>
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </>
+      )}
+
+      {places && places.length === 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-400">
+          No places found for that search.
+        </div>
+      )}
     </div>
   );
 }
@@ -1683,6 +1936,7 @@ export default function Admin() {
             {[
               ["active", `Active (${restaurants.length - archivedCount})`],
               ["archived", `Archived (${archivedCount})`],
+              ["prospect", "🗺 Prospect"],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -1695,13 +1949,17 @@ export default function Admin() {
                 title={
                   key === "archived"
                     ? "Listings you'll never need (7-Eleven and friends): out of this table, Explore, and every bulk run — data kept"
-                    : "The working set"
+                    : key === "prospect"
+                      ? "Search any area on Google Places and pull restaurants into the pipeline — names only, scrape/classify later"
+                      : "The working set"
                 }
               >
                 {label}
               </button>
             ))}
           </div>
+          {tableView !== "prospect" && (
+          <>
           <input
             type="text"
             value={query}
@@ -1768,8 +2026,14 @@ export default function Admin() {
           <span className="ml-auto whitespace-nowrap text-sm text-slate-500">
             {filtered.length} shown
           </span>
+          </>
+          )}
         </div>
 
+        {tableView === "prospect" ? (
+          <ProspectPanel onAdded={loadData} />
+        ) : (
+        <>
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm max-sm:overflow-x-auto max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <span className="mr-1 text-sm font-semibold text-slate-700">
             {selectedIds.length} selected
@@ -2206,6 +2470,8 @@ export default function Admin() {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {deleteFor && (

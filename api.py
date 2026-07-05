@@ -361,6 +361,41 @@ def run_enrich() -> object:
     return jsonify(result)
 
 
+@app.post("/api/prospect")
+def prospect_endpoint() -> object:
+    """Area prospecting for the Admin prospect view — NO writes.
+
+    Body: {"query": "restaurants on Mills Ave Orlando"}. Returns every place
+    Google Text Search finds (up to ~60), flagged with already_added_id /
+    archived when the place is in the DB, so the human picks what enters
+    the pipeline via POST /api/restaurants/add.
+    """
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+    query = (payload.get("query") or "").strip()
+    if not query or len(query) > 200:
+        return jsonify({"error": "Provide a search query (max 200 chars)."}), 400
+    from places_client import prospect_places
+
+    db.init_db()
+    try:
+        places = prospect_places(
+            query,
+            api_key=settings.google_places_api_key,
+            bias_lat=settings.discovery_lat,
+            bias_lng=settings.discovery_lng,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    existing = {r["place_id"]: r for r in db.list_restaurants()}
+    for place in places:
+        known = existing.get(place["place_id"])
+        place["already_added_id"] = known["id"] if known else None
+        place["archived"] = bool(known and known.get("archived"))
+    return jsonify({"count": len(places), "places": places})
+
+
 @app.post("/api/restaurants/resolve")
 def resolve_restaurants_endpoint() -> object:
     """Resolve names to selectable Places candidates — NO writes.

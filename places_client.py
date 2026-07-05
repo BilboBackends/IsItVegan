@@ -84,6 +84,60 @@ PLACE_DETAILS_URL = "https://places.googleapis.com/v1/places/"
 TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
 
+def prospect_places(
+    query: str,
+    *,
+    api_key: str,
+    bias_lat: float | None = None,
+    bias_lng: float | None = None,
+    bias_radius_meters: float = 50_000.0,
+    max_results: int = 60,
+    timeout: float = 30.0,
+) -> list[dict]:
+    """Area prospecting: every place Text Search returns for a free-form
+    query ("restaurants on Mills Ave Orlando"), paginated up to max_results.
+
+    Nothing is persisted — this feeds the Admin prospect view, where a human
+    picks which places actually enter the pipeline. Same normalized shape as
+    discovery, so selections can go straight to add_restaurants.add_places.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": FIELD_MASK + ",nextPageToken",
+    }
+    body: dict = {"textQuery": query, "pageSize": 20}
+    if bias_lat is not None and bias_lng is not None:
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": bias_lat, "longitude": bias_lng},
+                "radius": bias_radius_meters,
+            }
+        }
+
+    results: list[dict] = []
+    seen: set[str] = set()
+    with httpx.Client(timeout=timeout) as client:
+        page_token: str | None = None
+        while len(results) < max_results:
+            payload = dict(body)
+            if page_token:
+                payload["pageToken"] = page_token
+            resp = client.post(TEXT_SEARCH_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            for place in data.get("places", []):
+                normalized = _normalize_place(place)
+                if normalized["place_id"] in seen:
+                    continue
+                seen.add(normalized["place_id"])
+                results.append(normalized)
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+    return results[:max_results]
+
+
 def search_place_candidates(
     name: str,
     *,
