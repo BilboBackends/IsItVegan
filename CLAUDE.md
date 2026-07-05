@@ -44,10 +44,12 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 
 - **Backend:** Python
 - **Frontend:** React + Vite, Tailwind
-- **LLM:** Anthropic API (Claude) — used directly for both text extraction
-  and vision-based dish classification. Do NOT introduce LangChain/RAG
-  scaffolding for this — it's a structured extraction problem, not a
-  retrieval problem, and direct API calls with structured JSON output are
+- **LLM:** Claude, via a provider chain (`classification_providers.py`):
+  the local Claude Code CLI (subscription-billed) first, then the Codex CLI
+  (ChatGPT subscription), then the metered Anthropic API — API only when
+  explicitly selected, never as a silent fallback. Do NOT introduce
+  LangChain/RAG scaffolding — this is a structured extraction problem, not a
+  retrieval problem, and direct calls with structured JSON output are
   simpler to debug and maintain.
 - **Restaurant discovery:** Google Places API
 - **Database:** SQLite for MVP (single area, low volume). Design the schema
@@ -96,8 +98,12 @@ classifications
 ## API Key Handling
 
 - Never expose the Anthropic API key or Google Places API key client-side.
-- All LLM calls and Places API calls go through the Python backend. The
-  frontend only ever talks to our own backend endpoints.
+- All LLM calls and Places API calls go through the Python backend. In local
+  dev the frontend only ever talks to our own backend endpoints.
+- The PUBLIC site (GitHub Pages) is fully static: built frontend + exported
+  JSON snapshots (`publish_static.py`), no backend, no credentials, Admin
+  unreachable. The repo is public — `.env` and `*.db` are gitignored and
+  must never be committed.
 
 ## Coding Conventions
 

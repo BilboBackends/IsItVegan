@@ -1,8 +1,10 @@
 """Local dashboard API for the VeganFind pipeline.
 
-A thin JSON backend the React UI talks to, so you can see discovered
-restaurants and trigger a discovery run from the browser. Read-only over the
-SQLite DB except for the /discover endpoint, which runs Phase 0.
+The JSON backend the React UI talks to: consumer reads (restaurants, dishes,
+menu versions, dish changes) plus the Admin pipeline controls — discovery,
+enrichment, background scrape/classify jobs with live progress, add/archive/
+hide restaurants, quality audit, provider usage. LOCAL ONLY: it is never
+deployed; the public site is a static export (publish_static.py).
 
 Run:
     python api.py            # serves http://localhost:5000

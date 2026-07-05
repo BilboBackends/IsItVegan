@@ -4,8 +4,10 @@ Schema mirrors the data model in CLAUDE.md. SQLite is the MVP store; the
 schema is kept plain (no SQLite-only features) so migrating to Postgres later
 is a config change, not a rewrite.
 
-Only the `restaurants` table is populated in Phase 0, but all tables are
-created up front so the schema is stable across later stages.
+Beyond the core tables (restaurants/dishes/sources/classifications), the
+schema carries pipeline memory: crawl_profiles (learned scrape routes),
+menu_versions (every distinct menu capture), dish_changes (menu drift over
+time), and menu_quality_reviews (human audit dispositions).
 """
 from __future__ import annotations
 

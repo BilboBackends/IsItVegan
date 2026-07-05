@@ -4,6 +4,12 @@ Finds vegan-friendly dishes at restaurants by analyzing menu text and photos,
 even when a restaurant doesn't market itself as vegan. See [CLAUDE.md](CLAUDE.md)
 for the full product spec and pipeline design.
 
+**Live site:** https://bilbobackends.github.io/IsItVegan/ — a fully static
+build served by GitHub Pages: the consumer views plus JSON data snapshots,
+no backend, no credentials, nothing a visitor can trigger. The pipeline
+(scraping, classification, Admin) runs only on the local machine; see
+"Publishing the public site" below.
+
 
 ## Setup
 
@@ -58,20 +64,36 @@ Two top-level views:
   Food search also understands combined intent such as `vegan pizza`,
   `high protein breakfast`, and dietary phrases such as `dairy free`, while
   indexing normalized ingredients such as tofu, seitan, and mushroom. It
-  supports distance ranges / nearest-first sorting, shareable dish details,
-  correction reports, and matching map pins. Hearts save dishes and restaurants locally in the browser under the
-  **Saved** tab—no account required. Menu freshness and current opening status
-  are shown wherever that restaurant context is useful.
-- **Admin** (`#admin`) — the pipeline dashboard: run discovery / enrichment /
-  ingestion, refresh stale menus and Google opening data, review correction
-  reports, add restaurants by name, and inspect scraped menu text and scores.
-  Each restaurant has a persistent refresh-enabled checkbox; paused rows are
-  excluded from bulk jobs but retain their one-off debug actions. Select any
-  combination of enabled rows to run a background menu scrape or Claude
-  reclassification with live progress and a pre-run cost estimate. Operational
-  filters cover enabled/paused refreshes, missing or stale menus, classification
-  stage, quality warnings, excluded venues, and missing websites; rows can be
-  grouped by refresh status, pipeline stage, or menu freshness.
+  supports distance ranges / nearest-first sorting, price caps (Under
+  $10/$15/$20/$30) with a cheapest sort, a meals-vs-sides filter, shareable
+  dish details, correction reports, and matching map pins. Restaurant cards
+  carry Google $-tier price levels and a strict vegan count: a headline
+  "N vegan meals" means verdict `vegan` or high-confidence `likely_vegan`
+  only — `vegan_adaptable` never counts, and sides are tallied separately so
+  a bag of chips can't pose as a meal. Hearts save dishes and restaurants
+  locally in the browser under the **Saved** tab—no account required. Menu
+  freshness and current opening status are shown wherever that restaurant
+  context is useful. On phones, filters collapse behind a compact disclosure
+  and a floating List/Map pill flips views.
+- **Admin** (`#admin`, local only) — the pipeline dashboard: run discovery /
+  enrichment / ingestion, refresh stale menus and Google opening data, review
+  correction reports, add restaurants (two-step: pick the exact Google Places
+  match, then choose whether to scrape/classify immediately), and inspect
+  scraped menu text and scores. Bulk scrape and classify run as background
+  jobs with live progress bars that survive page reloads; classification has
+  a provider select (Claude/Codex subscription or Anthropic API), a mode
+  toggle (changes-only vs full re-extraction), and a concurrency select
+  (1-6 at a time — sequential when subscription quota is low). A
+  Subscription-limits panel shows each provider's 5-hour/weekly usage bars.
+  Each restaurant row offers view-menu, history (menu versions over time
+  plus the dish-change log), rescrape, reclassify with a size-based cost
+  estimate (replaced by the actual cost after a run), hide, and archive
+  (archived listings move to their own tab and leave every consumer view and
+  bulk run — data kept, one-click restore). Rows filter by operational
+  status, group by refresh/pipeline/freshness/classification age, and sort
+  by name, last-classified time, menu size, or vegan meals. An automated
+  menu-quality audit flags likely-false or incomplete menus with one-click
+  rescrape and human review dispositions.
 
 Consumer views automatically exclude Google place types that are not food
 venues (for example convenience stores, gas stations, and supermarkets).
@@ -95,13 +117,16 @@ python discover.py --mock fixtures/maitland_sample.json --dry-run
 
 ### Adding specific restaurants by name
 
-Instead of (or on top of) area discovery, give a list of names. Each resolves
-via Places Text Search (biased toward the configured area; a match is only
-accepted if its name actually overlaps the query), then runs the full
-pipeline automatically: enrichment, menu ingestion, and Claude dish
-classification (~$0.10/restaurant; skip with --no-classify). Upserts on
-place_id, so re-adding an existing restaurant refreshes it rather than
-duplicating. Also available in the dashboard via "+ Add restaurants".
+Instead of (or on top of) area discovery, give a list of names. The CLI
+resolves each via Places Text Search (biased toward the configured area; a
+match is only accepted if its name actually overlaps the query) and runs the
+full pipeline: enrichment, menu ingestion, and dish classification (skip
+with --no-classify). Upserts on place_id, so re-adding an existing
+restaurant refreshes it rather than duplicating. The dashboard's
+"+ Add restaurants" is the confirm-first version: it shows up to five
+candidate matches per name (weak matches flagged and unselected,
+already-added places labeled), and you choose which pipeline steps run
+immediately.
 
 ```bash
 python add_restaurants.py "Ethos Vegan Kitchen" "4Rivers Smokehouse"
@@ -200,10 +225,10 @@ the page's JavaScript so JS-rendered menus (Toast/Square/Clover, SPA sites)
 render before extraction. Each fallback fires only when the cheaper path fails,
 so sites that scrape fine over HTTP never pay for the LLM, PDF, or browser step.
 
-Remaining failures: bot-blocked even in a browser, menus reachable only via a
-JS "Order" button we don't click, non-HTML (PDF/image), or genuinely
-homepage-only. All are photo-fallback candidates. In the current Maitland set,
-**35 of 51 sites yield a real menu** (~74% of the non-gas-station spots).
+Remaining failures: bot walls that survive even a real-Chrome headless
+browser, social-profile-only "websites", and menus published solely as
+images. All are photo-fallback candidates (the planned Phase 4). In the
+current set, **53 of 59 sites with websites yield a real menu** (~90%).
 
 ### Phase 3 — dish classification
 
@@ -228,9 +253,18 @@ or refused responses are logged as failures, never stored. False positives
 ```bash
 python classify.py                     # classify restaurants not yet done
 python classify.py --all               # re-classify everyone with a menu
+python classify.py --all --full        # ...ignoring the unchanged-menu skip
 python classify.py --restaurant-id 14  # one restaurant (debugging)
+python classify.py --parallel 6        # up to 6 restaurants concurrently
 python classify.py --mock --dry-run    # no API call, canned result
 ```
+
+Bulk runs classify up to N restaurants concurrently (model calls are
+I/O-bound; DB writes stay serial on the coordinating thread), and are
+change-aware by default: unchanged menus are skipped, changed menus run in
+delta mode. `--full` forces complete re-extraction — required after
+classifier prompt/schema changes, since an unchanged menu otherwise keeps
+its old verdicts.
 
 Dishes upsert on (restaurant_id, name); each run adds a new classification row
 (model version + timestamp), and reads always use the latest verdict. The
@@ -239,13 +273,21 @@ Dietary fields are menu-text inferences, not allergy or cross-contact
 certification. Anthropic defaults to Claude Sonnet; override it with
 `ANTHROPIC_CLASSIFIER_MODEL` (the older `CLASSIFIER_MODEL` remains an alias).
 
-Classification transport is provider-independent. `CLASSIFIER_PROVIDER=auto`
-prefers the locally installed Codex CLI when it is logged in with ChatGPT, then
-uses Anthropic when Codex is unavailable before a request starts. Set it to
-`codex` or `anthropic` to force one provider; the Admin provider selector can
-also choose per run. Codex runs are ephemeral and read-only and use JSON-schema
-structured output. A failed/limited Codex request never silently falls through
-to a billable Anthropic retry.
+Classification transport is a provider CHAIN (`classification_providers.py`)
+with three transports: `claude` (headless Claude Code CLI on the local
+Claude subscription — model pinned to Sonnet, tools disabled, JSON-schema
+output, ANTHROPIC_API_KEY scrubbed so the subscription pays), `codex`
+(Codex CLI on a ChatGPT subscription — sandboxed, schema-enforced; found
+automatically even when only the VS Code extension's bundled copy exists),
+and `anthropic` (the metered API). `CLASSIFIER_PROVIDER=auto` means
+**subscriptions only**: claude, then codex — the API never runs unless
+explicitly selected (alone or in a custom list like `codex,claude,anthropic`).
+Any failure fails over to the next provider in the chain, and a usage-limit
+error puts that provider in a ~20-minute cooldown so bulk runs stop knocking
+on a closed door. The Admin provider selector chooses per run, and its
+Subscription-limits panel reads real usage: Claude live from the CLI's own
+usage endpoint, Codex from its local session logs (windows that already
+reset show as fresh).
 
 Admin classification runs—including a single restaurant's **reclassify**
 button—run in the backend and expose live provider/progress status. Reloading
@@ -257,6 +299,25 @@ Admin also shows each stored menu's exact character count, workload band, a
 broad runtime range, and the Anthropic cost estimate when the metered API is
 selected. Runtime is intentionally approximate because provider load and dish
 density can matter as much as raw menu length.
+
+## Publishing the public site
+
+The public site is fully static: the frontend built in static-data mode plus
+JSON snapshots of the consumer data, deployed to GitHub Pages by
+`.github/workflows/deploy-pages.yml` on every push to master.
+
+```bash
+# After a recrawl/reclassify session — export data, commit, push, deploy:
+python publish_static.py --push
+
+# Export only (inspect frontend/public/data/*.json before committing):
+python publish_static.py
+```
+
+Only consumer-facing data ships (archived/hidden/non-food venues excluded,
+admin fields stripped). On the static build the `#admin` route shows a
+notice instead of the dashboard and report submission is hidden — there is
+no backend to receive either.
 
 ## Discovery configuration (`.env`)
 
@@ -272,20 +333,30 @@ density can matter as much as raw menu length.
 ## Project layout
 
 ```
-config.py              # env / settings loader (single source of config)
-db.py                  # SQLite schema + read/upsert helpers
-places_client.py       # Google Places API (New) client (grid search + dedup)
-discover.py            # Phase 0 CLI: discover + persist restaurants
-scraper.py             # Phase 1: HTTP scrape + menu-link following + headless fallback
-headless.py            # Playwright headless-browser fetch (JS-rendered menus)
-menu_score.py          # Heuristic: is this text a real menu vs homepage copy?
-ingest.py              # Phase 1 CLI: scrape + persist menu text
-llm_nav.py             # Cheap LLM (Haiku) menu-link chooser + vision fallback
-pdf_menu.py            # PDF menu extraction (pypdf local + Claude PDF fallback)
-enrich.py              # Pull Google food signals (vegetarian, editorial, type)
-classifier.py          # Phase 3: Claude dish extraction + vegan verdicts
-classify.py            # Phase 3 CLI: classify + persist dishes/verdicts
-api.py                 # Flask JSON API for the local dashboard
-fixtures/              # mock data for running without live APIs
-frontend/              # React + Vite + Tailwind dashboard
+config.py                   # env / settings loader (single source of config)
+db.py                       # SQLite schema + read/upsert helpers + history tables
+places_client.py            # Google Places API (New) client (search + candidates)
+discover.py                 # discovery CLI: pull + persist area restaurants
+add_restaurants.py          # add-by-name CLI (+ resolve/confirm used by Admin)
+scraper.py                  # HTTP scrape + link following + structured menus + headless fallback
+structured_menu.py          # schema.org JSON-LD + ordering-platform JSON menu mining
+headless.py                 # Playwright fetch: scroll banking, tab clicking, fragment nav
+menu_score.py               # heuristic: is this text a real menu vs homepage copy?
+menu_audit.py               # automated menu-quality audit (Admin warnings)
+ingest.py                   # ingestion CLI: scrape + persist menu text + versions
+llm_nav.py                  # cheap LLM (Haiku) menu-link chooser + vision fallback
+pdf_menu.py                 # PDF menu extraction (pypdf local + Claude PDF fallback)
+enrich.py                   # Google food signals (vegetarian, editorial, rating, hours)
+classifier.py               # dish extraction + vegan verdicts (full + delta modes)
+classification_providers.py # provider chain: claude/codex subscriptions + API, failover
+classification_exchange.py  # manual export/import classification jobs
+classify.py                 # classification CLI: parallel, change-aware, history
+usage_limits.py             # subscription usage windows for the limits panel
+venue_filter.py             # consumer-visibility gate (types, hidden, archived)
+publish_static.py           # export consumer data JSON for the public site
+api.py                      # Flask JSON API for the local dashboard
+tests/                      # network-free regression tests (pytest)
+.github/workflows/          # GitHub Pages deploy on push
+fixtures/                   # mock data for running without live APIs
+frontend/                   # React + Vite + Tailwind (dashboard + public site)
 ```

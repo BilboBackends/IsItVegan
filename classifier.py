@@ -25,9 +25,9 @@ from classification_providers import run_provider
 from config import settings
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
-# the cost (output tokens dominate here — ~100/dish). Override with
-# CLASSIFIER_MODEL: claude-opus-4-8 for max accuracy, claude-haiku-4-5 for
-# cheapest (no thinking/effort support).
+# the cost (output tokens dominate here — ~100/dish). This is the METERED
+# API model; override with ANTHROPIC_CLASSIFIER_MODEL. The subscription
+# transports pin their own models (see classification_providers.py).
 MODEL = settings.anthropic_classifier_model
 
 # $/MTok pricing lives in classification_providers.PRICES (imported above) so

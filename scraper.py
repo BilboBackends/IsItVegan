@@ -15,11 +15,12 @@ Returns a ScrapeResult so callers can distinguish success from the many ways
 a fetch can fail (timeout, 403, JS-only page, non-HTML) and log rather than
 silently drop, per CLAUDE.md.
 
-Known limitations (CLAUDE.md open questions), still handled as failures:
-- JS-rendered menus (no server-side text, incl. many third-party ordering
-  hosts) -> too little text. Detected third-party hosts are flagged in the
-  error so they're clear photo-fallback candidates.
-- PDF menus -> non-HTML, not parsed here.
+Escalation ladder (each step fires only when the cheaper one fails):
+plain HTTP -> conventional /menu probe -> LLM link chooser -> PDF extraction
+-> structured-data mining (JSON-LD / ordering-platform state) -> headless
+browser (scroll banking, tab clicking, fragment navigation). Remaining
+failures — hard bot walls, social-only "websites", image-only menus — are
+flagged as photo-fallback candidates.
 """
 from __future__ import annotations
 
