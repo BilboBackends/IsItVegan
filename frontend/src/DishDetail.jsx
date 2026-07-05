@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { STATIC_MODE } from "./staticData.js";
 import DietaryBadges, { DietaryProfile } from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
@@ -210,9 +211,9 @@ export default function DishDetail({
             <button onClick={share} className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-bold text-stone-700 hover:border-emerald-600">
               {copied ? "Link copied" : "Share dish"}
             </button>
-            <button onClick={() => setReportOpen((value) => !value)} className="rounded-full px-4 py-2 text-sm font-semibold text-stone-500 hover:bg-stone-100">
+            {!STATIC_MODE && (<button onClick={() => setReportOpen((value) => !value)} className="rounded-full px-4 py-2 text-sm font-semibold text-stone-500 hover:bg-stone-100">
               Report a problem
-            </button>
+            </button>)}
           </div>
 
           {reportOpen && (

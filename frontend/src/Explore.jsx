@@ -14,6 +14,7 @@ import {
 } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
+import { apiUrl } from "./staticData.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
 // distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
@@ -119,7 +120,7 @@ export default function Explore({
   }, []);
 
   useEffect(() => {
-    fetch("/api/restaurants")
+    fetch(apiUrl("/api/restaurants"))
       .then((res) => {
         if (!res.ok) throw new Error(`API ${res.status}`);
         return res.json();

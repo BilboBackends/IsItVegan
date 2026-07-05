@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { apiUrl } from "./staticData.js";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
@@ -12,7 +13,7 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
 
   useEffect(() => {
     Promise.all([
-      fetch("/api/restaurants").then((response) => response.json()),
+      fetch(apiUrl("/api/restaurants")).then((response) => response.json()),
       loadDishes(),
     ])
       .then(([restaurantData, dishData]) => {

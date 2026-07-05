@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { STATIC_MODE } from "./staticData.js";
 import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
 
@@ -55,7 +56,23 @@ export default function App() {
           </div>
         </div>
       </nav>
-      {isAdmin ? <Admin /> : <ExploreHub view={exploreView} />}
+      {isAdmin ? (
+        STATIC_MODE ? (
+          <div className="mx-auto max-w-xl px-4 py-16 text-center text-stone-500">
+            <p className="text-lg font-semibold text-stone-700">
+              Admin isn't available on the public site.
+            </p>
+            <p className="mt-2 text-sm">
+              The pipeline dashboard runs only on the machine that hosts the
+              data pipeline.
+            </p>
+          </div>
+        ) : (
+          <Admin />
+        )
+      ) : (
+        <ExploreHub view={exploreView} />
+      )}
     </div>
   );
 }

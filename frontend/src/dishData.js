@@ -1,3 +1,4 @@
+import { apiUrl } from "./staticData.js";
 const CACHE_TTL_MS = 30_000;
 
 let cachedDishes = null;
@@ -15,7 +16,7 @@ export function loadDishes() {
   }
   if (pendingRequest) return pendingRequest;
 
-  pendingRequest = fetch("/api/dishes")
+  pendingRequest = fetch(apiUrl("/api/dishes"))
     .then((response) => {
       if (!response.ok) throw new Error(`API ${response.status}`);
       return response.json();

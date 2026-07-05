@@ -4,6 +4,7 @@ import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, TodayHours } from "./RestaurantMeta.jsx";
 import { calorieLabel } from "./calories.js";
 import { isCountedVegan } from "./verdicts.js";
+import { fetchRestaurantDishes } from "./staticData.js";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
 // dishes for the given restaurant; every verdict shows confidence, reasoning,
@@ -71,7 +72,7 @@ export default function DishModal({ restaurant, onClose }) {
     setFilter("all");
     setServingFilter("all");
     setFiltersOpen(false);
-    fetch(`/api/restaurants/${restaurant.id}/dishes`)
+    fetchRestaurantDishes(restaurant.id)
       .then((res) => (res.ok ? res.json() : { dishes: [] }))
       .then((data) => {
         const list = data.dishes || [];
