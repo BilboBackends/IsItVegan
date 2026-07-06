@@ -6,12 +6,11 @@ import FilterSidebar from "./FilterSidebar.jsx";
 import LocationPicker from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import ThumbVote from "./ThumbVote.jsx";
-import RatingBadge, { ratingText } from "./RatingBadge.jsx";
+import { formatRatingCount, ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
-  OpenStatusBadge,
-  TodayHours,
   currentOpenState,
+  isMenuStale,
   relativeDate,
   todayOpeningHours,
 } from "./RestaurantMeta.jsx";
@@ -503,47 +502,67 @@ export default function Explore({
           />
         </div>
       </div>
-      <div className="mt-0.5 text-xs capitalize text-stone-500">
-        {prettyType(r.primary_type) || "restaurant"}
+      {/* One quiet meta line: cuisine · price · Google rating. */}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
+        <span className="capitalize">
+          {prettyType(r.primary_type) || "restaurant"}
+        </span>
         {priceLevelSymbol(r.price_level) && (
-          <span
-            className="ml-2 font-semibold text-stone-600"
-            title="Google price level"
-          >
+          <span className="font-semibold text-stone-600" title="Google price level">
             {priceLevelSymbol(r.price_level)}
           </span>
         )}
-        {r.serves_vegetarian === 1 && (
-          <span className="ml-2 font-medium text-emerald-700">
-            ✓ veg-friendly
+        {ratingText(r.rating, r.user_rating_count) && (
+          <span className="font-semibold text-stone-600" title="Google rating">
+            <span className="text-amber-500">★</span>{" "}
+            {Number(r.rating).toFixed(1)}
+            <span className="font-normal text-stone-400">
+              {" "}({formatRatingCount(r.user_rating_count) ?? "—"})
+            </span>
           </span>
         )}
+        {r.dish_count === 0 && r.serves_vegetarian === 1 && (
+          <span className="font-medium text-emerald-700">✓ veg-friendly</span>
+        )}
       </div>
+      {/* One status line: open state · today's hours. */}
+      {(() => {
+        const openState = currentOpenState(
+          r.open_now, r.enriched_at, r.opening_hours
+        );
+        const todayHours = todayOpeningHours(r.opening_hours);
+        if (openState == null && !todayHours) return null;
+        return (
+          <div className="mt-1 text-xs font-medium text-stone-600">
+            {openState != null && (
+              <span
+                className={`font-bold ${
+                  openState ? "text-emerald-700" : "text-rose-600"
+                }`}
+              >
+                {openState ? "Open now" : "Closed"}
+              </span>
+            )}
+            {openState != null && todayHours && " · "}
+            {todayHours && `Today: ${todayHours}`}
+          </div>
+        );
+      })()}
       {r.address && (
-        <div className="mt-1 line-clamp-2 text-xs leading-snug text-stone-500">
+        <div className="mt-1 line-clamp-1 text-xs leading-snug text-stone-500">
           {r.address}
         </div>
       )}
-      <RatingBadge
-        rating={r.rating}
-        userRatingCount={r.user_rating_count}
-        className="mt-1"
-      />
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        <OpenStatusBadge
-          openNow={r.open_now}
-          enrichedAt={r.enriched_at}
-          openingHours={r.opening_hours}
-        />
-        <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
-      </div>
-      <TodayHours
-        openingHours={r.opening_hours}
-        className="mt-1.5 block text-xs font-medium text-stone-600"
-      />
       {r.editorial_summary && (
         <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
           {r.editorial_summary}
+        </div>
+      )}
+      {/* The routine "checked N days ago" chip is noise; only warn when the
+          menu is actually stale. */}
+      {isMenuStale(r.menu_fetched_at) && (
+        <div className="mt-2">
+          <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
         </div>
       )}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-y-2 border-t border-stone-100 pt-3">

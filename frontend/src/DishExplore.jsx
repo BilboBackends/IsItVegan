@@ -18,7 +18,7 @@ import {
 } from "./RestaurantMeta.jsx";
 import { cuisineLabel, cuisineOptions } from "./cuisine.js";
 import { calorieLabel } from "./calories.js";
-import { parsePriceValue } from "./price.js";
+import { parsePriceValue, priceLevelSymbol } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
 import {
   buildDishSearchIndex,
@@ -129,6 +129,8 @@ export default function DishExplore({
   );
   const [focus, setFocus] = useState(null);
   const [visibleLimit, setVisibleLimit] = useState(RESULTS_PAGE_SIZE);
+  // Rows are compact one-glance lines; tapping one expands its full detail.
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
@@ -412,6 +414,11 @@ export default function DishExplore({
           rating: dish.rating,
           userRatingCount: dish.user_rating_count,
           openingHours: dish.opening_hours,
+          openNow: dish.open_now,
+          enrichedAt: dish.enriched_at,
+          primaryType: dish.primary_type,
+          priceLevel: dish.price_level,
+          websiteUrl: dish.website_url,
           restaurant: restaurantById.get(dish.restaurant_id),
         });
       }
@@ -468,62 +475,127 @@ export default function DishExplore({
         offset: [0, -10],
       });
 
+      // Popup mirrors the Restaurants map popup: tidy sections separated by
+      // hairlines (identity / status / matches) plus an actions row.
       const popup = document.createElement("div");
-      popup.style.minWidth = "180px";
+      popup.style.cssText = "min-width:200px;max-width:250px";
+
+      const addSection = () => {
+        const s = document.createElement("div");
+        s.style.cssText = "padding:6px 0 5px;border-top:1px solid #e7e5e4";
+        popup.append(s);
+        return s;
+      };
+
+      // — Identity —
+      const head = document.createElement("div");
+      head.style.cssText = "padding-bottom:6px";
       const title = document.createElement("div");
-      title.style.cssText = "font-weight:700;font-size:14px";
+      title.style.cssText = "font-weight:700;font-size:14px;color:#1c1917";
       title.textContent = item.name;
-      const address = document.createElement("a");
-      address.style.cssText =
-        "display:block;margin-top:3px;color:#0369a1;font-size:12px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
-      address.textContent = item.address || "";
-      address.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-        item.address || item.name || ""
-      )}`;
-      address.target = "_blank";
-      address.rel = "noopener noreferrer";
-      address.title = "Open address in Google Maps";
-      const count = document.createElement("div");
-      count.style.cssText = "margin-top:3px;color:#57534e;font-size:12px";
-      count.textContent = `${item.count} matching menu item${item.count === 1 ? "" : "s"}`;
-      const distance = document.createElement("div");
-      distance.style.cssText =
-        "margin-top:3px;color:#78716c;font-size:12px;font-weight:600";
-      distance.textContent = `${item.distance.toFixed(1)} mi from ${originLabel}`;
-      popup.append(title);
-      if (item.address) popup.append(address);
-      popup.append(count, distance);
-      const googleRating = ratingText(item.rating, item.userRatingCount);
-      if (googleRating) {
-        const rating = document.createElement("div");
-        rating.style.cssText =
-          "margin-top:3px;color:#78716c;font-size:12px;font-weight:600";
-        rating.textContent = `${googleRating} Google`;
-        popup.append(rating);
+      const sub = document.createElement("div");
+      sub.style.cssText =
+        "color:#78716c;font-size:12px;text-transform:capitalize;margin-top:1px";
+      sub.textContent =
+        (prettyType(item.primaryType) || "restaurant") +
+        (priceLevelSymbol(item.priceLevel)
+          ? ` · ${priceLevelSymbol(item.priceLevel)}`
+          : "");
+      head.append(title, sub);
+      if (item.address) {
+        const address = document.createElement("a");
+        address.style.cssText =
+          "display:block;margin-top:2px;color:#0369a1;font-size:11px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
+        address.textContent = item.address;
+        address.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          item.address || item.name || ""
+        )}`;
+        address.target = "_blank";
+        address.rel = "noopener noreferrer";
+        address.title = "Open address in Google Maps";
+        head.append(address);
       }
+      popup.append(head);
+
+      // — Status: open state · today's hours, then rating —
+      const openState = currentOpenState(
+        item.openNow, item.enrichedAt, item.openingHours
+      );
       const todayHours = todayOpeningHours(item.openingHours);
-      if (todayHours) {
-        const hours = document.createElement("div");
-        hours.style.cssText =
-          "margin-top:3px;color:#57534e;font-size:12px;font-weight:600";
-        hours.textContent = `Today: ${todayHours}`;
-        popup.append(hours);
+      const googleRating = ratingText(item.rating, item.userRatingCount);
+      if (openState != null || todayHours || googleRating) {
+        const status = addSection();
+        if (openState != null || todayHours) {
+          const row = document.createElement("div");
+          row.style.cssText = "font-size:12px;font-weight:600;color:#57534e";
+          if (openState != null) {
+            const state = document.createElement("span");
+            state.style.cssText = `font-weight:700;color:${
+              openState ? "#047857" : "#be123c"
+            }`;
+            state.textContent = openState ? "Open now" : "Closed";
+            row.append(state);
+            if (todayHours) row.append(" · ");
+          }
+          if (todayHours) row.append(`Today: ${todayHours}`);
+          status.append(row);
+        }
+        if (googleRating) {
+          const rating = document.createElement("div");
+          rating.style.cssText =
+            "margin-top:2px;color:#78716c;font-size:12px;font-weight:600";
+          rating.textContent = `${googleRating} Google`;
+          status.append(rating);
+        }
       }
-      const button = document.createElement("button");
-      button.textContent = `Show all ${item.count} in the list →`;
-      button.style.cssText =
-        "margin-top:6px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-      button.onclick = () => {
+
+      // — Matching items —
+      const matches = addSection();
+      const count = document.createElement("div");
+      count.style.cssText = "font-size:13px;font-weight:600;color:#047857";
+      count.textContent = `${item.count} matching menu item${item.count === 1 ? "" : "s"}`;
+      matches.append(count);
+      if (item.distance != null) {
+        const distance = document.createElement("div");
+        distance.style.cssText = "margin-top:2px;color:#a8a29e;font-size:11px";
+        distance.textContent = `${item.distance.toFixed(1)} mi from ${originLabel}`;
+        matches.append(distance);
+      }
+      const listButton = document.createElement("button");
+      listButton.textContent = `Show all ${item.count} in the list →`;
+      listButton.style.cssText =
+        "display:block;margin-top:4px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:12px";
+      listButton.onclick = () => {
         showRestaurantItems(item.id);
       };
-      popup.append(button);
-      if (item.restaurant) {
-        const menuButton = document.createElement("button");
-        menuButton.textContent = "View full menu →";
-        menuButton.style.cssText =
-          "display:block;margin-top:5px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-        menuButton.onclick = () => setMenuRestaurant(item.restaurant);
-        popup.append(menuButton);
+      matches.append(listButton);
+
+      // — Actions: Website · See dishes —
+      if (item.websiteUrl || item.restaurant) {
+        const actions = addSection();
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:14px;align-items:center";
+        if (item.websiteUrl) {
+          const site = document.createElement("a");
+          site.textContent = "Website ↗";
+          site.style.cssText =
+            "color:#57534e;font-weight:700;font-size:13px;text-decoration:none";
+          site.href = item.websiteUrl;
+          site.target = "_blank";
+          site.rel = "noopener noreferrer";
+          site.onmouseenter = () => (site.style.color = "#047857");
+          site.onmouseleave = () => (site.style.color = "#57534e");
+          row.append(site);
+        }
+        if (item.restaurant) {
+          const menuButton = document.createElement("button");
+          menuButton.textContent = "See dishes →";
+          menuButton.style.cssText =
+            "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
+          menuButton.onclick = () => setMenuRestaurant(item.restaurant);
+          row.append(menuButton);
+        }
+        actions.append(row);
       }
       marker.bindPopup(popup, { closeButton: false });
     }
@@ -558,6 +630,15 @@ export default function DishExplore({
     return () => clearTimeout(timer);
   }, [focus, showMap]);
 
+  function toggleExpanded(dishId) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(dishId)) next.delete(dishId);
+      else next.add(dishId);
+      return next;
+    });
+  }
+
   function showRestaurantOnMap(dish) {
     if (dish.lat == null || dish.lng == null) return;
     if (!isDesktop) setMobileView("map");
@@ -574,6 +655,12 @@ export default function DishExplore({
     setMaxMiles(0);
     setSortBy("name");
     setMobileView("list");
+  }
+
+  function toggleRestaurantFilter(restaurantId) {
+    // Clicking the chip of the already-filtered restaurant removes the filter.
+    if (restaurant === String(restaurantId)) setRestaurant("all");
+    else showRestaurantItems(restaurantId);
   }
 
   function openDish(dish) {
@@ -634,6 +721,13 @@ export default function DishExplore({
           activeCount={activeFilterCount}
         >
         <div className="space-y-3">
+          <button
+            onClick={clearFilters}
+            disabled={!hasActiveFilters && !query}
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-rose-300 hover:text-rose-600 disabled:cursor-default disabled:opacity-40"
+          >
+            ↺ Reset all filters
+          </button>
           <div className="space-y-2">
             <div className="space-y-2">
             <select
@@ -784,92 +878,6 @@ export default function DishExplore({
               ))}
             </div>
           </div>
-          {hasActiveFilters && (
-            <div
-              className="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2"
-              aria-live="polite"
-            >
-              <span className="text-xs font-bold uppercase tracking-wide text-emerald-800">
-                Active filters
-              </span>
-              {selectedRestaurant && (
-                <button
-                  onClick={() => setRestaurant("all")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove restaurant filter"
-                >
-                  Restaurant: {selectedRestaurant.name}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {verdict !== "all" && (
-                <button
-                  onClick={() => setVerdict("all")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove verdict filter"
-                >
-                  Verdict: {VERDICTS.find((item) => item.key === verdict)?.label}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {servingRole !== "all" && (
-                <button
-                  onClick={() => setServingRole("all")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove meal/side filter"
-                >
-                  Serving: {servingRole === "meal" ? "Meals only" : "Sides & small plates"}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {maxPrice > 0 && (
-                <button
-                  onClick={() => setMaxPrice(0)}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove price filter"
-                >
-                  Price: Under ${maxPrice}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {cuisine !== "all" && (
-                <button
-                  onClick={() => setCuisine("all")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove cuisine filter"
-                >
-                  Cuisine: {cuisine}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {openFilter !== "all" && (
-                <button
-                  onClick={() => setOpenFilter("all")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove opening-status filter"
-                >
-                  Status: {openFilter === "open" ? "Open now" : "Closed now"}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {maxMiles > 0 && (
-                <button
-                  onClick={() => setMaxMiles(0)}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove distance filter"
-                >
-                  Within {maxMiles} mi of {originLabel}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              <button
-                onClick={clearFilters}
-                className="ml-auto text-xs font-bold text-emerald-800 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-950"
-              >
-                Clear all
-              </button>
-            </div>
-          )}
         </div>
       </FilterSidebar>
 
@@ -896,6 +904,95 @@ export default function DishExplore({
           </button>
         )}
       </div>
+
+      {/* Active filters — front and center above the results, never buried
+          in the sidebar: every applied filter is a removable chip. */}
+      {hasActiveFilters && (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border-2 border-emerald-300 bg-emerald-50 px-3 py-2.5 shadow-sm"
+          aria-live="polite"
+        >
+          <span className="text-xs font-bold uppercase tracking-wide text-emerald-800">
+            Active filters
+          </span>
+          {selectedRestaurant && (
+            <button
+              onClick={() => setRestaurant("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove restaurant filter"
+            >
+              Restaurant: {selectedRestaurant.name}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {verdict !== "all" && (
+            <button
+              onClick={() => setVerdict("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove verdict filter"
+            >
+              Verdict: {VERDICTS.find((item) => item.key === verdict)?.label}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {servingRole !== "all" && (
+            <button
+              onClick={() => setServingRole("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove meal/side filter"
+            >
+              Serving: {servingRole === "meal" ? "Meals only" : "Sides & small plates"}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {maxPrice > 0 && (
+            <button
+              onClick={() => setMaxPrice(0)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove price filter"
+            >
+              Price: Under ${maxPrice}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {cuisine !== "all" && (
+            <button
+              onClick={() => setCuisine("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove cuisine filter"
+            >
+              Cuisine: {cuisine}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {openFilter !== "all" && (
+            <button
+              onClick={() => setOpenFilter("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove opening-status filter"
+            >
+              Status: {openFilter === "open" ? "Open now" : "Closed now"}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {maxMiles > 0 && (
+            <button
+              onClick={() => setMaxMiles(0)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove distance filter"
+            >
+              Within {maxMiles} mi of {originLabel}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          <button
+            onClick={clearFilters}
+            className="ml-auto text-xs font-bold text-emerald-800 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-950"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
@@ -941,6 +1038,7 @@ export default function DishExplore({
             {visibleDishes.map((dish, index) => {
               const details = splitReasoning(dish.reasoning);
               const cuisine = prettyType(dish.primary_type);
+              const isExpanded = expandedIds.has(dish.id);
               const isSide = dish.serving_role === "side";
               const previousWasSide = visibleDishes[index - 1]?.serving_role === "side";
               const showRoleHeading =
@@ -954,102 +1052,198 @@ export default function DishExplore({
                     {isSide ? "Sides & small plates" : "Meals"}
                   </li>
                 )}
-                <li className="px-4 py-4 transition hover:bg-stone-50 sm:px-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          onClick={() => openDish(dish)}
-                          className="text-left font-bold leading-snug text-stone-900 hover:text-emerald-700 hover:underline"
-                        >
+                <li className="transition hover:bg-stone-50">
+                  {/* Compact row: name + price, then restaurant · rating ·
+                      open state — the at-a-glance facts. Tap to expand. */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => toggleExpanded(dish.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggleExpanded(dish.id);
+                      }
+                    }}
+                    aria-expanded={isExpanded}
+                    className="flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-left sm:px-5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="truncate text-sm font-bold leading-snug text-stone-900">
                           {dish.name}
-                        </button>
-                        {dish.price && <span className="text-sm font-medium text-stone-400">{dish.price}</span>}
-                        {dish.calories && (
-                          <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold text-stone-500">
-                            {calorieLabel(dish.calories)}
+                        </span>
+                        {dish.price && (
+                          <span className="shrink-0 text-xs font-medium text-stone-400">
+                            {dish.price}
                           </span>
                         )}
                       </div>
-                      {dish.raw_description && (
-                        <p className="mt-1 text-sm leading-relaxed text-stone-600">{dish.raw_description}</p>
-                      )}
+                      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-stone-500">
+                        {dish.lat != null && dish.lng != null ? (
+                          // Jumps the map to this restaurant's pin — no
+                          // filters applied (the expanded chip does that).
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              showRestaurantOnMap(dish);
+                            }}
+                            title={`Show ${dish.restaurant_name} on the map`}
+                            className="truncate font-medium text-emerald-700 hover:underline"
+                          >
+                            {dish.restaurant_name}
+                          </button>
+                        ) : (
+                          <span className="truncate">{dish.restaurant_name}</span>
+                        )}
+                        {dish.rating != null && (
+                          <span className="shrink-0" title="Google rating">
+                            · <span className="text-amber-500">★</span>{" "}
+                            {Number(dish.rating).toFixed(1)}
+                          </span>
+                        )}
+                        {(() => {
+                          const openState = currentOpenState(
+                            dish.open_now, dish.enriched_at, dish.opening_hours
+                          );
+                          if (openState == null) return null;
+                          return (
+                            <span
+                              className={`shrink-0 font-semibold ${
+                                openState ? "text-emerald-700" : "text-rose-600"
+                              }`}
+                            >
+                              · {openState ? "Open" : "Closed"}
+                            </span>
+                          );
+                        })()}
+                      </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
-                      <VerdictChip verdict={dish.verdict} />
-                      {dish.confidence != null && (
-                        <span className="hidden text-xs tabular-nums text-stone-400 sm:inline">
-                          {Math.round(dish.confidence * 100)}%
-                        </span>
-                      )}
-                      <ThumbVote
-                        dishId={dish.id}
-                        upVotes={dish.up_votes}
-                        downVotes={dish.down_votes}
-                      />
-                      <FavoriteButton
-                        active={favorites.dishes.includes(dish.id)}
-                        onClick={() => toggleDish(dish.id)}
-                        label="dish"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
-                    <button
-                      onClick={() => showRestaurantItems(dish.restaurant_id)}
-                      className="rounded-full bg-emerald-50 px-2.5 py-1 font-bold text-emerald-800 hover:bg-emerald-100"
-                      title={`Restaurant — show every menu item from ${dish.restaurant_name}`}
+                    <VerdictChip verdict={dish.verdict} />
+                    <span
+                      aria-hidden="true"
+                      className={`shrink-0 text-stone-400 transition-transform ${
+                        isExpanded ? "rotate-90" : ""
+                      }`}
                     >
-                      <span className="font-medium text-emerald-600">Restaurant:</span>{" "}
-                      {dish.restaurant_name}
-                    </button>
-                    {cuisine && <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-600">{cuisine}</span>}
-                    <DietaryBadges dish={dish} maxBadges={3} />
-                    <RatingBadge
-                      rating={dish.rating}
-                      userRatingCount={dish.user_rating_count}
-                      className="rounded-full bg-amber-50 px-2.5 py-1"
-                    />
-                    <OpenStatusBadge
-                      openNow={dish.open_now}
-                      enrichedAt={dish.enriched_at}
-                      openingHours={dish.opening_hours}
-                    />
-                    <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
+                      ›
+                    </span>
                   </div>
 
-                  {(details.reasoning || details.evidence) && (
-                    <div className="mt-2 text-xs leading-relaxed text-stone-400">
-                      {details.reasoning}
-                      {details.evidence && (
-                        <span className="ml-1 text-stone-500">Menu evidence: {details.evidence}</span>
+                  {isExpanded && (
+                    <div className="px-4 pb-4 sm:px-5">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          {dish.calories && (
+                            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold text-stone-500">
+                              {calorieLabel(dish.calories)}
+                            </span>
+                          )}
+                          {dish.raw_description && (
+                            <p className="mt-1 text-sm leading-relaxed text-stone-600">
+                              {dish.raw_description}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {dish.confidence != null && (
+                            <span className="hidden text-xs tabular-nums text-stone-400 sm:inline">
+                              {Math.round(dish.confidence * 100)}%
+                            </span>
+                          )}
+                          <ThumbVote
+                            dishId={dish.id}
+                            upVotes={dish.up_votes}
+                            downVotes={dish.down_votes}
+                          />
+                          <FavoriteButton
+                            active={favorites.dishes.includes(dish.id)}
+                            onClick={() => toggleDish(dish.id)}
+                            label="dish"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+                        {(() => {
+                          const isFiltered =
+                            restaurant === String(dish.restaurant_id);
+                          return (
+                            <button
+                              onClick={() =>
+                                toggleRestaurantFilter(dish.restaurant_id)
+                              }
+                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-bold transition ${
+                                isFiltered
+                                  ? "bg-emerald-700 text-white ring-1 ring-emerald-700 hover:bg-emerald-800"
+                                  : "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-100 hover:ring-emerald-300"
+                              }`}
+                              title={
+                                isFiltered
+                                  ? "Remove the restaurant filter"
+                                  : `Show every menu item from ${dish.restaurant_name} and zoom the map to it`
+                              }
+                            >
+                              <span aria-hidden="true">📍</span>
+                              {dish.restaurant_name}
+                              <span
+                                className={`font-semibold ${
+                                  isFiltered ? "text-emerald-100" : "text-emerald-600"
+                                }`}
+                              >
+                                {isFiltered ? "· clear filter ×" : "· all dishes →"}
+                              </span>
+                            </button>
+                          );
+                        })()}
+                        {cuisine && <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-600">{cuisine}</span>}
+                        <DietaryBadges dish={dish} maxBadges={3} />
+                        <RatingBadge
+                          rating={dish.rating}
+                          userRatingCount={dish.user_rating_count}
+                          className="rounded-full bg-amber-50 px-2.5 py-1"
+                        />
+                        <OpenStatusBadge
+                          openNow={dish.open_now}
+                          enrichedAt={dish.enriched_at}
+                          openingHours={dish.opening_hours}
+                        />
+                        <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
+                      </div>
+
+                      {(details.reasoning || details.evidence) && (
+                        <div className="mt-2 text-xs leading-relaxed text-stone-400">
+                          {details.reasoning}
+                          {details.evidence && (
+                            <span className="ml-1 text-stone-500">Menu evidence: {details.evidence}</span>
+                          )}
+                        </div>
                       )}
+
+                      <div className="mt-2 flex flex-wrap gap-3 text-xs">
+                        {dish.distance != null && (
+                          <span className="font-semibold text-stone-500">{dish.distance.toFixed(1)} mi from {originLabel}</span>
+                        )}
+                        {dish.address && <span className="text-stone-400">{dish.address}</span>}
+                        {dish.lat != null && dish.lng != null && (
+                          <button
+                            onClick={() => showRestaurantOnMap(dish)}
+                            className="font-semibold text-emerald-700 hover:underline"
+                          >
+                            Show on map
+                          </button>
+                        )}
+                        {dish.website_url && (
+                          <a href={dish.website_url} target="_blank" rel="noreferrer" className="font-semibold text-emerald-700 hover:underline">
+                            Restaurant website ↗
+                          </a>
+                        )}
+                        <button onClick={() => openDish(dish)} className="font-bold text-emerald-700 hover:underline">
+                          Details & share
+                        </button>
+                      </div>
                     </div>
                   )}
-
-                  <div className="mt-2 flex flex-wrap gap-3 text-xs">
-                    {dish.distance != null && (
-                      <span className="font-semibold text-stone-500">{dish.distance.toFixed(1)} mi from {originLabel}</span>
-                    )}
-                    {dish.address && <span className="text-stone-400">{dish.address}</span>}
-                    {dish.lat != null && dish.lng != null && (
-                      <button
-                        onClick={() => showRestaurantOnMap(dish)}
-                        className="font-semibold text-emerald-700 hover:underline"
-                      >
-                        Show on map
-                      </button>
-                    )}
-                    {dish.website_url && (
-                      <a href={dish.website_url} target="_blank" rel="noreferrer" className="font-semibold text-emerald-700 hover:underline">
-                        Restaurant website ↗
-                      </a>
-                    )}
-                    <button onClick={() => openDish(dish)} className="font-bold text-emerald-700 hover:underline">
-                      Details & share
-                    </button>
-                  </div>
                 </li>
                 </Fragment>
               );
