@@ -556,17 +556,55 @@ _REPORT_TYPES = {
 @app.post("/api/dish-votes")
 def dish_vote_endpoint() -> object:
     """Record a thumbs up/down for a dish (local app only; the public static
-    site keeps votes in the browser)."""
+    site keeps votes in the browser). client_id is an anonymous per-browser
+    token: with one, a repeat vote replaces the caller's previous vote and
+    vote=null withdraws it, so one visitor counts once per dish."""
     db.init_db()
     payload = request.get_json(silent=True) or {}
     dish_id = payload.get("dish_id")
     vote = payload.get("vote")
+    client_id = payload.get("client_id")
     if not isinstance(dish_id, int) or isinstance(dish_id, bool):
         return jsonify({"error": "dish_id must be an integer."}), 400
-    if vote not in ("up", "down"):
-        return jsonify({"error": "vote must be 'up' or 'down'."}), 400
-    if not db.record_dish_vote(dish_id, vote):
+    if client_id is not None and (
+        not isinstance(client_id, str)
+        or not client_id.strip()
+        or len(client_id) > 64
+    ):
+        return jsonify({"error": "client_id must be a short string."}), 400
+    if vote is None:
+        if not client_id:
+            return jsonify({"error": "Withdrawing a vote needs a client_id."}), 400
+    elif vote not in ("up", "down"):
+        return jsonify({"error": "vote must be 'up', 'down', or null."}), 400
+    if not db.record_dish_vote(dish_id, vote, client_id=client_id):
         return jsonify({"error": "Dish not found."}), 404
+    return jsonify({"ok": True})
+
+
+@app.post("/api/restaurant-votes")
+def restaurant_vote_endpoint() -> object:
+    """Thumbs up/down on a restaurant — same contract as /api/dish-votes."""
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    restaurant_id = payload.get("restaurant_id")
+    vote = payload.get("vote")
+    client_id = payload.get("client_id")
+    if not isinstance(restaurant_id, int) or isinstance(restaurant_id, bool):
+        return jsonify({"error": "restaurant_id must be an integer."}), 400
+    if client_id is not None and (
+        not isinstance(client_id, str)
+        or not client_id.strip()
+        or len(client_id) > 64
+    ):
+        return jsonify({"error": "client_id must be a short string."}), 400
+    if vote is None:
+        if not client_id:
+            return jsonify({"error": "Withdrawing a vote needs a client_id."}), 400
+    elif vote not in ("up", "down"):
+        return jsonify({"error": "vote must be 'up', 'down', or null."}), 400
+    if not db.record_restaurant_vote(restaurant_id, vote, client_id=client_id):
+        return jsonify({"error": "Restaurant not found."}), 404
     return jsonify({"ok": True})
 
 

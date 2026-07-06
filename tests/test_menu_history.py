@@ -189,6 +189,47 @@ def test_existing_duplicate_merge_preserves_classifications_and_reports(test_db)
     assert report["dish_name"] == "Earth CrisisⓋ"
 
 
+def test_dish_votes_dedupe_per_client_and_support_withdrawal(test_db):
+    dish_id = db.upsert_dish(1, "Tofu Bowl", None, "$10", db_path=test_db)
+    # One browser mashing the button and switching sides holds ONE live vote.
+    assert db.record_dish_vote(dish_id, "up", client_id="c1", db_path=test_db)
+    assert db.record_dish_vote(dish_id, "up", client_id="c1", db_path=test_db)
+    assert db.record_dish_vote(dish_id, "down", client_id="c1", db_path=test_db)
+    assert db.record_dish_vote(dish_id, "up", client_id="c2", db_path=test_db)
+    with db.connect(test_db) as conn:
+        rows = conn.execute(
+            "SELECT client_id, vote FROM dish_votes ORDER BY client_id"
+        ).fetchall()
+    assert [(r["client_id"], r["vote"]) for r in rows] == [
+        ("c1", "down"),
+        ("c2", "up"),
+    ]
+
+    # Counts ride along on the dish read models.
+    dish = next(d for d in db.list_dishes(1, test_db) if d["id"] == dish_id)
+    assert (dish["up_votes"], dish["down_votes"]) == (1, 1)
+
+    # vote=None withdraws that browser's vote; others are untouched.
+    assert db.record_dish_vote(dish_id, None, client_id="c1", db_path=test_db)
+    dish = next(d for d in db.list_dishes(1, test_db) if d["id"] == dish_id)
+    assert (dish["up_votes"], dish["down_votes"]) == (1, 0)
+
+
+def test_restaurant_votes_follow_the_same_one_per_client_rule(test_db):
+    assert db.record_restaurant_vote(1, "up", client_id="c1", db_path=test_db)
+    assert db.record_restaurant_vote(1, "up", client_id="c1", db_path=test_db)
+    assert db.record_restaurant_vote(1, "down", client_id="c2", db_path=test_db)
+    rows = db.list_restaurants(test_db)
+    assert (rows[0]["up_votes"], rows[0]["down_votes"]) == (1, 1)
+
+    assert db.record_restaurant_vote(1, None, client_id="c1", db_path=test_db)
+    rows = db.list_restaurants(test_db)
+    assert (rows[0]["up_votes"], rows[0]["down_votes"]) == (0, 1)
+
+    # Unknown restaurant is rejected.
+    assert not db.record_restaurant_vote(999, "up", client_id="c1", db_path=test_db)
+
+
 def test_classification_result_dedupes_formatting_but_keeps_size_variant():
     def dish(name, price):
         return {

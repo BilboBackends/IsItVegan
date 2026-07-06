@@ -337,7 +337,11 @@ export default function DishModal({ restaurant, onClose }) {
                           {Math.round(d.confidence * 100)}%
                         </span>
                       )}
-                      <ThumbVote dishId={d.id} />
+                      <ThumbVote
+                        dishId={d.id}
+                        upVotes={d.up_votes}
+                        downVotes={d.down_votes}
+                      />
                     </div>
                   </div>
                   {d.raw_description && (

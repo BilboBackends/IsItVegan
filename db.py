@@ -156,6 +156,20 @@ CREATE TABLE IF NOT EXISTS dish_votes (
     dish_name     TEXT,
     restaurant_id INTEGER,
     vote          TEXT NOT NULL CHECK (vote IN ('up', 'down')),
+    -- Anonymous per-browser id so one visitor holds ONE live vote per dish
+    -- (re-clicks update or clear it) instead of stacking rows. NULL on rows
+    -- recorded before client ids existed.
+    client_id     TEXT,
+    created_at    TEXT NOT NULL
+);
+
+-- Same lightweight thumbs, aimed at a whole restaurant. client_id keeps one
+-- live vote per browser per restaurant, exactly like dish_votes.
+CREATE TABLE IF NOT EXISTS restaurant_votes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id INTEGER NOT NULL REFERENCES restaurants(id),
+    vote          TEXT NOT NULL CHECK (vote IN ('up', 'down')),
+    client_id     TEXT,
     created_at    TEXT NOT NULL
 );
 
@@ -252,6 +266,9 @@ _MIGRATIONS = {
     },
     "reports": {
         "dish_name": "TEXT",
+    },
+    "dish_votes": {
+        "client_id": "TEXT",
     },
 }
 
@@ -355,7 +372,11 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                        SELECT 1 FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
                          AND (s.url IS NULL OR s.url != 'google:editorial_summary')
-                   ) AS has_menu_text
+                   ) AS has_menu_text,
+                   (SELECT COUNT(*) FROM restaurant_votes v
+                     WHERE v.restaurant_id = r.id AND v.vote = 'up') AS up_votes,
+                   (SELECT COUNT(*) FROM restaurant_votes v
+                     WHERE v.restaurant_id = r.id AND v.vote = 'down') AS down_votes
             FROM restaurants r
             ORDER BY r.last_scraped_at DESC, r.name ASC
             """
@@ -1100,7 +1121,11 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
                    c.protein_level, c.serving_role, c.meal_types,
-                   c.key_ingredients
+                   c.key_ingredients,
+                   (SELECT COUNT(*) FROM dish_votes v
+                     WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
+                   (SELECT COUNT(*) FROM dish_votes v
+                     WHERE v.dish_id = d.id AND v.vote = 'down') AS down_votes
             FROM dishes d
             LEFT JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -1157,6 +1182,10 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                        WHERE ms.restaurant_id = r.id AND ms.type = 'text'
                          AND (ms.url IS NULL OR ms.url != 'google:editorial_summary')
                    ) AS menu_fetched_at,
+                   (SELECT COUNT(*) FROM dish_votes v
+                     WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
+                   (SELECT COUNT(*) FROM dish_votes v
+                     WHERE v.dish_id = d.id AND v.vote = 'down') AS down_votes,
                    s.url AS menu_url
             FROM dishes d
             JOIN restaurants r ON r.id = d.restaurant_id
@@ -1209,26 +1238,102 @@ def restaurants_needing_refresh(
     return targets
 
 
-def record_dish_vote(dish_id: int, vote: str, db_path: str | None = None) -> bool:
+def record_restaurant_vote(
+    restaurant_id: int,
+    vote: str | None,
+    client_id: str | None = None,
+    db_path: str | None = None,
+) -> bool:
+    """Thumbs up/down on a restaurant, same one-live-vote-per-client rule as
+    record_dish_vote. False when the restaurant is unknown."""
+    now = datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM restaurants WHERE id = ?", (restaurant_id,)
+        ).fetchone()
+        if exists is None:
+            return False
+        if client_id:
+            if vote is None:
+                conn.execute(
+                    "DELETE FROM restaurant_votes "
+                    "WHERE restaurant_id = ? AND client_id = ?",
+                    (restaurant_id, client_id),
+                )
+                return True
+            updated = conn.execute(
+                """
+                UPDATE restaurant_votes SET vote = ?, created_at = ?
+                WHERE restaurant_id = ? AND client_id = ?
+                """,
+                (vote, now, restaurant_id, client_id),
+            )
+            if updated.rowcount > 0:
+                return True
+        elif vote is None:
+            return True  # nothing to withdraw without a client identity
+        conn.execute(
+            """
+            INSERT INTO restaurant_votes (restaurant_id, vote, client_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (restaurant_id, vote, client_id, now),
+        )
+    return True
+
+
+def record_dish_vote(
+    dish_id: int,
+    vote: str | None,
+    client_id: str | None = None,
+    db_path: str | None = None,
+) -> bool:
     """Store a thumbs up/down for a dish; dish name/restaurant are copied so
-    the signal survives dish re-snapshots. False when the dish is unknown."""
+    the signal survives dish re-snapshots. False when the dish is unknown.
+
+    With a client_id, each browser holds at most ONE live vote per dish:
+    voting again switches it, and vote=None withdraws it — so a visitor
+    mashing the button can't inflate the count. Without a client_id (legacy
+    callers), every call appends a row as before.
+    """
+    now = datetime.now(timezone.utc).isoformat()
     with connect(db_path) as conn:
         dish = conn.execute(
             "SELECT name, restaurant_id FROM dishes WHERE id = ?", (dish_id,)
         ).fetchone()
         if dish is None:
             return False
+        if client_id:
+            if vote is None:
+                conn.execute(
+                    "DELETE FROM dish_votes WHERE dish_id = ? AND client_id = ?",
+                    (dish_id, client_id),
+                )
+                return True
+            updated = conn.execute(
+                """
+                UPDATE dish_votes SET vote = ?, created_at = ?
+                WHERE dish_id = ? AND client_id = ?
+                """,
+                (vote, now, dish_id, client_id),
+            )
+            if updated.rowcount > 0:
+                return True
+        elif vote is None:
+            return True  # nothing to withdraw without a client identity
         conn.execute(
             """
-            INSERT INTO dish_votes (dish_id, dish_name, restaurant_id, vote, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO dish_votes
+                (dish_id, dish_name, restaurant_id, vote, client_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 dish_id,
                 dish["name"],
                 dish["restaurant_id"],
                 vote,
-                datetime.now(timezone.utc).isoformat(),
+                client_id,
+                now,
             ),
         )
     return True

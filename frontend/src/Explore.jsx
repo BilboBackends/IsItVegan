@@ -5,6 +5,7 @@ import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
 import LocationPicker from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
+import ThumbVote from "./ThumbVote.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
@@ -495,6 +496,11 @@ export default function Explore({
               {r.distance.toFixed(1)} mi
             </span>
           )}
+          <ThumbVote
+            restaurantId={r.id}
+            upVotes={r.up_votes}
+            downVotes={r.down_votes}
+          />
           <FavoriteButton
             active={favorites.restaurants.includes(r.id)}
             onClick={() => toggleRestaurant(r.id)}

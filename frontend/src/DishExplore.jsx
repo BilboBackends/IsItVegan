@@ -732,44 +732,57 @@ export default function DishExplore({
             />
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 pb-0.5">
-            {CATEGORIES.map((item) => {
-              const count = categoryCounts[item.key];
-              return (
+          {/* Sidebar is narrow, so both pill groups use fixed grids instead
+              of wrapping rows — even cells read as one control, not débris. */}
+          <div>
+            <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-stone-400">
+              Type
+            </div>
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-50 p-1">
+              {CATEGORIES.map((item) => {
+                const count = categoryCounts[item.key];
+                const active = category === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => {
+                      setCategory(item.key);
+                      if (item.key !== "food") setServingRole("all");
+                    }}
+                    className={`flex flex-col items-center rounded-lg px-1 py-1.5 text-xs font-bold transition ${
+                      active
+                        ? "bg-stone-800 text-white shadow-sm"
+                        : "text-stone-600 hover:bg-white"
+                    }`}
+                  >
+                    {item.label}
+                    <span className={`text-[10px] font-semibold ${active ? "text-stone-300" : "text-stone-400"}`}>
+                      {count.toLocaleString()}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-stone-400">
+              Verdict
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {VERDICTS.map((item) => (
                 <button
                   key={item.key}
-                  onClick={() => {
-                    setCategory(item.key);
-                    if (item.key !== "food") setServingRole("all");
-                  }}
-                  className={`shrink-0 rounded-full px-3 py-1.5 text-sm font-bold transition ${
-                    category === item.key
-                      ? "bg-stone-800 text-white"
-                      : "border border-stone-200 bg-white text-stone-600 hover:border-stone-400"
+                  onClick={() => setVerdict(item.key)}
+                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                    verdict === item.key
+                      ? "bg-emerald-700 text-white shadow-sm"
+                      : "border border-stone-200 bg-white text-stone-600 hover:border-emerald-500"
                   }`}
                 >
                   {item.label}
-                  <span className={`ml-1.5 text-xs ${category === item.key ? "text-stone-300" : "text-stone-400"}`}>
-                    {count.toLocaleString()}
-                  </span>
                 </button>
-              );
-            })}
-          </div>
-          <div className="flex flex-wrap gap-2 pb-0.5">
-            {VERDICTS.map((item) => (
-              <button
-                key={item.key}
-                onClick={() => setVerdict(item.key)}
-                className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold transition ${
-                  verdict === item.key
-                    ? "bg-emerald-700 text-white"
-                    : "border border-stone-200 bg-white text-stone-600 hover:border-emerald-500"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+              ))}
+            </div>
           </div>
           {hasActiveFilters && (
             <div
@@ -969,7 +982,11 @@ export default function DishExplore({
                           {Math.round(dish.confidence * 100)}%
                         </span>
                       )}
-                      <ThumbVote dishId={dish.id} />
+                      <ThumbVote
+                        dishId={dish.id}
+                        upVotes={dish.up_votes}
+                        downVotes={dish.down_votes}
+                      />
                       <FavoriteButton
                         active={favorites.dishes.includes(dish.id)}
                         onClick={() => toggleDish(dish.id)}
