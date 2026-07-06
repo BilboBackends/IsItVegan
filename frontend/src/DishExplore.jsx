@@ -1,9 +1,10 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
+import FilterSidebar from "./FilterSidebar.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
@@ -23,7 +24,6 @@ import {
   dishMatchesQuery,
   dishSearchScore,
   parseDishQuery,
-  queryIntentLabels,
 } from "./dishSearch.js";
 import { loadDishes } from "./dishData.js";
 
@@ -64,6 +64,14 @@ const CATEGORIES = [
   { key: "drink", label: "Drinks" },
 ];
 
+const VERDICT_ORDER = {
+  vegan: 0,
+  likely_vegan: 1,
+  vegan_adaptable: 2,
+  unclear: 3,
+  not_vegan: 4,
+};
+
 function prettyType(type) {
   if (!type) return null;
   return type.replaceAll("_", " ").replace(/\brestaurant\b/g, "").trim() || null;
@@ -103,7 +111,7 @@ export default function DishExplore({
   const [restaurant, setRestaurant] = useState("all");
   const [cuisine, setCuisine] = useState("all");
   const [openFilter, setOpenFilter] = useState("all");
-  const [sortBy, setSortBy] = useState("name");
+  const [sortBy, setSortBy] = useState("recommended");
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
@@ -111,11 +119,13 @@ export default function DishExplore({
   const [selectedDishId, setSelectedDishId] = useState(null);
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   const [mobileView, setMobileView] = useState("list");
-  // Phones: filters collapse behind a disclosure (a swipe strip was
-  // undiscoverable); desktop always shows them inline.
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [isDesktop, setIsDesktop] = useState(
+  // Keep the sidebar expanded once there is room for it. The map/list split
+  // waits until a wider breakpoint so neither pane becomes cramped.
+  const [filtersOpen, setFiltersOpen] = useState(
     () => window.matchMedia("(min-width: 1024px)").matches
+  );
+  const [isDesktop, setIsDesktop] = useState(
+    () => window.matchMedia("(min-width: 1280px)").matches
   );
   const [focus, setFocus] = useState(null);
   const [visibleLimit, setVisibleLimit] = useState(RESULTS_PAGE_SIZE);
@@ -125,7 +135,7 @@ export default function DishExplore({
   const loadMoreRef = useRef(null);
 
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
+    const mq = window.matchMedia("(min-width: 1280px)");
     const onChange = (event) => setIsDesktop(event.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
@@ -242,7 +252,6 @@ export default function DishExplore({
     [dishes]
   );
   const parsedQuery = useMemo(() => parseDishQuery(deferredQuery), [deferredQuery]);
-  const queryIntent = useMemo(() => queryIntentLabels(parsedQuery), [parsedQuery]);
 
   const shown = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
@@ -293,6 +302,14 @@ export default function DishExplore({
       if (category === "food" && servingRole === "all") {
         const roleOrder = Number(a.serving_role === "side") - Number(b.serving_role === "side");
         if (roleOrder) return roleOrder;
+      }
+      if (sortBy === "recommended") {
+        return (
+          (VERDICT_ORDER[a.verdict] ?? 5) - (VERDICT_ORDER[b.verdict] ?? 5) ||
+          (b.rating ?? -1) - (a.rating ?? -1) ||
+          (b.confidence ?? -1) - (a.confidence ?? -1) ||
+          a.name.localeCompare(b.name)
+        );
       }
       if (sortBy === "restaurant") {
         return (
@@ -386,9 +403,9 @@ export default function DishExplore({
       ? null
       : restaurants.find((item) => String(item.id) === restaurant);
   const hasActiveFilters =
-    Boolean(query.trim()) || verdict !== "all" || servingRole !== "all" ||
-    maxPrice > 0 || restaurant !== "all" || cuisine !== "all" ||
-    openFilter !== "all" || maxMiles > 0;
+    verdict !== "all" || servingRole !== "all" || maxPrice > 0 ||
+    restaurant !== "all" || cuisine !== "all" || openFilter !== "all" ||
+    maxMiles > 0;
 
   const mappedRestaurants = useMemo(() => {
     const groups = new Map();
@@ -593,8 +610,18 @@ export default function DishExplore({
     setMaxMiles(0);
   }
 
+  const activeFilterCount =
+    Number(verdict !== "all") +
+    Number(category !== "food") +
+    Number(servingRole !== "all") +
+    Number(maxPrice > 0) +
+    Number(restaurant !== "all") +
+    Number(cuisine !== "all") +
+    Number(openFilter !== "all") +
+    Number(maxMiles > 0);
+
   return (
-    <div className={`mx-auto max-w-5xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
+    <div className={`mx-auto max-w-7xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
       {!embedded && <div className="mb-6">
         <div className="mb-2 inline-flex rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-emerald-800">
           Search every menu at once
@@ -609,50 +636,15 @@ export default function DishExplore({
         </p>
       </div>}
 
-      <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-5 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <FilterSidebar
+          open={filtersOpen}
+          onToggle={() => setFiltersOpen((value) => !value)}
+          activeCount={activeFilterCount}
+        >
         <div className="space-y-3">
-          {/* Phones: full-width search, then a compact collapsible filter
-              section (wrapping — all visible when open). Desktop:
-              sm:contents dissolves the wrapper into the old inline row. */}
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-            <div className="relative w-full sm:min-w-64 sm:w-auto sm:flex-1">
-              <span className="pointer-events-none absolute left-3 top-2.5 text-stone-400">⌕</span>
-              <input
-                autoFocus
-                type="search"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Try ‘vegan pizza’ or ‘high protein breakfast’…"
-                className="w-full rounded-full border border-stone-300 bg-white py-2 pl-9 pr-4 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-              />
-            </div>
-            <button
-              onClick={() => setFiltersOpen((v) => !v)}
-              className="flex w-full items-center justify-between rounded-full border border-stone-200 bg-white px-4 py-1.5 text-xs font-semibold text-stone-600 shadow-sm sm:hidden"
-            >
-              <span>
-                Filters
-                {(restaurant !== "all" ? 1 : 0) +
-                  (cuisine !== "all" ? 1 : 0) +
-                  (servingRole !== "all" ? 1 : 0) +
-                  (maxPrice > 0 ? 1 : 0) +
-                  (maxMiles > 0 ? 1 : 0) >
-                  0 &&
-                  ` · ${
-                    (restaurant !== "all" ? 1 : 0) +
-                    (cuisine !== "all" ? 1 : 0) +
-                    (servingRole !== "all" ? 1 : 0) +
-                    (maxPrice > 0 ? 1 : 0) +
-                    (maxMiles > 0 ? 1 : 0)
-                  } active`}
-              </span>
-              <span className="text-stone-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
-            </button>
-            <div
-              className={`flex flex-wrap items-center gap-2 sm:contents ${
-                filtersOpen ? "" : "max-sm:hidden"
-              }`}
-            >
+          <div className="space-y-2">
+            <div className="space-y-2">
             <select
               value={restaurant}
               onChange={(event) => {
@@ -660,7 +652,7 @@ export default function DishExplore({
                 if (value === "all") setRestaurant("all");
                 else showRestaurantItems(value);
               }}
-              className="max-w-52 rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             >
               <option value="all">All restaurants</option>
               {restaurants.map((item) => (
@@ -670,7 +662,7 @@ export default function DishExplore({
             <select
               value={cuisine}
               onChange={(event) => setCuisine(event.target.value)}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
               aria-label="Filter by cuisine"
             >
               <option value="all">All cuisines</option>
@@ -681,7 +673,7 @@ export default function DishExplore({
             <select
               value={openFilter}
               onChange={(event) => setOpenFilter(event.target.value)}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
               aria-label="Filter by current opening status"
               title="Calculated from listed weekly hours; recent Google status is used as a fallback"
             >
@@ -693,7 +685,7 @@ export default function DishExplore({
               <select
                 value={servingRole}
                 onChange={(e) => setServingRole(e.target.value)}
-                className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+                className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
                 aria-label="Filter by meals or sides"
                 title="Full meals vs sides and small plates; items not yet reclassified count as meals"
               >
@@ -705,7 +697,7 @@ export default function DishExplore({
             <select
               value={maxPrice}
               onChange={(e) => setMaxPrice(Number(e.target.value))}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
               aria-label="Filter by price"
               title="Caps by listed menu price; unpriced items are hidden while a cap is active"
             >
@@ -718,8 +710,9 @@ export default function DishExplore({
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value)}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             >
+              <option value="recommended">Sort: Best match</option>
               <option value="name">Sort: Dish name</option>
               <option value="restaurant">Sort: Restaurant</option>
               <option value="confidence">Sort: Confidence</option>
@@ -730,7 +723,7 @@ export default function DishExplore({
             <select
               value={maxMiles}
               onChange={(event) => setMaxMiles(Number(event.target.value))}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             >
               {RANGES.map((range) => (
                 <option key={range.miles} value={range.miles}>{range.label}</option>
@@ -739,32 +732,14 @@ export default function DishExplore({
             <button
               onClick={useMyLocation}
               disabled={locating}
-              className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 shadow-sm hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
               title={`Distances measured from ${originLabel}`}
             >
               {locating ? "Locating…" : "Near me"}
             </button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-            <span className="font-semibold">Try:</span>
-            {["Pad thai", "Vegan pizza", "High protein breakfast", "Tofu", "Seitan", "Mushroom"].map((example) => (
-              <button
-                key={example}
-                type="button"
-                onClick={() => setQuery(example)}
-                className="rounded-full border border-stone-200 bg-white px-2.5 py-1 hover:border-emerald-400 hover:text-emerald-700"
-              >
-                {example}
-              </button>
-            ))}
-            {queryIntent.length > 0 && (
-              <span className="ml-auto font-medium text-emerald-700">
-                Understood: {queryIntent.join(" · ")}
-              </span>
-            )}
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-0.5">
+          <div className="flex flex-wrap gap-2 pb-0.5">
             {CATEGORIES.map((item) => {
               const count = categoryCounts[item.key];
               return (
@@ -788,7 +763,7 @@ export default function DishExplore({
               );
             })}
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-0.5">
+          <div className="flex flex-wrap gap-2 pb-0.5">
             {VERDICTS.map((item) => (
               <button
                 key={item.key}
@@ -818,16 +793,6 @@ export default function DishExplore({
                   title="Remove restaurant filter"
                 >
                   Restaurant: {selectedRestaurant.name}
-                  <span aria-hidden="true" className="text-base leading-none">×</span>
-                </button>
-              )}
-              {query.trim() && (
-                <button
-                  onClick={() => setQuery("")}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-                  title="Remove search filter"
-                >
-                  Search: “{query.trim()}”
                   <span aria-hidden="true" className="text-base leading-none">×</span>
                 </button>
               )}
@@ -900,13 +865,37 @@ export default function DishExplore({
             </div>
           )}
         </div>
+      </FilterSidebar>
+
+      <div className="min-w-0 flex-1">
+      <div className="relative mb-4">
+        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
+        <input
+          autoFocus
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search dishes, ingredients, cuisines, or restaurants…"
+          className="w-full rounded-2xl border border-stone-300 bg-white py-3 pl-12 pr-11 text-base shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          aria-label="Search all menu items"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg leading-none text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            aria-label="Clear search"
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
         onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
       >
         {mobileView === "list" ? "🗺 Map" : "☰ List"}
       </button>
@@ -917,7 +906,7 @@ export default function DishExplore({
         </div>
       )}
 
-      <div className="lg:grid lg:grid-cols-2 lg:items-start lg:gap-5">
+      <div className="xl:grid xl:grid-cols-2 xl:items-start xl:gap-5">
         <div className={!isDesktop && mobileView === "map" ? "hidden" : ""}>
           {loading ? (
             <div className="p-12 text-center text-stone-400">Loading the menu database…</div>
@@ -943,11 +932,23 @@ export default function DishExplore({
             )}
           </div>
           <ol className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm divide-y divide-stone-100">
-            {visibleDishes.map((dish) => {
+            {visibleDishes.map((dish, index) => {
               const details = splitReasoning(dish.reasoning);
               const cuisine = prettyType(dish.primary_type);
+              const isSide = dish.serving_role === "side";
+              const previousWasSide = visibleDishes[index - 1]?.serving_role === "side";
+              const showRoleHeading =
+                category === "food" &&
+                servingRole === "all" &&
+                (index === 0 || isSide !== previousWasSide);
               return (
-                <li key={dish.id} className="px-4 py-4 transition hover:bg-stone-50 sm:px-5">
+                <Fragment key={dish.id}>
+                {showRoleHeading && (
+                  <li className="bg-stone-50 px-4 py-2 text-xs font-extrabold uppercase tracking-wider text-stone-500 sm:px-5">
+                    {isSide ? "Sides & small plates" : "Meals"}
+                  </li>
+                )}
+                <li className="px-4 py-4 transition hover:bg-stone-50 sm:px-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -1040,6 +1041,7 @@ export default function DishExplore({
                     </button>
                   </div>
                 </li>
+                </Fragment>
               );
             })}
           </ol>
@@ -1055,17 +1057,19 @@ export default function DishExplore({
           )}
         </div>
 
-        <div className={`${!isDesktop && mobileView === "list" ? "hidden" : ""} lg:sticky lg:top-32`}>
+        <div className={`${!isDesktop && mobileView === "list" ? "hidden" : ""} xl:sticky xl:top-32`}>
           <div className="relative z-0 isolate">
             <div
               ref={mapEl}
-              className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm lg:h-[calc(100vh-11rem)]"
+              className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm xl:h-[calc(100vh-11rem)]"
             />
             <div className="pointer-events-none absolute bottom-4 left-4 z-[500] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 text-xs font-medium text-stone-600 shadow-md">
               Pin numbers show matching menu items
             </div>
           </div>
         </div>
+      </div>
+      </div>
       </div>
 
       <p className="py-5 text-center text-xs text-stone-400">

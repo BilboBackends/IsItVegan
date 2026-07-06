@@ -111,6 +111,38 @@ def test_stale_learned_route_falls_back_to_discovery(monkeypatch):
     assert result.menu_url == "https://learning-cafe.example/new-menu"
 
 
+def test_weak_single_section_learned_route_forces_rediscovery(monkeypatch):
+    def unexpected_learned_fetch(*args, **kwargs):
+        raise AssertionError("weak /specials profile must be invalidated before fetching")
+
+    monkeypatch.setattr(scraper, "_collect_known_headless", unexpected_learned_fetch)
+    monkeypatch.setattr(
+        scraper,
+        "_collect_http",
+        lambda url, timeout: (
+            [("https://learning-cafe.example/menu", MENU_TEXT)],
+            [],
+            [],
+            scraper._Fetched(html="<html></html>", status_code=200),
+        ),
+    )
+
+    result = scraper.scrape_menu_text(
+        "https://learning-cafe.example/location/1",
+        use_headless=False,
+        crawl_context={
+            "crawl_method": "headless",
+            "menu_urls": ["https://learning-cafe.example/specials"],
+            "menu_score": 0.706,
+            "char_count": 2792,
+        },
+    )
+
+    assert result.ok
+    assert result.used_learned_context is False
+    assert result.menu_url == "https://learning-cafe.example/menu"
+
+
 def test_ingest_passes_and_refreshes_learned_context(monkeypatch):
     profile = {
         "crawl_method": "http",

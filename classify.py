@@ -299,6 +299,13 @@ def run(
             for d in result.dishes:
                 _persist_dish(r, source, result, d, classified_at)
 
+        merged_duplicates = db.deduplicate_dishes_for_restaurant(r["id"])
+        if merged_duplicates:
+            print(
+                f"         merged {len(merged_duplicates)} duplicate dish "
+                f"group(s) differing only by formatting"
+            )
+
         # Longitudinal record: how this menu drifted since last time. First
         # classifications are skipped — 150 "added" rows say nothing.
         if prior:

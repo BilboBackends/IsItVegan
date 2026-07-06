@@ -234,6 +234,198 @@ def _click_section_tabs(page, tab_words: tuple[str, ...]) -> list[str]:
     return snapshots
 
 
+def _browser_storage_values(page) -> list[str]:
+    """Return bounded browser-storage values without logging keys or secrets."""
+    try:
+        values = page.evaluate(
+            """
+            () => {
+              const values = [];
+              for (const storage of [window.localStorage, window.sessionStorage]) {
+                for (let i = 0; i < storage.length && values.length < 40; i++) {
+                  const value = storage.getItem(storage.key(i));
+                  if (value && value.length >= 100 && value.length <= 1500000) values.push(value);
+                }
+              }
+              return values;
+            }
+            """
+        )
+    except PlaywrightError:
+        return []
+    # A malicious/noisy site cannot make us parse an unbounded storage dump.
+    total = 0
+    bounded: list[str] = []
+    for value in values or []:
+        if not isinstance(value, str) or total + len(value) > 2_000_000:
+            continue
+        bounded.append(value)
+        total += len(value)
+    return bounded
+
+
+def _append_client_state_menu(page, html: str) -> str:
+    """Attach validated menu records recovered from rendered browser state."""
+    try:
+        from structured_menu import extract_client_state_menu
+
+        menu = extract_client_state_menu(_browser_storage_values(page))
+    except Exception:
+        menu = None
+    if menu is None:
+        return html
+    from html import escape
+
+    rendered = "".join(f"<p>{escape(line)}</p>" for line in menu.text.splitlines())
+    return html + f'\n<div id="__browser_storage_menu__">{rendered}</div>'
+
+
+def _render_page(
+    page,
+    url: str,
+    *,
+    timeout_ms: int,
+    settle_ms: int,
+    tab_words: tuple[str, ...],
+) -> tuple[str | None, str | None]:
+    """Render one URL on an existing page, retaining its browser context."""
+    try:
+        # "domcontentloaded" then a settle wait is more reliable than
+        # "networkidle", which some ad/analytics-heavy sites never reach.
+        page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+        try:
+            page.wait_for_load_state("networkidle", timeout=settle_ms)
+        except PlaywrightTimeout:
+            pass
+        page.wait_for_timeout(settle_ms)
+
+        for _ in range(5):
+            title = (page.title() or "").lower()
+            if "just a moment" not in title and "attention required" not in title:
+                break
+            page.wait_for_timeout(3_000)
+
+        banked: list[str] = []
+        banked_seen: set[str] = set()
+
+        def _bank(lines: list[str]) -> None:
+            banked.extend(_new_segment_lines(lines, banked_seen))
+            banked_seen.update(lines)
+
+        def _bank_body() -> None:
+            try:
+                body_text = page.inner_text("body")
+            except PlaywrightError:
+                return
+            _bank([line.strip() for line in body_text.splitlines() if line.strip()])
+
+        _bank_body()
+        stalls = 0
+        for _ in range(14):
+            seen_before = len(banked_seen)
+            page.mouse.wheel(0, 1_800)
+            page.wait_for_timeout(650)
+            _bank_body()
+            stalls = stalls + 1 if len(banked_seen) == seen_before else 0
+            if stalls >= 3:
+                break
+
+        html = ""
+        for _ in range(3):
+            try:
+                html = page.content()
+                break
+            except PlaywrightError:
+                page.wait_for_timeout(1_500)
+        if not html:
+            html = page.content()
+
+        if tab_words:
+            try:
+                body_text_len = len(page.inner_text("body"))
+            except PlaywrightError:
+                body_text_len = 0
+            if body_text_len < 6_000:
+                for snapshot in _click_section_tabs(page, tab_words):
+                    _bank(_text_lines(snapshot))
+                try:
+                    html = page.content()
+                except PlaywrightError:
+                    pass
+
+        if banked:
+            html += _overflow_div(html, banked)
+        # Do this last: category interaction/navigation can populate storage
+        # even when no single DOM snapshot contains the complete menu.
+        html = _append_client_state_menu(page, html)
+        return html, None
+    except PlaywrightTimeout:
+        return None, f"Headless timeout after {timeout_ms} ms"
+    except PlaywrightError as exc:
+        return None, f"Headless error: {exc}"
+    except Exception as exc:
+        return None, f"Headless unavailable: {exc}"
+
+
+class RenderedSession:
+    """One isolated browser context reused across a restaurant crawl."""
+
+    def __init__(self):
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    def __enter__(self):
+        if not _AVAILABLE:
+            raise RuntimeError("Playwright not installed")
+        self._playwright = sync_playwright().start()
+        try:
+            self._browser = _launch(self._playwright)
+            self._context = self._browser.new_context(
+                user_agent=_USER_AGENT,
+                viewport={"width": 1366, "height": 768},
+            )
+            self._page = self._context.new_page()
+        except Exception:
+            self.close()
+            raise
+        return self
+
+    def close(self) -> None:
+        for resource in (self._context, self._browser):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+        self._page = self._context = self._browser = self._playwright = None
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
+
+    def fetch(
+        self,
+        url: str,
+        *,
+        timeout_ms: int = 45_000,
+        settle_ms: int = 3_000,
+        tab_words: tuple[str, ...] = (),
+    ) -> tuple[str | None, str | None]:
+        return _render_page(
+            self._page,
+            url,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            tab_words=tab_words,
+        )
+
+
 def fetch_rendered_html(
     url: str,
     *,
@@ -241,126 +433,16 @@ def fetch_rendered_html(
     settle_ms: int = 3_000,
     tab_words: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None]:
-    """Load `url` in a headless browser and return (rendered_html, error).
-
-    timeout_ms bounds navigation; settle_ms is an extra wait after load for
-    late client-side rendering (menus often populate after the initial paint).
-    Waits through Cloudflare bot-check interstitials when they auto-resolve.
-
-    If tab_words is given and the rendered page has little visible text, the
-    page's menu-section tabs are clicked one by one and every snapshot is
-    concatenated into the returned HTML (see _click_section_tabs).
-    """
+    """Render one standalone URL in a fresh, isolated browser context."""
     if not _AVAILABLE:
         return None, "Playwright not installed"
-
     try:
-        with sync_playwright() as p:
-            browser = _launch(p)
-            try:
-                page = browser.new_page(
-                    user_agent=_USER_AGENT,
-                    viewport={"width": 1366, "height": 768},
-                )
-                # "domcontentloaded" then a settle wait is more reliable than
-                # "networkidle", which some ad/analytics-heavy sites never hit.
-                page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_load_state("networkidle", timeout=settle_ms)
-                except PlaywrightTimeout:
-                    pass  # good enough; grab what rendered
-                page.wait_for_timeout(settle_ms)
-
-                # Cloudflare-style interstitial: give the JS challenge time to
-                # auto-resolve (it usually does with a real Chrome channel).
-                for _ in range(5):
-                    try:
-                        title = (page.title() or "").lower()
-                    except PlaywrightError:
-                        break
-                    if "just a moment" not in title and "attention required" not in title:
-                        break
-                    page.wait_for_timeout(3_000)
-
-                # Lazy AND virtualized lists both defeat single snapshots:
-                # lazy content isn't in the DOM until you scroll to it, and
-                # virtualized lists REMOVE items that scroll out of view — so
-                # no single scroll position ever contains the whole menu.
-                # Scroll in steps, banking every text segment seen; content
-                # gone from the final DOM gets re-attached to the returned
-                # HTML (see _overflow_div / _new_segment_lines).
-                banked: list[str] = []
-                banked_seen: set[str] = set()
-
-                def _bank(lines: list[str]) -> None:
-                    banked.extend(_new_segment_lines(lines, banked_seen))
-                    banked_seen.update(lines)
-
-                def _bank_body() -> None:
-                    try:
-                        body_text = page.inner_text("body")
-                    except PlaywrightError:
-                        return
-                    _bank([l.strip() for l in body_text.splitlines() if l.strip()])
-
-                _bank_body()
-                stalls = 0
-                for _ in range(14):
-                    seen_before = len(banked_seen)
-                    try:
-                        page.mouse.wheel(0, 1_800)
-                    except PlaywrightError:
-                        break
-                    page.wait_for_timeout(650)
-                    _bank_body()
-                    stalls = stalls + 1 if len(banked_seen) == seen_before else 0
-                    if stalls >= 3:
-                        break
-                # Sites that redirect (e.g. Clover) may still be navigating when
-                # we ask for content; retry a couple times after a short wait.
-                html = ""
-                for _ in range(3):
-                    try:
-                        html = page.content()
-                        break
-                    except PlaywrightError:
-                        page.wait_for_timeout(1_500)
-                if not html:
-                    html = page.content()  # last attempt; let it raise if truly stuck
-
-                # Sparse page + tab words provided: likely a tabbed menu widget
-                # showing one section at a time — click through the sections
-                # and keep every snapshot.
-                if tab_words:
-                    try:
-                        body_text_len = len(page.inner_text("body"))
-                    except PlaywrightError:
-                        body_text_len = 0
-                    # 6k, not lower: scroll-banking above already fattens the
-                    # body, and a page can look rich while showing one
-                    # category of fifteen (Square Online's "Top Menu Items").
-                    if body_text_len < 6_000:
-                        for snapshot in _click_section_tabs(page, tab_words):
-                            _bank(_text_lines(snapshot))
-                        # Tab/category navigation may have left the page on a
-                        # different section — refresh the base snapshot.
-                        try:
-                            html = page.content()
-                        except PlaywrightError:
-                            pass
-
-                # Re-attach banked content the final DOM no longer contains
-                # (virtualized away, or shown only on other tabs/categories)
-                # so extraction sees everything that was ever on screen.
-                if banked:
-                    html += _overflow_div(html, banked)
-            finally:
-                browser.close()
-    except PlaywrightTimeout:
-        return None, f"Headless timeout after {timeout_ms} ms"
-    except PlaywrightError as exc:
-        return None, f"Headless error: {exc}"
-    except Exception as exc:  # chromium missing, launch failure, etc.
+        with RenderedSession() as session:
+            return session.fetch(
+                url,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+                tab_words=tab_words,
+            )
+    except Exception as exc:
         return None, f"Headless unavailable: {exc}"
-
-    return html, None

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishModal from "./DishModal.jsx";
+import FilterSidebar from "./FilterSidebar.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
@@ -99,7 +100,9 @@ export default function Explore({
   const [view, setView] = useState("list"); // mobile toggle; desktop shows both
   // Phones: filters collapse behind a disclosure (a swipe strip was
   // undiscoverable); desktop always shows them inline.
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(
+    () => window.matchMedia("(min-width: 1024px)").matches
+  );
   const [isDesktop, setIsDesktop] = useState(
     () => window.matchMedia("(min-width: 1024px)").matches
   );
@@ -611,6 +614,11 @@ export default function Explore({
     (sum, restaurant) => sum + (restaurant.vegan_sides || 0),
     0
   );
+  const activeFilterCount =
+    Number(cuisine !== "all") +
+    Number(openFilter !== "all") +
+    Number(priceTier > 0) +
+    Number(maxMiles > 0);
 
   return (
     <div className={`mx-auto max-w-7xl px-4 ${embedded ? "pb-8 pt-5" : "py-8"}`}>
@@ -630,49 +638,16 @@ export default function Explore({
         </p>
       </div>}
 
-      {/* Filter bar */}
-      <div className="z-10 sm:sticky sm:top-[113px] -mx-4 mb-6 border-y border-stone-200/70 bg-[#faf8f4]/95 px-4 py-3 backdrop-blur">
-        {/* Phones: full-width search, then a compact collapsible filter
-            section (wrapping — everything visible when open, nothing hidden
-            behind a scroll). Desktop: sm:contents dissolves the wrapper so
-            the layout is exactly the old inline flex-wrap row. */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search name, cuisine, address…"
-            className="w-full sm:max-w-xs rounded-full border border-stone-300 bg-white px-4 py-2 text-sm shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-          />
-          <button
-            onClick={() => setFiltersOpen((v) => !v)}
-            className="flex w-full items-center justify-between rounded-full border border-stone-200 bg-white px-4 py-1.5 text-xs font-semibold text-stone-600 shadow-sm sm:hidden"
-          >
-            <span>
-              Filters
-              {(cuisine !== "all" ? 1 : 0) +
-                (openFilter !== "all" ? 1 : 0) +
-                (priceTier > 0 ? 1 : 0) +
-                (maxMiles > 0 ? 1 : 0) >
-                0 &&
-                ` · ${
-                  (cuisine !== "all" ? 1 : 0) +
-                  (openFilter !== "all" ? 1 : 0) +
-                  (priceTier > 0 ? 1 : 0) +
-                  (maxMiles > 0 ? 1 : 0)
-                } active`}
-            </span>
-            <span className="text-stone-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
-          </button>
-          <div
-            className={`flex flex-wrap items-center gap-2 sm:contents ${
-              filtersOpen ? "" : "max-sm:hidden"
-            }`}
-          >
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+        <FilterSidebar
+          open={filtersOpen}
+          onToggle={() => setFiltersOpen((value) => !value)}
+          activeCount={activeFilterCount}
+        >
           <select
             value={cuisine}
             onChange={(event) => setCuisine(event.target.value)}
-            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             aria-label="Filter by cuisine"
           >
             <option value="all">All cuisines</option>
@@ -683,7 +658,7 @@ export default function Explore({
           <select
             value={openFilter}
             onChange={(event) => setOpenFilter(event.target.value)}
-            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             aria-label="Filter by current opening status"
             title="Calculated from listed weekly hours; recent Google status is used as a fallback"
           >
@@ -694,7 +669,7 @@ export default function Explore({
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value)}
-            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
           >
             {SORTS.map((s) => (
               <option key={s.key} value={s.key}>
@@ -705,7 +680,7 @@ export default function Explore({
           <select
             value={maxMiles}
             onChange={(e) => setMaxMiles(Number(e.target.value))}
-            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
           >
             {RANGES.map((r) => (
               <option key={r.miles} value={r.miles}>
@@ -716,7 +691,7 @@ export default function Explore({
           <select
             value={priceTier}
             onChange={(e) => setPriceTier(Number(e.target.value))}
-            className="rounded-full border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm"
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
             aria-label="Filter by price level"
             title="Google price level; restaurants without one are hidden while a price filter is active"
           >
@@ -726,19 +701,41 @@ export default function Explore({
               </option>
             ))}
           </select>
-          <div className="flex items-center gap-1.5 whitespace-nowrap">
+          <div>
             <button
               onClick={useMyLocation}
               disabled={locating}
-              className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-medium text-stone-700 shadow-sm hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
               title={`Distances measured from ${originLabel}`}
             >
               {locating ? "Locating…" : "📍 Near me"}
             </button>
-            <span className="text-xs text-stone-400">from {originLabel}</span>
+            <div className="mt-1 text-center text-xs text-stone-400">Distances from {originLabel}</div>
           </div>
-          </div>
-        </div>
+        </FilterSidebar>
+
+        <div className="min-w-0 flex-1">
+      <div className="relative mb-4">
+        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
+        <input
+          autoFocus
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search restaurants, cuisines, or addresses…"
+          className="w-full rounded-2xl border border-stone-300 bg-white py-3 pl-12 pr-11 text-base shadow-sm outline-none placeholder:text-stone-400 focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+          aria-label="Search restaurants"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full px-2 py-1 text-lg leading-none text-stone-400 hover:bg-stone-100 hover:text-stone-700"
+            aria-label="Clear search"
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
@@ -821,6 +818,8 @@ export default function Explore({
               ))}
             </div>
           </div>
+        </div>
+      </div>
         </div>
       </div>
 

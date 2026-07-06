@@ -32,7 +32,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from headless import fetch_rendered_html, is_available
+from headless import RenderedSession, is_available
 from menu_score import MENU_THRESHOLD, score_menu_text
 from structured_menu import extract_structured_menu_text
 
@@ -108,7 +108,8 @@ _TAB_WORDS = (
 _SECTION_PATH_RE_WORDS = (
     "breakfast", "lunch", "dinner", "brunch", "sandwiches", "salads", "soups",
     "wraps", "desserts", "deserts", "burgers", "appetizers", "starters",
-    "sides", "beverages", "drinks", "specials",
+    "sides", "beverages", "drinks", "specials", "entrees", "entrées", "mains",
+    "pasta", "kids", "family-style-meals",
 )
 
 # Links we never follow even if they look menu-ish (socials / maps / forms).
@@ -150,6 +151,10 @@ _MAX_HTTP_FETCHES = 12
 # Cap on combined kept text across pages — bounds classification cost.
 _MAX_COMBINED_CHARS = 50_000
 
+_STRUCTURED_MENU_MARKER_RE = re.compile(
+    r"\[structured-menu products=(\d+) categories=(\d+)\]"
+)
+
 # Hosts that are social profiles, not restaurant websites. Google sometimes
 # lists these as the "website"; there is no menu to scrape behind them.
 _SOCIAL_HOSTS = (
@@ -183,6 +188,13 @@ class ScrapeResult:
     crawl_method: str | None = None  # http | headless | mock
     used_learned_context: bool = False
     content_hash: str | None = None
+    # Structured client-state evidence is also a completeness signal: a page
+    # whose URL names one section can still contain the entire menu payload.
+    structured_item_count: int = 0
+    structured_category_count: int = 0
+    completeness_error: str | None = None
+    # Bounded, secret-free candidate decision data for troubleshooting.
+    diagnostics: list[dict] = field(default_factory=list)
 
 
 def _extract_text(html: str) -> str:
@@ -221,6 +233,14 @@ class _Fetched:
     pdf_bytes: bytes | None = None  # set when the response is a PDF
     error: str | None = None
     status_code: int | None = None
+
+
+def _structured_counts(text: str) -> tuple[int, int]:
+    matches = _STRUCTURED_MENU_MARKER_RE.findall(text or "")
+    return (
+        max((int(items) for items, _ in matches), default=0),
+        max((int(categories) for _, categories in matches), default=0),
+    )
 
 
 def _fetch(client: httpx.Client, url: str) -> _Fetched:
@@ -461,62 +481,65 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
     """
     # tab_words on the landing too: for single-page ordering sites (Square
     # Online et al.) the landing IS the menu, with category tabs/fragments.
-    landing_html, err = fetch_rendered_html(url, tab_words=_TAB_WORDS)
-    if landing_html is None:
+    try:
+        # One context per restaurant is essential for chain menus: the landing
+        # page often selects a location via cookies/storage that followed menu
+        # pages require. Different restaurants still receive isolated sessions.
+        with RenderedSession() as session:
+            landing_html, _ = session.fetch(url, tab_words=_TAB_WORDS)
+            if landing_html is None:
+                return [], []
+
+            menu_links, third_party, tp_urls = _find_menu_links(landing_html, url)
+            if not menu_links and not tp_urls:
+                llm_link = _llm_menu_link(landing_html, url)
+                if llm_link:
+                    menu_links = [llm_link]
+
+            def _norm(u: str) -> str:
+                return u.split("#")[0].rstrip("/")
+
+            max_renders = 9
+            pages: list[tuple[str, str]] = _pages_from_html(url, landing_html)
+            # Some location pages populate the complete catalog in browser
+            # storage immediately. Once validated, extra category renders add
+            # latency and duplicates but no coverage.
+            structured_counts = [
+                _structured_counts(candidate_text) for _, candidate_text in pages
+            ]
+            if any(items >= 8 and categories >= 2 for items, categories in structured_counts):
+                return pages, third_party
+            queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links + tp_urls[:2]]
+            seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
+            renders = 0
+
+            while queue and renders < max_renders:
+                link, hop = queue.pop(0)
+                page_html, _ = session.fetch(
+                    link, settle_ms=6_000, tab_words=_TAB_WORDS
+                )
+                renders += 1
+                if page_html is None:
+                    continue
+                page_candidates = _pages_from_html(link, page_html)
+                pages.extend(page_candidates)
+                best_here = max(
+                    score_menu_text(candidate_text).score
+                    for _, candidate_text in page_candidates
+                )
+                if hop == 1 and best_here < 0.75:
+                    more_menu, _tp, more_tp_urls = _find_menu_links(page_html, link)
+                    candidates = sorted(
+                        more_menu + more_tp_urls,
+                        key=lambda candidate: 0 if "menu" in candidate.lower() else 1,
+                    )
+                    for nxt in candidates[:2]:
+                        if _norm(nxt) not in seen:
+                            seen.add(_norm(nxt))
+                            queue.append((nxt, 2))
+            return pages, third_party
+    except Exception:
         return [], []
-
-    menu_links, third_party, tp_urls = _find_menu_links(landing_html, url)
-    if not menu_links and not tp_urls:
-        llm_link = _llm_menu_link(landing_html, url)
-        if llm_link:
-            menu_links = [llm_link]
-
-    # Third-party ordering pages (Toast/Clover/Sauce...) render their menu in
-    # the DOM once the real-Chrome launch clears their bot wall — follow them
-    # like any other menu link (capped: they're slow). Ordering platforms often
-    # interpose a marketing page before the actual menu, so pages that still
-    # don't look like a menu get ONE more hop of menu-like links.
-    def _norm(u: str) -> str:
-        return u.split("#")[0].rstrip("/")
-
-    max_renders = 9
-    pages: list[tuple[str, str]] = _pages_from_html(url, landing_html)
-    queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links + tp_urls[:2]]
-    seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
-    renders = 0
-
-    while queue and renders < max_renders:
-        link, hop = queue.pop(0)
-        # Ordering-platform SPAs can take several seconds to paint the menu;
-        # give followed pages a longer settle than the landing. Followed pages
-        # are menu candidates, so sparse ones get their section tabs clicked.
-        page_html, _ = fetch_rendered_html(link, settle_ms=6_000, tab_words=_TAB_WORDS)
-        renders += 1
-        if page_html is None:
-            continue
-        page_candidates = _pages_from_html(link, page_html)
-        pages.extend(page_candidates)
-        # Expand another hop unless this page already looks confidently like a
-        # menu (ordering platforms often score mid-range on marketing copy).
-        # A structured pseudo-page counts: embedded menu data IS the menu.
-        best_here = max(
-            score_menu_text(candidate_text).score
-            for _, candidate_text in page_candidates
-        )
-        if hop == 1 and best_here < 0.75:
-            more_menu, _tp, more_tp_urls = _find_menu_links(page_html, link)
-            # Links literally containing "menu" first — on ordering sites every
-            # URL contains /order/, so the generic hint matches everything.
-            candidates = sorted(
-                more_menu + more_tp_urls,
-                key=lambda u: 0 if "menu" in u.lower() else 1,
-            )
-            for nxt in candidates[:2]:
-                if _norm(nxt) not in seen:
-                    seen.add(_norm(nxt))
-                    queue.append((nxt, 2))
-
-    return pages, third_party
 
 
 def _profile_urls(crawl_context: dict | None) -> list[str]:
@@ -564,21 +587,36 @@ def _collect_known_http(
     return pages
 
 
-def _collect_known_headless(urls: list[str]) -> list[tuple[str, str]]:
-    """Render previously validated JS menu pages directly."""
+def _collect_known_headless(home_url: str, urls: list[str]) -> list[tuple[str, str]]:
+    """Render learned pages after priming their location-sensitive home page."""
     pages: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for saved_url in urls[:9]:
-        fetch_url = saved_url.removesuffix("#structured-menu")
-        normalized = fetch_url.rstrip("/")
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        html, _ = fetch_rendered_html(
-            fetch_url, settle_ms=6_000, tab_words=_TAB_WORDS
-        )
-        if html is not None:
-            pages.extend(_pages_from_html(fetch_url, html))
+    try:
+        with RenderedSession() as session:
+            # Establish location/cookie state. When the home/location URL is
+            # itself the learned source, reuse this render instead of fetching
+            # the identical page twice.
+            home_html, _ = session.fetch(home_url, tab_words=())
+            home_normalized = home_url.removesuffix("#structured-menu").rstrip("/")
+            learned_normalized = {
+                saved.removesuffix("#structured-menu").rstrip("/") for saved in urls
+            }
+            if home_html is not None and home_normalized in learned_normalized:
+                pages.extend(_pages_from_html(home_url, home_html))
+                seen.add(home_normalized)
+            for saved_url in urls[:9]:
+                fetch_url = saved_url.removesuffix("#structured-menu")
+                normalized = fetch_url.rstrip("/")
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                html, _ = session.fetch(
+                    fetch_url, settle_ms=6_000, tab_words=_TAB_WORDS
+                )
+                if html is not None:
+                    pages.extend(_pages_from_html(fetch_url, html))
+    except Exception:
+        return []
     return pages
 
 
@@ -594,10 +632,22 @@ def _try_learned_context(
     method = (crawl_context or {}).get("crawl_method")
     if not urls or method not in {"http", "headless"}:
         return None
+    # Invalidate old weak single-section routes (the Olive Garden /specials
+    # failure). A genuinely complete structured capture is much larger and
+    # will survive this check on its next learned run.
+    if (
+        len(urls) == 1
+        and _is_single_section_url(urls[0])
+        and (
+            float((crawl_context or {}).get("menu_score") or 0) < 0.75
+            or int((crawl_context or {}).get("char_count") or 0) < 5_000
+        )
+    ):
+        return None
     if method == "headless":
         if not use_headless or not is_available():
             return None
-        pages = _collect_known_headless(urls)
+        pages = _collect_known_headless(home_url, urls)
     else:
         pages = _collect_known_http(urls, timeout)
     if not pages:
@@ -610,6 +660,7 @@ def _try_learned_context(
         crawl_method=method,
         used_learned_context=True,
     )
+    result = _validate_completeness(result)
     if not result.ok:
         return None
     # A JS widget can render only its first category and still look menu-like.
@@ -623,6 +674,45 @@ def _try_learned_context(
         and result.char_count < previous_chars * 0.55
     ):
         return None
+    return result
+
+
+def _validate_completeness(result: ScrapeResult) -> ScrapeResult:
+    """Reject partial captures uniformly across every transport/route."""
+    if not result.ok:
+        return result
+    # A validated multi-category structured payload is stronger evidence than
+    # the URL path (many SPAs expose their entire catalog at /menu/entrees).
+    if result.structured_item_count >= 8 and result.structured_category_count >= 2:
+        return result
+
+    kept_urls = list(dict.fromkeys(url for url, _ in result.pages))
+    issue = None
+    if len(kept_urls) == 1 and _is_single_section_url(kept_urls[0]):
+        issue = f"only one menu section captured ({kept_urls[0]})"
+    else:
+        lowered = result.text.lower()
+        order_markers = (
+            "add to cart", "checkout", "view cart", "order online",
+            "minimum order", "items in cart",
+        )
+        marker_count = sum(marker in lowered for marker in order_markers)
+        price_count = score_menu_text(result.text).price_count
+        if price_count < 8 and marker_count >= 2:
+            issue = (
+                "partially captured ordering page "
+                f"({price_count} prices alongside order/cart chrome)"
+            )
+
+    if issue is None:
+        return result
+    result.ok = False
+    result.is_menu = False
+    result.completeness_error = issue
+    result.error = f"Incomplete menu: {issue}. Existing validated menu preserved."
+    result.diagnostics.append(
+        {"stage": "completeness", "decision": "reject", "reason": issue}
+    )
     return result
 
 
@@ -644,13 +734,13 @@ def scrape_menu_text(
     Pass mock_html to skip the network entirely (no link-following, no headless).
     """
     if mock_html is not None:
-        return _finish(
+        return _validate_completeness(_finish(
             url,
             [(url, _extract_text(mock_html))],
             [],
             status_code=None,
             crawl_method="mock",
-        )
+        ))
 
     # Google sometimes lists a social profile as the "website". There is no
     # menu behind these (and their text scores menu-ish enough to slip
@@ -685,6 +775,7 @@ def scrape_menu_text(
             status_code=landing.status_code,
             crawl_method="http",
         )
+        http_result = _validate_completeness(http_result)
         # A merely-adequate score with third-party ordering links around is
         # suspicious (often homepage/marketing copy scoring on section names,
         # not the menu) — still try headless, which renders the ordering
@@ -732,6 +823,7 @@ def scrape_menu_text(
         status_code=200,
         crawl_method="headless",
     )
+    headless_result = _validate_completeness(headless_result)
     # Prefer a real menu; when both attempts found one, keep whichever
     # captured more of it (headless often finds sections HTTP can't see,
     # but HTTP sometimes reaches PDF menus headless doesn't).
@@ -768,6 +860,19 @@ def _finish(
 
     # Score each page; pick the highest menu score.
     scored = [(page_url, text, score_menu_text(text)) for page_url, text in pages]
+    diagnostics = [
+        {
+            "stage": crawl_method,
+            "url": page_url,
+            "chars": len(text),
+            "score": score.score,
+            "prices": score.price_count,
+            "food_words": score.food_word_hits,
+            "sections": score.section_hits,
+            "decision": "candidate",
+        }
+        for page_url, text, score in scored
+    ]
     best_url, best_text, best = max(scored, key=lambda t: t[2].score)
 
     if len(best_text) < _MIN_USEFUL_CHARS:
@@ -787,6 +892,7 @@ def _finish(
             is_menu=False,
             error=f"Too little text ({len(best_text)} chars) — {hint}. "
             "Photo fallback candidate.",
+            diagnostics=diagnostics,
         )
 
     if not best.is_menu:
@@ -805,6 +911,7 @@ def _finish(
             menu_score=best.score,
             is_menu=False,
             error=f"No real menu found (score {best.score:.2f}): {best.reason}.{hint}",
+            diagnostics=diagnostics,
         )
 
     # Keep every menu-like page, best first, deduped (identical or contained
@@ -826,6 +933,13 @@ def _finish(
         combined = "\n\n".join(f"[page: {u}]\n{t}" for u, t in kept)
     else:
         combined = best_text
+
+    structured_items, structured_categories = _structured_counts(combined)
+    kept_urls = {page_url for page_url, _ in kept}
+    for diagnostic in diagnostics:
+        diagnostic["decision"] = (
+            "keep" if diagnostic.get("url") in kept_urls else "reject-lower-quality"
+        )
 
     normalized_parts = sorted(
         {
@@ -851,4 +965,7 @@ def _finish(
         crawl_method=crawl_method,
         used_learned_context=used_learned_context,
         content_hash=content_hash,
+        structured_item_count=structured_items,
+        structured_category_count=structured_categories,
+        diagnostics=diagnostics,
     )

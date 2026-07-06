@@ -17,12 +17,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import scraper  # noqa: E402
 from scraper import (  # noqa: E402
     ScrapeResult,
+    _collect_headless,
     _find_menu_links,
     _finish,
     _is_single_section_url,
     _looks_menu_like,
+    _validate_completeness,
     scrape_menu_text,
 )
 
@@ -130,6 +133,97 @@ def test_finish_rejects_marketing_copy():
     )
     assert not result.ok
     assert not result.pages
+
+
+def test_single_section_result_cannot_be_learned_as_complete_menu():
+    result = _validate_completeness(
+        _finish(
+            "https://x.com/",
+            [("https://x.com/specials", MENU_TEXT_A)],
+            [],
+            status_code=200,
+            crawl_method="headless",
+        )
+    )
+    assert not result.ok
+    assert "only one menu section" in (result.completeness_error or "")
+
+
+def test_structured_multicategory_payload_overrides_section_url_warning():
+    text = "[structured-menu products=25 categories=4]\n" + MENU_TEXT_A
+    result = _validate_completeness(
+        _finish(
+            "https://x.com/",
+            [("https://x.com/menu/entrees", text)],
+            [],
+            status_code=200,
+            crawl_method="headless",
+        )
+    )
+    assert result.ok
+    assert result.structured_item_count == 25
+    assert result.structured_category_count == 4
+
+
+def test_headless_link_following_reuses_one_browser_session(monkeypatch):
+    instances = []
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def fetch(self, url, **kwargs):
+            self.calls.append(url)
+            if len(self.calls) == 1:
+                return '<html><body><a href="/menu">Menu</a></body></html>', None
+            return f"<html><body><pre>{MENU_TEXT_A}</pre></body></html>", None
+
+    monkeypatch.setattr(scraper, "RenderedSession", FakeSession)
+    pages, _hosts = _collect_headless("https://x.com/location/1")
+
+    assert len(instances) == 1
+    assert instances[0].calls == [
+        "https://x.com/location/1",
+        "https://x.com/menu",
+    ]
+    assert any("Dish number 3" in text for _url, text in pages)
+
+
+def test_headless_stops_after_complete_structured_landing_payload(monkeypatch):
+    instances = []
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def fetch(self, url, **kwargs):
+            self.calls.append(url)
+            html = (
+                '<html><body><a href="/menu">Menu</a><pre>'
+                "[structured-menu products=40 categories=6]\n"
+                f"{MENU_TEXT_A}</pre></body></html>"
+            )
+            return html, None
+
+    monkeypatch.setattr(scraper, "RenderedSession", FakeSession)
+    pages, _hosts = _collect_headless("https://x.com/location/1")
+
+    assert len(pages) == 1
+    assert instances[0].calls == ["https://x.com/location/1"]
 
 
 # ---- scrape_menu_text entry points (no network) ----------------------------

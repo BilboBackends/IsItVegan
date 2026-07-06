@@ -125,3 +125,98 @@ def test_last_classified_hash_round_trip(test_db):
     db.set_last_classified_hash(1, "abc123", db_path=test_db)
     rows = db.list_restaurants(test_db)
     assert rows[0]["last_classified_hash"] == "abc123"
+
+
+def test_upsert_dish_collapses_case_and_spacing_duplicate(test_db):
+    first = db.upsert_dish(
+        1, "Earth CrisisⓋ", "Red sauce and mushrooms", "$18.00", db_path=test_db
+    )
+    second = db.upsert_dish(
+        1, "EARTH CRISIS Ⓥ", "Red sauce and mushrooms", "$18.00", db_path=test_db
+    )
+
+    assert second == first
+    dishes = db.list_dishes(1, test_db)
+    assert [dish["name"] for dish in dishes] == ["Earth CrisisⓋ"]
+
+
+def test_upsert_preserves_same_name_variants_with_different_details(test_db):
+    first = db.upsert_dish(
+        1, "Fries", "Side portion", "$4", db_path=test_db
+    )
+    second = db.upsert_dish(
+        1, "FRIES", "Basket portion", "$6", db_path=test_db
+    )
+
+    assert second != first
+    assert len(db.list_dishes(1, test_db)) == 2
+
+
+def test_existing_duplicate_merge_preserves_classifications_and_reports(test_db):
+    with db.connect(test_db) as conn:
+        first = conn.execute(
+            """INSERT INTO dishes (restaurant_id,name,raw_description,price,category)
+               VALUES (1,'Earth CrisisⓋ','Red sauce','$18','food') RETURNING id"""
+        ).fetchone()[0]
+        second = conn.execute(
+            """INSERT INTO dishes (restaurant_id,name,raw_description,price,category)
+               VALUES (1,'EARTH CRISIS Ⓥ','Red sauce','$18','food') RETURNING id"""
+        ).fetchone()[0]
+        for dish_id in (first, second):
+            conn.execute(
+                """INSERT INTO classifications
+                   (dish_id,verdict,confidence,reasoning,created_at)
+                   VALUES (?,'vegan',0.9,'same dish','2026-07-05')""",
+                (dish_id,),
+            )
+        conn.execute(
+            """INSERT INTO reports
+               (restaurant_id,dish_id,dish_name,issue_type,status,created_at)
+               VALUES (1,?,'EARTH CRISIS Ⓥ','other','open','2026-07-05')""",
+            (second,),
+        )
+
+    merged = db.deduplicate_dishes_for_restaurant(1, test_db)
+
+    assert len(merged) == 1
+    dishes = db.list_dishes(1, test_db)
+    assert len(dishes) == 1
+    assert dishes[0]["name"] == "Earth CrisisⓋ"
+    with db.connect(test_db) as conn:
+        assert conn.execute("SELECT count(*) FROM classifications").fetchone()[0] == 2
+        report = conn.execute("SELECT dish_id,dish_name FROM reports").fetchone()
+    assert report["dish_id"] == dishes[0]["id"]
+    assert report["dish_name"] == "Earth CrisisⓋ"
+
+
+def test_classification_result_dedupes_formatting_but_keeps_size_variant():
+    def dish(name, price):
+        return {
+            "name": name,
+            "description": "Red sauce and mushrooms",
+            "price": price,
+            "category": "food",
+            "verdict": "vegan",
+            "confidence": 0.9,
+            "reasoning": "Plant-based",
+            "evidence": "red sauce",
+        }
+
+    result = result_from_data(
+        {
+            "dishes": [
+                dish("Earth CrisisⓋ", "$18"),
+                dish("EARTH CRISIS Ⓥ", "$18"),
+                dish("LARGE EARTH CRISISⓋ", "$28"),
+            ]
+        },
+        provider="codex",
+        model="m",
+        billing="subscription",
+    )
+
+    assert result.ok
+    assert [item.name for item in result.dishes] == [
+        "Earth CrisisⓋ",
+        "LARGE EARTH CRISISⓋ",
+    ]

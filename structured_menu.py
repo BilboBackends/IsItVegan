@@ -19,12 +19,23 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
+from typing import Iterable
 
 from bs4 import BeautifulSoup
 
 # A mined menu must clear this to be trusted — a couple of stray name/price
 # pairs (e.g. a gift-card product) is not a menu.
 MIN_STRUCTURED_ITEMS = 8
+
+
+@dataclass(frozen=True)
+class ClientStateMenu:
+    """Validated menu recovered from browser local/session storage."""
+
+    text: str
+    item_count: int
+    category_count: int
 
 # name-ish / price-ish key aliases seen across ordering platforms.
 _NAME_KEYS = r"(?:menuItemName|itemName|item_name|dishName|productName)"
@@ -58,7 +69,8 @@ def _format_item(name: str, description: str | None, price) -> str:
         if len(description) >= 3:
             line += f" — {description}"
     if price not in (None, ""):
-        line += f" (${price})"
+        price_text = str(price).strip()
+        line += f" ({price_text if '$' in price_text else '$' + price_text})"
     return line
 
 
@@ -178,3 +190,137 @@ def extract_structured_menu_text(html: str) -> str | None:
     the script miner is the heuristic fallback.
     """
     return extract_jsonld_menu_text(html) or extract_embedded_menu_text(html)
+
+
+# ---------------------------------------------------------------------------
+# Rendered client state (localStorage/sessionStorage JSON)
+# ---------------------------------------------------------------------------
+
+_CLIENT_NAME_KEYS = (
+    "displayName", "menuItemName", "itemName", "item_name", "dishName",
+    "productName", "name",
+)
+_CLIENT_DESCRIPTION_KEYS = ("description", "longDescription", "itemDesc", "menuItemDesc")
+
+
+def _first_text(node: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return " ".join(BeautifulSoup(value, "html.parser").get_text(" ").split())
+    return None
+
+
+def _client_price(node: dict) -> str | int | float | None:
+    direct = node.get("formattedPrice")
+    if direct not in (None, ""):
+        return direct
+    price = node.get("price")
+    if isinstance(price, dict):
+        return price.get("formattedPrice") or price.get("value")
+    if price not in (None, ""):
+        return price
+    for key in ("menuItemPrice", "defaultUnitPrice", "unitPrice", "basePrice"):
+        if node.get(key) not in (None, ""):
+            return node[key]
+    return None
+
+
+def _client_calories(node: dict) -> str | None:
+    nutrition = node.get("nutrition")
+    if isinstance(nutrition, dict):
+        value = nutrition.get("cal") or nutrition.get("fdamessage")
+        if value not in (None, ""):
+            return " ".join(str(value).split())
+    value = node.get("calories")
+    return " ".join(str(value).split()) if value not in (None, "") else None
+
+
+def extract_client_state_menu(values: Iterable[str]) -> ClientStateMenu | None:
+    """Recover a menu from JSON values emitted by a rendered web app.
+
+    Modern chain/ordering sites often keep the complete menu in browser
+    storage while rendering only one category in the DOM. Detection is based
+    on generic category/product shapes, never a host or endpoint name.
+    """
+    records: list[tuple[str, str, str | None, object, str | None, str]] = []
+    seen: set[str] = set()
+    categories: set[str] = set()
+
+    def add_product(product: dict, category: str) -> None:
+        name = _first_text(product, _CLIENT_NAME_KEYS)
+        if not name or len(name) > 160:
+            return
+        description = _first_text(product, _CLIENT_DESCRIPTION_KEYS)
+        price = _client_price(product)
+        calories = _client_calories(product)
+        # Avoid treating unrelated UI/config objects with a displayName as
+        # products. Real product records carry at least one content signal or
+        # a stable product-looking id.
+        product_id = str(product.get("id") or "")
+        if not (description or price not in (None, "") or calories or product_id.lower().startswith("prod")):
+            return
+        identity = product_id or f"{name.casefold()}|{str(price).casefold()}"
+        if identity in seen:
+            return
+        seen.add(identity)
+        if category:
+            categories.add(category)
+        records.append((identity, category, description, price, calories, name))
+
+    def walk(node, path: tuple[str, ...] = ()) -> None:
+        if isinstance(node, list):
+            for child in node:
+                walk(child, path)
+            return
+        if not isinstance(node, dict):
+            return
+
+        has_children = any(isinstance(node.get(key), list) for key in ("categories", "subCategories"))
+        products = node.get("products")
+        label = _first_text(node, ("displayName", "name")) if (has_children or isinstance(products, list)) else None
+        next_path = path + ((label,) if label else ())
+        category = " > ".join(next_path)
+
+        if isinstance(products, list):
+            for product in products:
+                if isinstance(product, dict):
+                    add_product(product, category)
+
+        for key, value in node.items():
+            if key == "products":
+                continue
+            # Walk both known category containers and wrapper objects such as
+            # response/data; the product-shape gate prevents config noise.
+            if isinstance(value, (dict, list)):
+                walk(value, next_path if key in ("categories", "subCategories") else path)
+
+    for raw in values:
+        if not isinstance(raw, str) or len(raw) < 100:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        walk(payload)
+
+    if len(records) < MIN_STRUCTURED_ITEMS:
+        return None
+
+    lines = [
+        f"[structured-menu products={len(records)} categories={len(categories)}]"
+    ]
+    current_category = None
+    for _identity, category, description, price, calories, name in records:
+        if category and category != current_category:
+            lines.append(f"== {category} ==")
+            current_category = category
+        line = _format_item(name, description, price)
+        if calories:
+            line += f" [{calories}]"
+        lines.append(line)
+    return ClientStateMenu(
+        text="\n".join(lines),
+        item_count=len(records),
+        category_count=len(categories),
+    )

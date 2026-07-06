@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from classification_providers import PRICES as _PRICES
 from classification_providers import run_provider
 from config import settings
+from dish_identity import dish_identity_key, preferred_dish_name
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). This is the METERED
@@ -294,6 +295,42 @@ class ClassificationResult:
     mode: str = "full"  # full | delta
 
 
+def _deduplicate_classified_dishes(
+    dishes: list[ClassifiedDish],
+) -> list[ClassifiedDish]:
+    """Collapse repeated featured/category copies without merging variants."""
+    unique: list[ClassifiedDish] = []
+    positions: dict[tuple[str, str, str, str], int] = {}
+    for dish in dishes:
+        identity = dish_identity_key(
+            dish.name, dish.price, dish.description, dish.calories
+        )
+        position = positions.get(identity)
+        if position is None:
+            positions[identity] = len(unique)
+            unique.append(dish)
+            continue
+
+        existing = unique[position]
+        preferred_name = preferred_dish_name(existing.name, dish.name)
+        # Keep the richer/higher-confidence classification, but independently
+        # preserve the most readable spelling and all useful search tags.
+        chosen = dish if (
+            len(dish.description or ""), dish.confidence
+        ) > (
+            len(existing.description or ""), existing.confidence
+        ) else existing
+        chosen.name = preferred_name
+        chosen.meal_types = list(
+            dict.fromkeys(existing.meal_types + dish.meal_types)
+        )
+        chosen.key_ingredients = list(
+            dict.fromkeys(existing.key_ingredients + dish.key_ingredients)
+        )[:8]
+        unique[position] = chosen
+    return unique
+
+
 def result_from_data(
     data: dict,
     *,
@@ -400,6 +437,8 @@ def result_from_data(
                 for value in raw_removed
                 if str(value).strip()
             ]
+
+    dishes = _deduplicate_classified_dishes(dishes)
 
     if not dishes and mode != "delta":
         return ClassificationResult(

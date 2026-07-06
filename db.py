@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator
 
 from config import settings
+from dish_identity import dish_identity_key, preferred_dish_name
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS restaurants (
@@ -876,8 +877,44 @@ def upsert_dish(
     calories: str | None = None,
     db_path: str | None = None,
 ) -> int:
-    """Insert or update a dish keyed on (restaurant_id, name); return dish id."""
+    """Insert/update a dish using conservative canonical identity."""
     with connect(db_path) as conn:
+        identity = dish_identity_key(name, price, raw_description, calories)
+        existing_rows = conn.execute(
+            """
+            SELECT id, name, raw_description, price, calories
+            FROM dishes WHERE restaurant_id = ?
+            """,
+            (restaurant_id,),
+        ).fetchall()
+        existing = next(
+            (
+                row
+                for row in existing_rows
+                if dish_identity_key(
+                    row["name"], row["price"], row["raw_description"], row["calories"]
+                ) == identity
+            ),
+            None,
+        )
+        if existing is not None:
+            display_name = preferred_dish_name(existing["name"], name)
+            conn.execute(
+                """
+                UPDATE dishes
+                SET name = ?, raw_description = ?, price = ?, calories = ?, category = ?
+                WHERE id = ?
+                """,
+                (
+                    display_name,
+                    raw_description,
+                    price,
+                    calories,
+                    category,
+                    existing["id"],
+                ),
+            )
+            return existing["id"]
         row = conn.execute(
             """
             INSERT INTO dishes
@@ -900,6 +937,80 @@ def upsert_dish(
             },
         ).fetchone()
     return row[0]
+
+
+def deduplicate_dishes_for_restaurant(
+    restaurant_id: int, db_path: str | None = None
+) -> list[dict]:
+    """Merge safe formatting duplicates and preserve all dependent records.
+
+    Same-name items with different prices, descriptions, or calories remain
+    separate. Returns a small audit trail of the rows that were merged.
+    """
+    merged: list[dict] = []
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, raw_description, price, calories, category
+            FROM dishes WHERE restaurant_id = ? ORDER BY id
+            """,
+            (restaurant_id,),
+        ).fetchall()
+        groups: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
+        for row in rows:
+            identity = dish_identity_key(
+                row["name"], row["price"], row["raw_description"], row["calories"]
+            )
+            groups.setdefault(identity, []).append(row)
+
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            preferred_name = group[0]["name"]
+            for row in group[1:]:
+                preferred_name = preferred_dish_name(preferred_name, row["name"])
+            survivor = next(
+                (row for row in group if row["name"] == preferred_name), group[0]
+            )
+            duplicate_ids = [row["id"] for row in group if row["id"] != survivor["id"]]
+            for duplicate_id in duplicate_ids:
+                conn.execute(
+                    "UPDATE classifications SET dish_id = ? WHERE dish_id = ?",
+                    (survivor["id"], duplicate_id),
+                )
+                conn.execute(
+                    "UPDATE sources SET dish_id = ? WHERE dish_id = ?",
+                    (survivor["id"], duplicate_id),
+                )
+                conn.execute(
+                    "UPDATE dish_votes SET dish_id = ?, dish_name = ? WHERE dish_id = ?",
+                    (survivor["id"], preferred_name, duplicate_id),
+                )
+                conn.execute(
+                    "UPDATE reports SET dish_id = ?, dish_name = ? WHERE dish_id = ?",
+                    (survivor["id"], preferred_name, duplicate_id),
+                )
+                conn.execute("DELETE FROM dishes WHERE id = ?", (duplicate_id,))
+            conn.execute(
+                "UPDATE dishes SET name = ? WHERE id = ?",
+                (preferred_name, survivor["id"]),
+            )
+            conn.execute(
+                "UPDATE dish_votes SET dish_name = ? WHERE dish_id = ?",
+                (preferred_name, survivor["id"]),
+            )
+            conn.execute(
+                "UPDATE reports SET dish_name = ? WHERE dish_id = ?",
+                (preferred_name, survivor["id"]),
+            )
+            merged.append(
+                {
+                    "survivor_id": survivor["id"],
+                    "name": preferred_name,
+                    "removed_ids": duplicate_ids,
+                }
+            )
+    return merged
 
 
 def insert_classification(

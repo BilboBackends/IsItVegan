@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scraper import _pages_from_html  # noqa: E402
 from structured_menu import (  # noqa: E402
+    extract_client_state_menu,
     extract_embedded_menu_text,
     extract_jsonld_menu_text,
     extract_structured_menu_text,
@@ -101,3 +102,45 @@ def test_pages_from_html_adds_structured_pseudo_page():
 def test_pages_from_html_plain_page_has_no_pseudo_page():
     pages = _pages_from_html("https://x.com/", "<html><body>hi</body></html>")
     assert len(pages) == 1
+
+
+def test_rendered_client_state_extracts_nested_products_and_calories():
+    products = [
+        {
+            "id": f"prod{i}",
+            "displayName": f"Pasta {i}",
+            "description": "Tomato, basil, and garlic",
+            "price": {"formattedPrice": f"${10 + i}.99", "value": 10 + i + 0.99},
+            "nutrition": {"cal": f"{500 + i * 10} cal"},
+        }
+        for i in range(10)
+    ]
+    # Product 0 is referenced in a second category; stable ids must dedupe it.
+    payload = {
+        "response": {
+            "data": {
+                "categories": [
+                    {"displayName": "Entrees", "products": products},
+                    {"displayName": "Favorites", "products": [products[0]]},
+                ]
+            }
+        }
+    }
+
+    menu = extract_client_state_menu([json.dumps(payload)])
+
+    assert menu is not None
+    assert menu.item_count == 10
+    assert menu.category_count == 1  # duplicate-only Favorites adds no new record
+    assert "Pasta 3 — Tomato, basil, and garlic ($13.99) [530 cal]" in menu.text
+    assert menu.text.count("Pasta 0") == 1
+
+
+def test_rendered_client_state_rejects_configuration_noise():
+    payload = {
+        "settings": [
+            {"displayName": f"Setting {i}", "description": "UI option"}
+            for i in range(20)
+        ]
+    }
+    assert extract_client_state_menu([json.dumps(payload)]) is None

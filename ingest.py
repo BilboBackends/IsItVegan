@@ -126,10 +126,15 @@ def run(
                 or crawl_profile.get("content_hash") != result.content_hash
             )
             route = "learned route" if result.used_learned_context else "discovery"
+            structured = (
+                f", {result.structured_item_count} structured items"
+                if result.structured_item_count
+                else ""
+            )
             print(
                 f"  [menu] {t['name']}  "
                 f"(score {result.menu_score:.2f}, {len(pages)} page(s), "
-                f"{result.char_count} chars, {result.crawl_method}/{route}, "
+                f"{result.char_count} chars{structured}, {result.crawl_method}/{route}, "
                 f"{'changed' if changed else 'unchanged'})"
             )
             if not dry_run:
@@ -163,6 +168,9 @@ def run(
                 "method": result.crawl_method,
                 "learned_route": result.used_learned_context,
                 "changed": changed,
+                "structured_items": result.structured_item_count,
+                "structured_categories": result.structured_category_count,
+                "diagnostics": result.diagnostics,
             }})
         else:
             failed += 1
