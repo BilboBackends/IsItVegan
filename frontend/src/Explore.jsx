@@ -142,6 +142,15 @@ export default function Explore({
     setFocus({ id: target.place_id, ts: Date.now(), source: "card" });
   }, [restaurants, isDesktop]);
 
+  function clearFilters() {
+    setQuery("");
+    setCuisine("all");
+    setOpenFilter("all");
+    setSortBy("vegan");
+    setMaxMiles(0);
+    setPriceTier(0);
+  }
+
   const enriched = useMemo(
     () =>
       restaurants.map((r) => ({
@@ -660,6 +669,13 @@ export default function Explore({
           onToggle={() => setFiltersOpen((value) => !value)}
           activeCount={activeFilterCount}
         >
+          <button
+            onClick={clearFilters}
+            disabled={activeFilterCount === 0 && !query && sortBy === "vegan"}
+            className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-rose-300 hover:text-rose-600 disabled:cursor-default disabled:opacity-40"
+          >
+            ↺ Reset all filters
+          </button>
           <select
             value={cuisine}
             onChange={(event) => setCuisine(event.target.value)}
