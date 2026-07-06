@@ -491,7 +491,7 @@ export default function Explore({
       onClick={() => focusRestaurant(r)}
       title={r.lat != null ? "Show on map" : undefined}
       className={`group flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-        focus?.id === r.place_id
+        focus != null && focus.id != null && focus.id === r.place_id
           ? "border-emerald-600 ring-1 ring-emerald-600"
           : "border-stone-200/80"
       }`}

@@ -31,7 +31,10 @@ DATA_DIR = Path(__file__).parent / "frontend" / "public" / "data"
 # The consumer UI reads exactly these restaurant fields — admin bookkeeping
 # (costs, hashes, refresh/crawl state) stays local.
 _RESTAURANT_FIELDS = (
-    "id", "name", "address", "website_url", "lat", "lng",
+    # place_id is public Google data and the frontend's marker/focus key —
+    # without it every card matched the "focused" check (undefined ===
+    # undefined) and map pins collided on one key.
+    "id", "name", "address", "place_id", "website_url", "lat", "lng",
     "primary_type", "price_level", "serves_vegetarian", "editorial_summary",
     "rating", "user_rating_count", "open_now", "opening_hours",
     "enriched_at", "menu_fetched_at",
