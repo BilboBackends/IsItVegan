@@ -686,6 +686,7 @@ export default function DishExplore({
     setCuisine("all");
     setOpenFilter("all");
     setMaxMiles(0);
+    setSortBy("recommended");
   }
 
   const activeFilterCount =
@@ -723,7 +724,7 @@ export default function DishExplore({
         <div className="space-y-3">
           <button
             onClick={clearFilters}
-            disabled={!hasActiveFilters && !query}
+            disabled={!hasActiveFilters && !query && sortBy === "recommended"}
             className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-rose-300 hover:text-rose-600 disabled:cursor-default disabled:opacity-40"
           >
             ↺ Reset all filters
