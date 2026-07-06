@@ -496,11 +496,6 @@ export default function Explore({
               {r.distance.toFixed(1)} mi
             </span>
           )}
-          <ThumbVote
-            restaurantId={r.id}
-            upVotes={r.up_votes}
-            downVotes={r.down_votes}
-          />
           <FavoriteButton
             active={favorites.restaurants.includes(r.id)}
             onClick={() => toggleRestaurant(r.id)}
@@ -551,7 +546,7 @@ export default function Explore({
           {r.editorial_summary}
         </div>
       )}
-      <div className="mt-3 flex items-center justify-between border-t border-stone-100 pt-3">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-y-2 border-t border-stone-100 pt-3">
         {r.dish_count > 0 ? (
           // Dot + plain text, colored like the map pin for this restaurant —
           // quieter than a filled pill, and card ↔ pin read as one system.
@@ -578,6 +573,11 @@ export default function Explore({
           </span>
         )}
         <div className="flex items-center gap-3">
+          <ThumbVote
+            restaurantId={r.id}
+            upVotes={r.up_votes}
+            downVotes={r.down_votes}
+          />
           {r.website_url && (
             <a
               href={r.website_url}
