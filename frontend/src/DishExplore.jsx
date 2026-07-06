@@ -5,6 +5,7 @@ import DishDetail from "./DishDetail.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
+import LocationPicker from "./LocationPicker.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
@@ -115,7 +116,6 @@ export default function DishExplore({
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
-  const [locating, setLocating] = useState(false);
   const [selectedDishId, setSelectedDishId] = useState(null);
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   const [mobileView, setMobileView] = useState("list");
@@ -151,20 +151,6 @@ export default function DishExplore({
     window.addEventListener("hashchange", syncDishFromHash);
     return () => window.removeEventListener("hashchange", syncDishFromHash);
   }, []);
-
-  function useMyLocation() {
-    if (!navigator.geolocation) return;
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setOrigin({ lat: position.coords.latitude, lng: position.coords.longitude });
-        setOriginLabel("your location");
-        setLocating(false);
-      },
-      () => setLocating(false),
-      { timeout: 8000 }
-    );
-  }
 
   useEffect(() => {
     loadDishes()
@@ -542,7 +528,12 @@ export default function DishExplore({
       marker.bindPopup(popup, { closeButton: false });
     }
 
-    if (bounds.length > 0) {
+    if (originLabel !== "Maitland") {
+      // A chosen origin (address search or near-me) wins: center the map
+      // there so it answers "what's around this spot", even when that spot
+      // is far from every pin.
+      map.setView([origin.lat, origin.lng], 13);
+    } else if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     } else {
       map.setView([MAITLAND.lat, MAITLAND.lng], 13);
@@ -729,14 +720,16 @@ export default function DishExplore({
                 <option key={range.miles} value={range.miles}>{range.label}</option>
               ))}
             </select>
-            <button
-              onClick={useMyLocation}
-              disabled={locating}
-              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
-              title={`Distances measured from ${originLabel}`}
-            >
-              {locating ? "Locating…" : "Near me"}
-            </button>
+            <LocationPicker
+              originLabel={originLabel}
+              onOrigin={(point, label) => {
+                setOrigin(point);
+                setOriginLabel(label);
+                // Picking a location means "what's near here" — surface the
+                // closest dishes instead of leaving the previous sort.
+                setSortBy("distance");
+              }}
+            />
             </div>
           </div>
           <div className="flex flex-wrap gap-2 pb-0.5">

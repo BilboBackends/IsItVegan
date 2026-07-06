@@ -3,6 +3,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
+import LocationPicker from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
@@ -96,7 +97,6 @@ export default function Explore({
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
-  const [locating, setLocating] = useState(false);
   const [view, setView] = useState("list"); // mobile toggle; desktop shows both
   // Phones: filters collapse behind a disclosure (a swipe strip was
   // undiscoverable); desktop always shows them inline.
@@ -141,20 +141,6 @@ export default function Explore({
     if (!isDesktop) setView("map");
     setFocus({ id: target.place_id, ts: Date.now(), source: "card" });
   }, [restaurants, isDesktop]);
-
-  function useMyLocation() {
-    if (!navigator.geolocation) return;
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setOriginLabel("your location");
-        setLocating(false);
-      },
-      () => setLocating(false),
-      { timeout: 8000 }
-    );
-  }
 
   const enriched = useMemo(
     () =>
@@ -414,7 +400,12 @@ export default function Explore({
       marker.bindPopup(el, { closeButton: false });
     });
 
-    if (bounds.length > 0) {
+    if (originLabel !== "Maitland") {
+      // A chosen origin (address search or near-me) wins: center the map
+      // there so it answers "what's around this spot", even when that spot
+      // is far from every pin.
+      map.setView([origin.lat, origin.lng], 13);
+    } else if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     } else {
       map.setView([origin.lat, origin.lng], 13);
@@ -701,17 +692,16 @@ export default function Explore({
               </option>
             ))}
           </select>
-          <div>
-            <button
-              onClick={useMyLocation}
-              disabled={locating}
-              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
-              title={`Distances measured from ${originLabel}`}
-            >
-              {locating ? "Locating…" : "📍 Near me"}
-            </button>
-            <div className="mt-1 text-center text-xs text-stone-400">Distances from {originLabel}</div>
-          </div>
+          <LocationPicker
+            originLabel={originLabel}
+            onOrigin={(point, label) => {
+              setOrigin(point);
+              setOriginLabel(label);
+              // Picking a location means "what's near here" — surface the
+              // closest restaurants instead of leaving the previous sort.
+              setSortBy("distance");
+            }}
+          />
         </FilterSidebar>
 
         <div className="min-w-0 flex-1">
