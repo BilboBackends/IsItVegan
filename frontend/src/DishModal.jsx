@@ -22,6 +22,25 @@ export const VERDICT_STYLES = {
 
 const VEGANISH = new Set(["vegan", "likely_vegan", "vegan_adaptable"]);
 
+// Most-vegan-first display order. The backend endpoint already sorts this
+// way, but the static site derives dishes from an alphabetical snapshot —
+// sorting here guarantees the order regardless of data source.
+const VERDICT_RANK = {
+  vegan: 0,
+  likely_vegan: 1,
+  vegan_adaptable: 2,
+  unclear: 3,
+  not_vegan: 4,
+};
+
+function byMostVegan(a, b) {
+  return (
+    (VERDICT_RANK[a.verdict] ?? 5) - (VERDICT_RANK[b.verdict] ?? 5) ||
+    (b.confidence ?? 0) - (a.confidence ?? 0) ||
+    a.name.localeCompare(b.name)
+  );
+}
+
 const CATEGORIES = [
   { key: "food", label: "Food", icon: "🍽" },
   { key: "dessert", label: "Desserts", icon: "🍰" },
@@ -91,6 +110,7 @@ export default function DishModal({ restaurant, onClose }) {
   const byCategory = useMemo(() => {
     const groups = { food: [], dessert: [], drink: [] };
     for (const d of dishes) groups[dishCategory(d)].push(d);
+    for (const list of Object.values(groups)) list.sort(byMostVegan);
     return groups;
   }, [dishes]);
 
