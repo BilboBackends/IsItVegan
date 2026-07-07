@@ -445,7 +445,7 @@ function HistoryModal({ restaurant, onClose }) {
 // Ave Orlando"), see everything on a map + list — names only — and pull
 // selected places into the pipeline. Scraping/classification run later from
 // the Active table's bulk tools, so pulling 40 names in stays instant.
-function ProspectPanel({ onAdded }) {
+function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [places, setPlaces] = useState(null);
@@ -453,6 +453,10 @@ function ProspectPanel({ onAdded }) {
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState(null);
   const [error, setError] = useState(null);
+  // Full-pipeline run state: add -> background scrape job -> background
+  // classify job, all scoped to the newly added ids.
+  const [pipeline, setPipeline] = useState(null);
+  const [pipelineProvider, setPipelineProvider] = useState(defaultProvider);
   const mapEl = useRef(null);
   const mapRef = useRef(null);
 
@@ -526,6 +530,107 @@ function ProspectPanel({ onAdded }) {
       setError(e.message);
     } finally {
       setAdding(false);
+    }
+  }
+
+  // Add the selected places (names only), then chain the existing background
+  // jobs against exactly those ids: scrape, then classify. Progress is shown
+  // inline by polling the job status endpoints the dashboards already use.
+  async function addAndRunAll() {
+    const chosen = (places || []).filter((p) => selected.has(p.place_id));
+    if (chosen.length === 0 || pipeline) return;
+    if (chosen.length > 60) {
+      setError("Max 60 places per one-go run — narrow the selection.");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+
+    const poll = async (statusUrl, label) => {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        const res = await fetch(statusUrl);
+        if (!res.ok) throw new Error(`${label} status check failed`);
+        const state = await res.json();
+        setPipeline({
+          stage: label,
+          done: state.done ?? 0,
+          total: state.total,
+          current: state.current,
+          cost: state.cost,
+        });
+        if (!state.running) {
+          if (state.error) throw new Error(`${label} failed: ${state.error}`);
+          return state;
+        }
+      }
+    };
+
+    try {
+      setPipeline({ stage: "Adding", done: 0, total: chosen.length });
+      const addRes = await fetch("/api/restaurants/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ places: chosen, ingest: false, classify: false }),
+      });
+      const addData = await addRes.json();
+      if (!addRes.ok) throw new Error(addData.error || "Add failed");
+      const ids = (addData.added || []).map((entry) => entry.id).filter(Boolean);
+      const byPlaceId = new Map(
+        chosen.map((p, i) => [p.place_id, addData.added?.[i]?.id ?? true])
+      );
+      setPlaces((current) =>
+        (current || []).map((p) =>
+          byPlaceId.has(p.place_id)
+            ? { ...p, already_added_id: byPlaceId.get(p.place_id) }
+            : p
+        )
+      );
+      setSelected(new Set());
+      onAdded?.();
+      if (ids.length === 0) throw new Error("Nothing was added.");
+
+      setPipeline({ stage: "Scraping", done: 0, total: ids.length });
+      const ingestRes = await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restaurant_ids: ids }),
+      });
+      if (!ingestRes.ok) {
+        const data = await ingestRes.json();
+        throw new Error(data.error || "Scrape job could not start");
+      }
+      const ingestState = await poll("/api/ingest/status", "Scraping");
+
+      setPipeline({ stage: "Classifying", done: 0, total: null });
+      const classifyRes = await fetch("/api/classify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurant_ids: ids,
+          provider: pipelineProvider,
+          parallel: 3,
+        }),
+      });
+      if (!classifyRes.ok) {
+        const data = await classifyRes.json();
+        throw new Error(data.error || "Classify job could not start");
+      }
+      const classifyState = await poll("/api/classify/status", "Classifying");
+
+      const cost = classifyState.summary?.cost;
+      setNotice(
+        `One-go run finished: ${ids.length} added, ` +
+          `${ingestState.succeeded ?? "?"} menus scraped, ` +
+          `${classifyState.summary?.dishes ?? "?"} dishes classified` +
+          (cost ? ` ($${cost.toFixed(3)})` : "") +
+          "."
+      );
+      onAdded?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPipeline(null);
     }
   }
 
@@ -630,14 +735,53 @@ function ProspectPanel({ onAdded }) {
             </button>
             <button
               onClick={addSelected}
-              disabled={adding || selected.size === 0}
+              disabled={adding || Boolean(pipeline) || selected.size === 0}
               className="rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               {adding
                 ? "Adding…"
                 : `Add ${selected.size} to pipeline (names only)`}
             </button>
+            <span className="mx-1 text-xs text-slate-300">|</span>
+            <select
+              value={pipelineProvider}
+              onChange={(e) => setPipelineProvider(e.target.value)}
+              disabled={Boolean(pipeline)}
+              className="rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs font-semibold text-violet-800 shadow-sm disabled:text-slate-400"
+              aria-label="Classification provider for the one-go run"
+            >
+              <option value="auto">Auto (subscriptions)</option>
+              {["claude", "codex", "anthropic", "deepseek"].map((name) => (
+                <option
+                  key={name}
+                  value={name}
+                  disabled={!config?.classifier?.providers?.[name]?.available}
+                >
+                  {PROVIDER_LABELS[name]}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={addAndRunAll}
+              disabled={Boolean(pipeline) || adding || selected.size === 0}
+              className="rounded-lg bg-violet-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              title="Add the selected places, then scrape their menus and classify the dishes as chained background jobs"
+            >
+              {pipeline
+                ? `${pipeline.stage}…`
+                : `Add + scrape + classify (${selected.size})`}
+            </button>
           </div>
+
+          {pipeline && (
+            <div className="flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900">
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+              {pipeline.stage}
+              {pipeline.total != null && ` ${pipeline.done}/${pipeline.total}`}
+              {pipeline.current && ` — ${pipeline.current}`}
+              {pipeline.cost > 0 && ` · $${pipeline.cost.toFixed(3)}`}
+            </div>
+          )}
 
           <div className="grid gap-3 lg:grid-cols-2">
             <div
@@ -2212,7 +2356,11 @@ export default function Admin() {
         </div>
 
         {tableView === "prospect" ? (
-          <ProspectPanel onAdded={loadData} />
+          <ProspectPanel
+            onAdded={loadData}
+            config={config}
+            defaultProvider={classifierProvider}
+          />
         ) : (
         <>
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm max-sm:overflow-x-auto max-sm:[&>*]:shrink-0 sm:flex-wrap">

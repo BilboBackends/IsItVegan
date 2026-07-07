@@ -440,20 +440,27 @@ def add_restaurants_endpoint() -> object:
 
         places = payload.get("places")
         if places is not None:
+            do_ingest = bool(payload.get("ingest", True))
+            do_classify = bool(payload.get("classify", True))
+            # Synchronous scraping/classifying bounds the batch at 15; a
+            # names-only add (enrichment only, ~1 cheap Places call each) can
+            # take a whole Prospect page — scrape/classify then run as
+            # background jobs scoped to the new ids.
+            max_places = 15 if (do_ingest or do_classify) else 60
             if (
                 not isinstance(places, list)
                 or not places
-                or len(places) > 15
+                or len(places) > max_places
                 or any(
                     not isinstance(p, dict) or not p.get("place_id") or not p.get("name")
                     for p in places
                 )
             ):
-                return jsonify({"error": "places must be 1-15 resolve candidates."}), 400
+                return jsonify(
+                    {"error": f"places must be 1-{max_places} resolve candidates."}
+                ), 400
             result = add_restaurants.add_places(
-                places,
-                do_ingest=bool(payload.get("ingest", True)),
-                do_classify=bool(payload.get("classify", True)),
+                places, do_ingest=do_ingest, do_classify=do_classify
             )
             return jsonify(result)
 
