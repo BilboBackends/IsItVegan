@@ -315,6 +315,20 @@ def run(
         if text_hash:
             db.set_last_classified_hash(r["id"], text_hash)
 
+        # Monitoring trail for the cheap tier: every guardrail flag or
+        # downgrade is persisted so Admin can watch the flag rate.
+        if getattr(result, "guardrail_flags", None):
+            db.record_audits(
+                result.guardrail_flags,
+                provider=result.provider,
+                model=result.model,
+                restaurant_id=r["id"],
+            )
+            print(
+                f"         guardrails: {len(result.guardrail_flags)} flag(s) "
+                f"recorded for audit"
+            )
+
     queue = list(targets)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pending: dict = {}

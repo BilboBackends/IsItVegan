@@ -21,9 +21,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from classification_providers import PRICES as _PRICES
-from classification_providers import run_provider
+from classification_providers import UNTRUSTED_PROVIDERS, run_provider
 from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
+from guardrails import apply_guardrails
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). This is the METERED
@@ -293,6 +294,9 @@ class ClassificationResult:
     # Delta mode only: prior dish names the model says left the menu.
     removed_dish_names: list[str] = field(default_factory=list)
     mode: str = "full"  # full | delta
+    # Guardrail flags raised on untrusted-provider output (guardrails.py);
+    # classify.py persists these to classification_audits.
+    guardrail_flags: list[dict] = field(default_factory=list)
 
 
 def _deduplicate_classified_dishes(
@@ -552,9 +556,22 @@ def classify_menu(
         + menu
     )
     system_prompt = _SYSTEM
+    # The cheap tier gets its learned corrections appended (learning.py) —
+    # frontier providers keep the unmodified baseline prompt so spot checks
+    # measure the cheap model against a stable reference.
+    chain = (provider or settings.classifier_provider or "auto").lower()
+    if any(name in chain for name in UNTRUSTED_PROVIDERS):
+        try:
+            import learning
+
+            guidance = learning.guidance_block()
+        except Exception:
+            guidance = None  # guidance is an optimization, never a blocker
+        if guidance:
+            system_prompt = system_prompt + "\n\n" + guidance
     schema = _SCHEMA
     if delta:
-        system_prompt = _SYSTEM + "\n" + _DELTA_INSTRUCTIONS
+        system_prompt = system_prompt + "\n" + _DELTA_INSTRUCTIONS
         schema = _delta_schema()
         inventory = "\n".join(
             f"{name} | {info.get('price') or '-'} | {info.get('verdict') or '-'}"
@@ -591,7 +608,7 @@ def classify_menu(
     out_tok = response.output_tokens
     cost = response.cost_estimate
 
-    return result_from_data(
+    result = result_from_data(
         data,
         mode="delta" if delta else "full",
         provider=response.provider,
@@ -602,3 +619,10 @@ def classify_menu(
         cost_estimate=cost,
         stop_reason=response.stop_reason,
     )
+    if (
+        result.ok
+        and response.provider in UNTRUSTED_PROVIDERS
+        and settings.deepseek_guardrails
+    ):
+        result.guardrail_flags = apply_guardrails(result)
+    return result

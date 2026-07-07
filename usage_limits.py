@@ -258,14 +258,54 @@ def _codex_usage() -> dict:
     }
 
 
+def _deepseek_usage() -> dict:
+    """Remaining prepaid balance from DeepSeek's /user/balance endpoint.
+
+    Not a usage window like the subscriptions — DeepSeek is a top-up wallet,
+    so the meaningful number is dollars left, rendered as its own row in the
+    Admin limits panel.
+    """
+    from config import settings
+
+    if not settings.deepseek_api_key:
+        return {"available": False, "reason": "DEEPSEEK_API_KEY not set."}
+    try:
+        import httpx
+
+        response = httpx.get(
+            settings.deepseek_base_url.rstrip("/") + "/user/balance",
+            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {"available": False, "reason": f"Balance check failed: {exc}"}
+
+    infos = payload.get("balance_infos") or []
+    info = infos[0] if infos and isinstance(infos[0], dict) else {}
+    try:
+        balance = float(info.get("total_balance"))
+    except (TypeError, ValueError):
+        balance = None
+    return {
+        "available": True,
+        "plan": "prepaid wallet",
+        "balance": balance,
+        "currency": info.get("currency") or "USD",
+        "usable": bool(payload.get("is_available", balance and balance > 0)),
+    }
+
+
 def provider_usage() -> dict:
-    """Cached usage snapshot for both subscription providers."""
+    """Cached usage snapshot for the classification providers."""
     now = time.monotonic()
     if _cache["data"] is not None and now - _cache["at"] < _CACHE_TTL_SECONDS:
         return _cache["data"]
     data = {
         "claude": _claude_usage(),
         "codex": _codex_usage(),
+        "deepseek": _deepseek_usage(),
         "fetched_at": time.time(),
     }
     _cache["at"] = now

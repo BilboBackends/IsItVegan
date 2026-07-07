@@ -21,6 +21,7 @@ const PROVIDER_LABELS = {
   claude: "Claude subscription",
   codex: "Codex subscription",
   anthropic: "Anthropic API",
+  deepseek: "DeepSeek (cheap, audited)",
 };
 
 // "resets_at" from the usage endpoints may be an ISO string or an epoch in
@@ -86,6 +87,161 @@ function changeDetail(change) {
   }
   if (change.change_type === "added") return change.new_price || "";
   return change.old_price || "";
+}
+
+// Trust dashboard for the cheap classification tier (DeepSeek): guardrail
+// flags, spot-check agreement vs a frontier reference, and the learned
+// corrections currently injected into the cheap model's prompt. Self-
+// contained — fetches /api/audit/summary and can trigger a spot check.
+function AuditPanel() {
+  const [summary, setSummary] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [lastRun, setLastRun] = useState(null);
+
+  const load = () =>
+    fetch("/api/audit/summary")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(setSummary)
+      .catch(() => setSummary(null));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function runSpotCheck() {
+    setChecking(true);
+    setLastRun(null);
+    try {
+      const res = await fetch("/api/audit/spot-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sample: 10, reference: "claude" }),
+      });
+      const data = await res.json();
+      setLastRun(res.ok ? data : { error: data.error || "Spot check failed" });
+      load();
+    } catch (e) {
+      setLastRun({ error: e.message || "Spot check failed" });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const deepseek = summary?.providers?.deepseek;
+  const hasAnything =
+    deepseek || (summary?.active_corrections ?? 0) > 0;
+
+  return (
+    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="text-left"
+        >
+          <h2 className="text-sm font-bold text-slate-900">
+            Cheap-model audit
+            <span className="ml-2 text-xs font-medium text-slate-400">
+              guardrails · spot checks · learned corrections {open ? "▾" : "▸"}
+            </span>
+          </h2>
+        </button>
+        <div className="flex items-center gap-3">
+          {deepseek?.spot_check_agreement != null && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                deepseek.spot_check_agreement >= 0.9
+                  ? "bg-emerald-100 text-emerald-800"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+              title="Verdict agreement with the frontier reference model on audited samples (adjacent verdicts count as agreement)"
+            >
+              {Math.round(deepseek.spot_check_agreement * 100)}% agreement
+            </span>
+          )}
+          <button
+            onClick={runSpotCheck}
+            disabled={checking}
+            className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-semibold text-violet-800 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
+            title="Re-verify 10 random DeepSeek-classified dishes with the Claude subscription; disagreements become learned corrections"
+          >
+            {checking ? "Checking…" : "Run spot check (10)"}
+          </button>
+        </div>
+      </div>
+      {lastRun && (
+        <div className="mt-2 text-xs font-medium text-slate-600">
+          {lastRun.error
+            ? `Spot check failed: ${lastRun.error}`
+            : lastRun.checked === 0
+              ? "Nothing to audit yet — no dishes classified by the cheap model."
+              : `Checked ${lastRun.checked}: ${lastRun.agree} agree, ${lastRun.disagree} disagree` +
+                (lastRun.disagree > 0
+                  ? " — corrections recorded for the next run."
+                  : ".")}
+        </div>
+      )}
+      {open && (
+        <div className="mt-3 space-y-3 text-xs">
+          {!hasAnything && (
+            <div className="text-slate-400">
+              No audits yet. Classify with the DeepSeek provider, then run a
+              spot check to start the trust loop.
+            </div>
+          )}
+          {deepseek && (
+            <div className="flex flex-wrap gap-4 font-semibold text-slate-700">
+              <span>Guardrail downgrades: {deepseek.guardrail_downgraded}</span>
+              <span>Run flags: {deepseek.guardrail_flagged}</span>
+              <span>Spot checks: {deepseek.spot_check_agree} agree / {deepseek.spot_check_disagree} disagree</span>
+              <span>Active corrections: {summary?.active_corrections ?? 0}</span>
+            </div>
+          )}
+          {(summary?.corrections?.length ?? 0) > 0 && (
+            <div>
+              <div className="mb-1 font-bold uppercase tracking-wide text-slate-400">
+                Learned corrections (injected into the cheap model's prompt)
+              </div>
+              <ul className="space-y-1">
+                {summary.corrections.map((c) => (
+                  <li key={c.id} className="text-slate-600">
+                    <span className="font-semibold">{c.dish_name}</span>: {c.wrong_verdict} → {c.correct_verdict}
+                    {c.note && <span className="text-slate-400"> — {c.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(summary?.recent?.length ?? 0) > 0 && (
+            <div>
+              <div className="mb-1 font-bold uppercase tracking-wide text-slate-400">
+                Recent audit events
+              </div>
+              <ul className="space-y-1">
+                {summary.recent.slice(0, 15).map((a) => (
+                  <li key={a.id} className="text-slate-600">
+                    <span
+                      className={`mr-1 rounded px-1 py-0.5 font-bold ${
+                        a.status === "agree"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : a.status === "disagree" || a.status === "downgraded"
+                            ? "bg-rose-50 text-rose-700"
+                            : "bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {a.status}
+                    </span>
+                    {a.dish_name || a.restaurant_name || a.rule}
+                    {a.detail && <span className="text-slate-400"> — {a.detail}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 // Menu history per restaurant: distinct raw-menu versions (immutable, one
@@ -1615,6 +1771,12 @@ export default function Admin() {
               >
                 Anthropic API
               </option>
+              <option
+                value="deepseek"
+                disabled={!config?.classifier?.providers?.deepseek?.available}
+              >
+                DeepSeek — cheap, guardrailed
+              </option>
             </select>
             <select
               value={classifyMode}
@@ -1743,8 +1905,9 @@ export default function Admin() {
               </span>
             </div>
             <div className="space-y-3">
-              {["claude", "codex"].map((name) => {
+              {["claude", "codex", "deepseek"].map((name) => {
                 const usage = providerUsage[name];
+                if (name === "deepseek" && !usage?.available) return null;
                 return (
                   <div key={name}>
                     <div className="text-xs font-semibold text-slate-700">
@@ -1768,11 +1931,27 @@ export default function Admin() {
                       ) : null}
                     </div>
                     {usage?.available ? (
-                      <div className="mt-1 space-y-1">
-                        {usage.windows.map((w) => (
-                          <UsageBar key={w.id} window={w} />
-                        ))}
-                      </div>
+                      usage.windows ? (
+                        <div className="mt-1 space-y-1">
+                          {usage.windows.map((w) => (
+                            <UsageBar key={w.id} window={w} />
+                          ))}
+                        </div>
+                      ) : (
+                        // Prepaid wallet (DeepSeek): dollars left, not a window.
+                        <div
+                          className={`mt-0.5 text-xs font-semibold ${
+                            usage.balance != null && usage.balance < 0.5
+                              ? "text-amber-700"
+                              : "text-slate-600"
+                          }`}
+                        >
+                          {usage.balance != null
+                            ? `$${usage.balance.toFixed(2)} ${usage.currency} remaining`
+                            : "Balance unknown"}
+                          {usage.usable === false && " · top up to use"}
+                        </div>
+                      )
                     ) : (
                       <div className="mt-0.5 text-xs text-slate-400">
                         {usage?.reason || "Usage unknown."}
@@ -1784,6 +1963,8 @@ export default function Admin() {
             </div>
           </section>
         )}
+
+        <AuditPanel />
 
         {menuQuality.length > 0 && (
           <section className="mb-6 rounded-xl border border-orange-200 bg-orange-50 p-4">

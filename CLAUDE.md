@@ -44,13 +44,17 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 
 - **Backend:** Python
 - **Frontend:** React + Vite, Tailwind
-- **LLM:** Claude, via a provider chain (`classification_providers.py`):
-  the local Claude Code CLI (subscription-billed) first, then the Codex CLI
-  (ChatGPT subscription), then the metered Anthropic API — API only when
-  explicitly selected, never as a silent fallback. Do NOT introduce
-  LangChain/RAG scaffolding — this is a structured extraction problem, not a
-  retrieval problem, and direct calls with structured JSON output are
-  simpler to debug and maintain.
+- **LLM:** a provider chain (`classification_providers.py`) with four
+  transports: the local Claude Code CLI (subscription-billed), the Codex CLI
+  (ChatGPT subscription), the metered Anthropic API, and the DeepSeek API
+  (cheap metered tier, ~10x below Sonnet's price). `auto` = Claude then
+  Codex — subscriptions only; **metered APIs (anthropic, deepseek) run only
+  when explicitly selected, never as a silent fallback.** A provider that
+  hits its usage limit goes into a ~20-minute cooldown while the chain fails
+  over. DeepSeek output is UNTRUSTED and passes the trust loop described
+  below. Do NOT introduce LangChain/RAG scaffolding — this is a structured
+  extraction problem, not a retrieval problem, and direct calls with
+  structured JSON output are simpler to debug and maintain.
 - **Restaurant discovery:** Google Places API
 - **Database:** SQLite for MVP (single area, low volume). Design the schema
   so migrating to Postgres later is a config change, not a rewrite.
@@ -73,11 +77,38 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 6. **Frontend** — restaurant list/map, dish-level filtering by verdict,
    evidence shown inline
 
-## Data Model (starting point — refine as needed)
+## Cheap-Tier Trust Loop (DeepSeek)
+
+Bulk classification can be handed to the cheap tier, but only inside a
+measured trust loop — cheap extraction is a win only if it stays honest:
+
+1. **Guardrails** (`guardrails.py`) — deterministic checks on every
+   untrusted result before storage. Hard rule: a vegan/likely_vegan verdict
+   on a dish plainly naming an animal ingredient (no mock/plant qualifier)
+   is downgraded to `unclear` and flagged. Soft rules (implausible vegan
+   rate, uniform confidence) flag the run without touching verdicts.
+2. **Audit trail** (`classification_audits` table) — every guardrail flag,
+   downgrade, and spot-check outcome is persisted; the Admin "Cheap-model
+   audit" panel shows flag counts and spot-check agreement.
+3. **Spot checks** (`audit_spotcheck.py`) — samples recent cheap-model
+   dishes and re-verifies them with a frontier reference (Claude
+   subscription by default). Adjacent verdicts (vegan/likely_vegan) count
+   as agreement; real disagreements are recorded.
+4. **Learning** (`learning.py` + `classifier_corrections` table) — each
+   spot-check disagreement becomes a correction ("X was wrongly V1; correct:
+   V2, because…"). Active corrections are injected into the CHEAP model's
+   system prompt on its next run — it literally sees its recent audited
+   mistakes. Frontier providers keep the unmodified baseline prompt so the
+   reference stays stable. Corrections are rows, not weights: inspectable,
+   and deactivated with `UPDATE classifier_corrections SET active=0`.
+
+## Data Model
 
 ```
 restaurants
-  id, name, address, place_id, website_url, lat, lng, last_scraped_at
+  id, name, address, place_id, website_url, lat, lng, last_scraped_at,
+  enrichment fields (rating, hours, price_level, …), archived,
+  last_classified_hash, last_classify_cost/provider
 
 dishes
   id, restaurant_id, name, raw_description, price, calories, category
@@ -89,10 +120,22 @@ crawl_profiles
   restaurant_id, menu_urls, crawl_method, content_hash, menu_score, char_count,
   last_attempt_at, last_success_at, consecutive_failures, last_error
 
+menu_versions        -- immutable history: one row per distinct menu content
+  restaurant_id, content, content_hash (UNIQUE per restaurant), menu_score,
+  char_count, fetched_at
+
+dish_changes         -- longitudinal drift: added/removed/price/verdict moves
+  restaurant_id, dish_name, change_type, old/new price + verdict, observed_at
+
 classifications
   id, dish_id, verdict, confidence, reasoning, source_id, model_version, created_at,
   dairy_status, gluten_status, nut_status, protein_level, serving_role,
   meal_types, key_ingredients
+
+dish_votes / restaurant_votes   -- thumbs; client_id = one live vote per browser
+
+classification_audits           -- guardrail flags + spot-check outcomes
+classifier_corrections          -- learned corrections injected into cheap-model prompts
 ```
 
 ## API Key Handling
@@ -124,29 +167,50 @@ classifications
 
 ## Explicit Non-Goals for MVP
 
-- No user accounts / auth
-- No crowd-sourced corrections yet (planned for a later phase)
-- No multi-city support yet — get Maitland fully correct first
+- No user accounts / auth (thumbs/favorites are anonymous, per-browser)
+- No crowd-sourced verdict corrections yet — thumbs and dish reports are
+  collected as signal, but humans don't edit verdicts through the UI
+- No multi-city support yet — get Maitland fully correct first (the Prospect
+  view and address search are the on-ramp, not the feature)
 - No mobile app — responsive web only
 
 ## Current Phase
 
 **Phases 0–3 are live** (discovery, ingestion, text classification, storage,
-frontend): ~60 Maitland restaurants discovered and enriched, 53 menus scraped
-(multi-page, headless-capable scraper with automated quality auditing), dish
-classification with vegan verdicts, dietary attributes, and meal/side serving
-roles, and the consumer Explore + Admin pipeline dashboard.
+frontend): ~70 Maitland restaurants discovered and enriched, ~55 menus
+scraped (multi-page, headless-capable scraper that also mines structured
+data: JSON-LD, embedded ordering-platform state, and browser client-state
+menus), 6,000+ classified dishes with vegan verdicts, dietary attributes,
+and meal/side serving roles.
 
-Classification runs through a provider chain (`classification_providers.py`):
-Claude Code subscription first, then Codex/ChatGPT subscription, with
-failover on usage limits — the metered Anthropic API is only used when
-explicitly selected. Headline "vegan" counts are strict: `vegan` verdicts or
-high-confidence `likely_vegan` only; `vegan_adaptable` never counts.
+Consumer product: Restaurants + Food items + Saved tabs (list/map, compact
+expandable dish rows, address-search origin picker biased to Central
+Florida, favorites, thumbs with deduped vote counts, dish share/report).
+Admin: pipeline dashboard with live job progress, per-restaurant costs,
+subscription usage bars, menu version history, dish-change log, quality
+audit, Prospect area search, and the cheap-model audit panel.
+
+Change-aware recrawling is live: identical menu text skips classification
+entirely; changed menus run in DELTA mode (classify only new/changed dishes
++ removals) with a distrust guard that falls back to full extraction.
+
+Classification runs through the provider chain (Claude Code subscription →
+Codex subscription on `auto`; Anthropic API and DeepSeek only when
+explicitly selected). The DeepSeek cheap tier runs inside the trust loop
+above. Headline "vegan" counts are strict: `vegan` verdicts or
+high-confidence `likely_vegan` (≥ 0.75) only; `vegan_adaptable` never
+counts; drinks and desserts are excluded; meals and sides are counted
+separately.
+
+The public site is GitHub Pages (fully static: built frontend + JSON
+snapshots via `publish_static.py [--push]`); the live pipeline and Admin
+exist only locally.
 
 **Next: Phase 4 — vision classification.** Google Places photos + Claude
 vision for the restaurants whose menus can't be scraped (social-only
 websites, hard JS walls, photo-only menus) — the audit's "photo fallback
-candidates" list is the queue.
+candidates" list is the queue. Also queued: multi-area expansion (area tag +
+Prospect promotion, "restaurants on Mills" → Orlando).
 
 ## Resolved Early Questions (kept for context)
 

@@ -4,12 +4,15 @@ The extraction prompt, JSON schema, validation, and persistence remain shared
 in classifier.py/classify.py. This module only obtains schema-shaped JSON from
 an available model provider.
 
-Three transports:
+Four transports:
 - claude    — headless Claude Code CLI (`claude -p`), billed to the user's
               Claude subscription
 - codex     — Codex CLI (`codex exec`), billed to the user's ChatGPT
               subscription
 - anthropic — the Anthropic API, billed per token to ANTHROPIC_API_KEY
+- deepseek  — the DeepSeek API (cheap metered tier, ~10x below Sonnet).
+              Its output is UNTRUSTED: guardrails.py screens every result and
+              audit_spotcheck.py re-checks samples against a frontier model.
 
 The provider setting is a priority CHAIN, not a single choice: "auto" means
 claude then codex — subscriptions only; the metered API runs ONLY when
@@ -39,9 +42,12 @@ PRICES = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # DeepSeek is the cheap bulk tier — roughly 10x cheaper than Sonnet.
+    "deepseek-chat": (0.27, 1.10),
+    "deepseek-reasoner": (0.55, 2.19),
 }
 
-_PROVIDER_NAMES = ("claude", "codex", "anthropic")
+_PROVIDER_NAMES = ("claude", "codex", "anthropic", "deepseek")
 # "auto" is SUBSCRIPTIONS ONLY. The metered Anthropic API never runs unless
 # the user explicitly selects it (alone or in a custom chain) — hitting both
 # subscription limits should stop the run, not silently start billing.
@@ -51,7 +57,13 @@ _BILLING = {
     "claude": "claude_subscription",
     "codex": "chatgpt_subscription",
     "anthropic": "api",
+    "deepseek": "deepseek_api",
 }
+
+# Providers whose output gets the full guardrail + audit treatment before it
+# is trusted (see guardrails.py). The frontier subscriptions earn a pass;
+# the cheap tier is audited.
+UNTRUSTED_PROVIDERS = frozenset({"deepseek"})
 
 # Subscription usage-limit / rate-limit signatures across providers. A match
 # puts the provider in cooldown so the chain stops retrying it every dish.
@@ -158,6 +170,8 @@ def _provider_available(name: str) -> bool:
         return claude_available()
     if name == "codex":
         return codex_available()
+    if name == "deepseek":
+        return bool(settings.deepseek_api_key)
     return bool(settings.anthropic_api_key)
 
 
@@ -187,7 +201,7 @@ def _provider_chain(requested: str | None) -> list[str]:
         if name not in _PROVIDER_NAMES:
             raise ProviderUnavailable(
                 "Classifier provider must be auto, claude, codex, anthropic, "
-                "or a comma-separated priority list of those."
+                "deepseek, or a comma-separated priority list of those."
             )
     if not names:
         raise ProviderUnavailable("Classifier provider must not be empty.")
@@ -223,6 +237,13 @@ def provider_status() -> dict:
                 "limited": provider_limited("anthropic"),
                 "billing": _BILLING["anthropic"],
                 "model": settings.anthropic_classifier_model,
+            },
+            "deepseek": {
+                "available": bool(settings.deepseek_api_key),
+                "limited": provider_limited("deepseek"),
+                "billing": _BILLING["deepseek"],
+                "model": settings.deepseek_classifier_model,
+                "audited": True,
             },
         },
     }
@@ -262,6 +283,7 @@ def run_provider(
         "claude": _run_claude,
         "codex": _run_codex,
         "anthropic": _run_anthropic,
+        "deepseek": _run_deepseek,
     }
     last: ProviderResponse | None = None
     attempted: set[str] = set()
@@ -287,6 +309,122 @@ def run_provider(
         + ", ".join(names)
         + "). Log in to Claude Code or Codex — or explicitly select "
         "anthropic to bill the API."
+    )
+
+
+def _run_deepseek(
+    system_prompt: str, user_prompt: str, schema: dict
+) -> ProviderResponse:
+    """Classify via the DeepSeek API (OpenAI-compatible chat completions).
+
+    DeepSeek enforces json_object mode but not a full JSON schema, so the
+    schema rides in the system prompt and result_from_data + guardrails.py
+    carry the validation weight downstream. Output is capped at 8k tokens by
+    the API — very large menus should go to a frontier provider or run in
+    delta mode; a truncated response fails loudly here rather than storing a
+    partial menu.
+    """
+    import httpx
+
+    model = settings.deepseek_classifier_model
+    billing = _BILLING["deepseek"]
+
+    def _fail(detail: str, **extra) -> ProviderResponse:
+        return ProviderResponse(
+            ok=False, provider="deepseek", model=model, billing=billing,
+            error=detail[:1000], **extra,
+        )
+
+    if not settings.deepseek_api_key:
+        return _fail("DEEPSEEK_API_KEY is not configured.")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    system_prompt
+                    + "\n\nReturn ONLY a single JSON object that validates "
+                    "against this JSON schema — no prose, no markdown fence:\n"
+                    + json.dumps(schema)
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": settings.deepseek_max_output_tokens,
+        "stream": False,
+    }
+    # deepseek-reasoner thinks before answering and rejects/ignores sampling
+    # and json-mode controls; the schema instruction in the system prompt is
+    # what constrains it. deepseek-chat gets strict json_object mode.
+    if "reasoner" not in model:
+        payload["response_format"] = {"type": "json_object"}
+        payload["temperature"] = 0.2
+    try:
+        response = httpx.post(
+            settings.deepseek_base_url.rstrip("/") + "/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.deepseek_api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=max(60, settings.deepseek_classifier_timeout_seconds),
+        )
+    except Exception as exc:
+        return _fail(f"{type(exc).__name__}: {exc}")
+
+    if response.status_code != 200:
+        return _fail(
+            f"DeepSeek HTTP {response.status_code}: {response.text[:400]}"
+        )
+    try:
+        envelope = response.json()
+        choice = envelope["choices"][0]
+    except (ValueError, KeyError, IndexError) as exc:
+        return _fail(f"DeepSeek returned an unexpected payload: {exc}")
+
+    usage = envelope.get("usage") or {}
+    input_tokens = int(usage.get("prompt_tokens") or 0)
+    output_tokens = int(usage.get("completion_tokens") or 0)
+    input_price, output_price = PRICES.get(model, (0.27, 1.10))
+    cost = (
+        input_tokens * input_price + output_tokens * output_price
+    ) / 1_000_000
+
+    finish = choice.get("finish_reason")
+    if finish == "length":
+        return _fail(
+            "Output hit DeepSeek's max_tokens — menu too large for the cheap "
+            "tier; use delta mode or a frontier provider for this one.",
+            stop_reason="length",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_estimate=cost,
+        )
+    text = ((choice.get("message") or {}).get("content") or "").strip()
+    # Without enforced json mode (reasoner) the object may arrive fenced.
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text, flags=re.S)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return _fail(
+            f"Malformed JSON from DeepSeek: {exc}",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_estimate=cost,
+        )
+    return ProviderResponse(
+        ok=True,
+        provider="deepseek",
+        model=model,
+        billing=billing,
+        data=data,
+        stop_reason=finish,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_estimate=cost,
     )
 
 

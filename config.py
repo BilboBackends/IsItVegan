@@ -27,6 +27,12 @@ class Settings:
     codex_cli_path: str | None
     codex_classifier_model: str | None
     codex_classifier_timeout_seconds: int
+    deepseek_api_key: str | None
+    deepseek_classifier_model: str
+    deepseek_base_url: str
+    deepseek_classifier_timeout_seconds: int
+    deepseek_guardrails: bool
+    deepseek_max_output_tokens: int
     discovery_lat: float
     discovery_lng: float
     discovery_radius_meters: float
@@ -78,6 +84,32 @@ def load_settings() -> Settings:
         codex_classifier_model=(os.environ.get("CODEX_CLASSIFIER_MODEL") or None),
         codex_classifier_timeout_seconds=_get_int(
             "CODEX_CLASSIFIER_TIMEOUT_SECONDS", 900
+        ),
+        # DeepSeek: the cheap metered tier for bulk classification. Like the
+        # Anthropic API it NEVER runs unless explicitly selected — and its
+        # output passes guardrails + spot-check audits (see guardrails.py,
+        # audit_spotcheck.py) because cheap extraction is only a win if it
+        # stays trustworthy.
+        deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY"),
+        deepseek_classifier_model=os.environ.get(
+            "DEEPSEEK_CLASSIFIER_MODEL", "deepseek-chat"
+        ),
+        deepseek_base_url=os.environ.get(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ),
+        deepseek_classifier_timeout_seconds=_get_int(
+            "DEEPSEEK_CLASSIFIER_TIMEOUT_SECONDS", 900
+        ),
+        # Set DEEPSEEK_GUARDRAILS=0 to store DeepSeek's raw verdicts without
+        # the guardrail screen (no downgrades, no flags). Spot-check auditing
+        # still works either way. Default: on.
+        deepseek_guardrails=os.environ.get(
+            "DEEPSEEK_GUARDRAILS", "1"
+        ).strip().lower() not in ("0", "false", "no", "off"),
+        # DeepSeek caps output per response: deepseek-chat allows up to 8192;
+        # deepseek-reasoner allows much more — raise this if you switch.
+        deepseek_max_output_tokens=_get_int(
+            "DEEPSEEK_MAX_OUTPUT_TOKENS", 8192
         ),
         # Maitland, FL center as the MVP default.
         discovery_lat=_get_float("DISCOVERY_LAT", 28.6278),

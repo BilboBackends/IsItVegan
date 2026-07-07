@@ -163,6 +163,40 @@ CREATE TABLE IF NOT EXISTS dish_votes (
     created_at    TEXT NOT NULL
 );
 
+-- Monitoring trail for cheap-model classification: every guardrail flag or
+-- downgrade (guardrails.py) and every spot-check comparison against a
+-- frontier model (audit_spotcheck.py) lands here, so trust in the cheap
+-- tier is measured, not assumed.
+CREATE TABLE IF NOT EXISTS classification_audits (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id    INTEGER,
+    dish_name        TEXT,
+    provider         TEXT NOT NULL,
+    model            TEXT,
+    check_type       TEXT NOT NULL,       -- guardrail | spot_check
+    rule             TEXT,                -- which check fired / 'verdict_match'
+    status           TEXT NOT NULL,       -- flagged | downgraded | agree | disagree
+    detail           TEXT,
+    expected_verdict TEXT,                -- reference model's verdict (spot checks)
+    actual_verdict   TEXT,                -- cheap model's verdict
+    created_at       TEXT NOT NULL
+);
+
+-- The cheap model's "memory": corrections distilled from spot-check
+-- disagreements (or added manually). Active corrections are injected into
+-- its prompt as learned examples — learning.py builds the block.
+CREATE TABLE IF NOT EXISTS classifier_corrections (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    dish_name       TEXT NOT NULL,
+    description     TEXT,
+    wrong_verdict   TEXT NOT NULL,
+    correct_verdict TEXT NOT NULL,
+    note            TEXT,                 -- why the correction is right
+    source          TEXT NOT NULL DEFAULT 'spot_check',
+    active          INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL
+);
+
 -- Same lightweight thumbs, aimed at a whole restaurant. client_id keeps one
 -- live vote per browser per restaurant, exactly like dish_votes.
 CREATE TABLE IF NOT EXISTS restaurant_votes (
@@ -1236,6 +1270,185 @@ def restaurants_needing_refresh(
                 {"id": row["id"], "name": row["name"], "website_url": row["website_url"]}
             )
     return targets
+
+
+def record_audits(
+    entries: Iterable[dict],
+    *,
+    provider: str,
+    model: str | None = None,
+    restaurant_id: int | None = None,
+    db_path: str | None = None,
+) -> int:
+    """Persist guardrail flags / spot-check outcomes. Returns rows written."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (
+            entry.get("restaurant_id", restaurant_id),
+            entry.get("dish_name"),
+            provider,
+            entry.get("model", model),
+            entry.get("check_type", "guardrail"),
+            entry.get("rule"),
+            entry.get("status", "flagged"),
+            entry.get("detail"),
+            entry.get("expected_verdict"),
+            entry.get("actual_verdict"),
+            entry.get("created_at", now),
+        )
+        for entry in entries
+    ]
+    if not rows:
+        return 0
+    with connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO classification_audits
+                (restaurant_id, dish_name, provider, model, check_type, rule,
+                 status, detail, expected_verdict, actual_verdict, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def list_audits(
+    limit: int = 100,
+    provider: str | None = None,
+    db_path: str | None = None,
+) -> list[dict]:
+    where = "WHERE provider = ?" if provider else ""
+    params: tuple = (provider, limit) if provider else (limit,)
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT a.*, r.name AS restaurant_name
+            FROM classification_audits a
+            LEFT JOIN restaurants r ON r.id = a.restaurant_id
+            {where}
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def audit_summary(db_path: str | None = None) -> dict:
+    """Monitoring rollup: per provider, guardrail flag counts and spot-check
+    agreement — the "can the cheap tier be trusted" dashboard numbers."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT provider, check_type, status, COUNT(*) AS n,
+                   MAX(created_at) AS last_at
+            FROM classification_audits
+            GROUP BY provider, check_type, status
+            """
+        ).fetchall()
+        corrections = conn.execute(
+            "SELECT COUNT(*) FROM classifier_corrections WHERE active = 1"
+        ).fetchone()[0]
+    providers: dict[str, dict] = {}
+    for row in rows:
+        p = providers.setdefault(row["provider"], {
+            "guardrail_flagged": 0, "guardrail_downgraded": 0,
+            "spot_check_agree": 0, "spot_check_disagree": 0,
+            "last_audit_at": None,
+        })
+        key = f"{row['check_type']}_{row['status']}"
+        if key in p:
+            p[key] += row["n"]
+        p["last_audit_at"] = max(p["last_audit_at"] or "", row["last_at"] or "")
+    for p in providers.values():
+        checked = p["spot_check_agree"] + p["spot_check_disagree"]
+        p["spot_check_agreement"] = (
+            round(p["spot_check_agree"] / checked, 3) if checked else None
+        )
+    return {"providers": providers, "active_corrections": corrections}
+
+
+def record_correction(
+    dish_name: str,
+    wrong_verdict: str,
+    correct_verdict: str,
+    *,
+    description: str | None = None,
+    note: str | None = None,
+    source: str = "spot_check",
+    db_path: str | None = None,
+) -> None:
+    """Store a learned correction; replaces an older one for the same dish so
+    the guidance block stays current instead of accumulating duplicates."""
+    with connect(db_path) as conn:
+        conn.execute(
+            "UPDATE classifier_corrections SET active = 0 "
+            "WHERE dish_name = ? COLLATE NOCASE AND active = 1",
+            (dish_name,),
+        )
+        conn.execute(
+            """
+            INSERT INTO classifier_corrections
+                (dish_name, description, wrong_verdict, correct_verdict,
+                 note, source, active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                dish_name, description, wrong_verdict, correct_verdict,
+                note, source, datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def list_corrections(
+    active_only: bool = True,
+    limit: int = 50,
+    db_path: str | None = None,
+) -> list[dict]:
+    where = "WHERE active = 1" if active_only else ""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM classifier_corrections
+            {where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def sample_recent_classifications(
+    model_like: str,
+    limit: int = 10,
+    db_path: str | None = None,
+) -> list[dict]:
+    """Random sample of dishes whose LATEST classification came from a model
+    matching model_like (SQL LIKE) — the spot-check auditor's input."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT d.id AS dish_id, d.name, d.raw_description, d.price,
+                   d.restaurant_id, r.name AS restaurant_name,
+                   r.primary_type,
+                   c.verdict, c.confidence, c.model_version, c.created_at
+            FROM dishes d
+            JOIN restaurants r ON r.id = d.restaurant_id
+            JOIN classifications c ON c.id = (
+                SELECT id FROM classifications
+                WHERE dish_id = d.id
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            )
+            WHERE c.model_version LIKE ?
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (model_like, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def record_restaurant_vote(
