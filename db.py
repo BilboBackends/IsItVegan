@@ -233,6 +233,22 @@ CREATE TABLE IF NOT EXISTS menu_quality_reviews (
     note          TEXT,
     reviewed_at   TEXT NOT NULL
 );
+
+-- The read models (dish/restaurant lists) run correlated subqueries per row
+-- (latest classification, vote counts, menu freshness). Without these
+-- indexes each one is a full table scan and the API visibly drags once the
+-- data outgrows a single town.
+CREATE INDEX IF NOT EXISTS idx_classifications_dish
+    ON classifications(dish_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_dishes_restaurant ON dishes(restaurant_id);
+CREATE INDEX IF NOT EXISTS idx_sources_restaurant ON sources(restaurant_id, type);
+CREATE INDEX IF NOT EXISTS idx_dish_votes_dish ON dish_votes(dish_id, vote);
+CREATE INDEX IF NOT EXISTS idx_restaurant_votes_restaurant
+    ON restaurant_votes(restaurant_id, vote);
+CREATE INDEX IF NOT EXISTS idx_menu_versions_restaurant
+    ON menu_versions(restaurant_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dish_changes_restaurant
+    ON dish_changes(restaurant_id, observed_at DESC);
 """
 
 

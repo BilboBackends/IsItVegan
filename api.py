@@ -45,7 +45,10 @@ def compress_dish_database(response):
     user moves between Explore and Saved without hiding fresh classifications
     for long.
     """
-    if request.path != "/api/dishes" or response.status_code != 200:
+    if (
+        request.path not in ("/api/dishes", "/api/restaurants")
+        or response.status_code != 200
+    ):
         return response
 
     response.cache_control.private = True
@@ -255,10 +258,10 @@ def run_ingest() -> object:
     if restaurant_ids is not None and (
         not isinstance(restaurant_ids, list)
         or not restaurant_ids
-        or len(restaurant_ids) > 100
+        or len(restaurant_ids) > 1000
         or any(not isinstance(value, int) or isinstance(value, bool) for value in restaurant_ids)
     ):
-        return jsonify({"error": "restaurant_ids must be 1-100 integer IDs."}), 400
+        return jsonify({"error": "restaurant_ids must be 1-1000 integer IDs."}), 400
     if restaurant_ids is not None:
         restaurant_ids = list(dict.fromkeys(restaurant_ids))
 
@@ -812,10 +815,10 @@ def run_classify() -> object:
     if restaurant_ids is not None and (
         not isinstance(restaurant_ids, list)
         or not restaurant_ids
-        or len(restaurant_ids) > 100
+        or len(restaurant_ids) > 1000
         or any(not isinstance(value, int) or isinstance(value, bool) for value in restaurant_ids)
     ):
-        return jsonify({"error": "restaurant_ids must be 1-100 integer IDs."}), 400
+        return jsonify({"error": "restaurant_ids must be 1-1000 integer IDs."}), 400
     if restaurant_ids is not None:
         restaurant_ids = list(dict.fromkeys(restaurant_ids))
 

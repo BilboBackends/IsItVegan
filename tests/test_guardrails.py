@@ -129,6 +129,43 @@ def test_vegan_name_with_mock_qualified_description_still_upgrades():
     assert result.dishes[0].verdict == "vegan"
 
 
+def test_output_cap_overflow_retries_in_chunks(monkeypatch):
+    import classifier
+    from classification_providers import ProviderResponse
+
+    calls = []
+
+    def fake_run_provider(*, requested, system_prompt, user_prompt, schema):
+        calls.append(user_prompt)
+        if len(calls) == 1:  # whole menu: overflows the output cap
+            return ProviderResponse(
+                ok=False, provider="deepseek", model="deepseek-chat",
+                billing="deepseek_api",
+                error="Output hit DeepSeek's max_tokens — menu too large",
+                stop_reason="length",
+            )
+        # Each chunk succeeds with one dish named after its call number.
+        return ProviderResponse(
+            ok=True, provider="deepseek", model="deepseek-chat",
+            billing="deepseek_api",
+            data={"dishes": [dict(_raw(f"Dish {len(calls)}", "vegan"))]},
+            input_tokens=100, output_tokens=50, cost_estimate=0.001,
+        )
+
+    monkeypatch.setattr(classifier, "run_provider", fake_run_provider)
+    monkeypatch.setattr(classifier, "_CHUNK_TARGET_CHARS", 40)
+
+    menu = "\n".join(f"Line {i} with some menu text here" for i in range(6))
+    result = classifier.classify_menu(
+        menu, restaurant_name="Big Menu Cafe", provider="deepseek"
+    )
+    assert result.ok
+    assert result.mode == "full"
+    assert len(calls) > 2  # initial overflow + one call per chunk
+    assert len(result.dishes) == len(calls) - 1
+    assert result.cost_estimate == pytest.approx(0.001 * (len(calls) - 1))
+
+
 @pytest.fixture()
 def test_db(tmp_path):
     path = str(tmp_path / "audit.db")

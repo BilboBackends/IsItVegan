@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 import re
 
 from classification_providers import PRICES as _PRICES
-from classification_providers import UNTRUSTED_PROVIDERS, run_provider
+from classification_providers import (
+    ProviderResponse,
+    UNTRUSTED_PROVIDERS,
+    run_provider,
+)
 from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
 from guardrails import apply_guardrails, unqualified_animal_word
@@ -499,6 +503,83 @@ def result_from_data(
     )
 
 
+# When a provider's output cap truncates a big menu (DeepSeek most often),
+# the menu is re-classified in parts of roughly this many characters and the
+# parts are merged. Line-boundary splits keep dishes intact.
+_CHUNK_TARGET_CHARS = 12_000
+
+
+def _split_menu_lines(menu: str, target: int | None = None) -> list[str]:
+    target = target or _CHUNK_TARGET_CHARS
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in menu.splitlines():
+        if current and size + len(line) > target:
+            chunks.append("\n".join(current))
+            current, size = [], 0
+        current.append(line)
+        size += len(line) + 1
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _hit_output_cap(response) -> bool:
+    if response.stop_reason in ("length", "max_tokens"):
+        return True
+    return "max_tokens" in (response.error or "").lower()
+
+
+def _classify_in_chunks(
+    menu: str, *, context: str, provider: str | None, system_prompt: str
+) -> ProviderResponse | None:
+    """Full extraction of an oversized menu, one part at a time.
+
+    Returns the merged ok response, the first failing chunk's response (so
+    the normal failure path reports it), or None when the menu can't be
+    split any further.
+    """
+    chunks = _split_menu_lines(menu)
+    if len(chunks) < 2:
+        return None
+    raw_dishes: list = []
+    input_tokens = output_tokens = 0
+    cost = 0.0
+    last: ProviderResponse | None = None
+    for index, chunk in enumerate(chunks, 1):
+        prompt = (
+            context
+            + f"\n\nMenu text scraped from the restaurant's website — PART "
+            f"{index} of {len(chunks)}. Other parts are classified "
+            "separately; extract every dish in THIS part:\n\n"
+            + chunk
+        )
+        response = run_provider(
+            requested=provider,
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            schema=_SCHEMA,
+        )
+        if not response.ok or response.data is None:
+            return response
+        last = response
+        raw_dishes.extend(response.data.get("dishes") or [])
+        input_tokens += response.input_tokens
+        output_tokens += response.output_tokens
+        cost += response.cost_estimate
+    return ProviderResponse(
+        ok=True,
+        provider=last.provider,
+        model=last.model,
+        billing=last.billing,
+        data={"dishes": raw_dishes},
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cost_estimate=cost,
+    )
+
+
 def _delta_schema() -> dict:
     """The full-menu schema plus removed_dish_names, dishes allowed empty."""
     item_schema = _SCHEMA["properties"]["dishes"]["items"]
@@ -577,10 +658,11 @@ def classify_menu(
     if editorial_summary:
         context_bits.append(f"Google's summary: {editorial_summary}")
 
+    context = "\n".join(context_bits)
     menu = menu_text[:_MAX_MENU_CHARS]
     delta = bool(prior_dishes)
     prompt = (
-        "\n".join(context_bits)
+        context
         + "\n\nMenu text scraped from the restaurant's website:\n\n"
         + menu
     )
@@ -598,6 +680,9 @@ def classify_menu(
             guidance = None  # guidance is an optimization, never a blocker
         if guidance:
             system_prompt = system_prompt + "\n\n" + guidance
+    # Snapshot before the delta instructions are appended — the chunked
+    # retry always runs as a full extraction.
+    base_system = system_prompt
     schema = _SCHEMA
     if delta:
         system_prompt = system_prompt + "\n" + _DELTA_INSTRUCTIONS
@@ -620,6 +705,16 @@ def classify_menu(
         )
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+    if not response.ok and _hit_output_cap(response):
+        # The menu overflowed the provider's output cap (DeepSeek most
+        # often). Re-run as a full extraction in parts and merge; a delta
+        # that overflowed had a menu-sized change set anyway.
+        chunked = _classify_in_chunks(
+            menu, context=context, provider=provider, system_prompt=base_system
+        )
+        if chunked is not None:
+            response = chunked
+            delta = False
     if not response.ok or response.data is None:
         return ClassificationResult(
             ok=False,
