@@ -93,10 +93,16 @@ def run(
     stale_days: int | None = None,
     restaurant_ids: list[int] | None = None,
     on_progress=None,
+    should_stop=None,
 ) -> dict:
     """Scrape targets; on_progress (optional) receives event dicts so a live
     caller (the Admin dashboard) can show progress: {"total": N} once targets
     are known, {"current": name} before each scrape, {"result": {...}} after.
+
+    should_stop (optional, callable -> bool) is checked before each
+    restaurant; when it returns True the loop exits cleanly, keeping every
+    menu scraped so far. It cannot interrupt a scrape already in flight — a
+    hung headless browser is unstuck separately by killing its processes.
     """
     def _emit(event: dict) -> None:
         if on_progress is not None:
@@ -109,9 +115,14 @@ def run(
     print(f"Ingesting {len(targets)} restaurant(s)...\n")
     succeeded, failed = 0, 0
     failures: list[tuple[str, str]] = []
+    cancelled = False
     now = datetime.now(timezone.utc).isoformat()
 
     for t in targets:
+        if should_stop is not None and should_stop():
+            cancelled = True
+            print("Stop requested — halting after completed restaurants.")
+            break
         _emit({"current": t["name"]})
         crawl_profile = db.get_crawl_profile(t["id"])
         result = scrape_menu_text(
@@ -192,7 +203,12 @@ def run(
     if dry_run:
         print("\n[dry-run] Nothing written to the database.")
 
-    return {"succeeded": succeeded, "failed": failed, "failures": failures}
+    return {
+        "succeeded": succeeded,
+        "failed": failed,
+        "failures": failures,
+        "cancelled": cancelled,
+    }
 
 
 def main() -> None:

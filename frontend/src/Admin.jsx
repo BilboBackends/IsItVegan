@@ -1542,6 +1542,26 @@ export default function Admin() {
     }
   }
 
+  async function stopIngest() {
+    try {
+      const res = await fetch("/api/ingest/stop", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Stop failed (${res.status})`);
+      setIngestJob((current) =>
+        current ? { ...current, cancel_requested: true } : current
+      );
+      // The stop also kills any hung headless browser so a wedged scrape
+      // unblocks; surface what it did.
+      setNotice(
+        data.browsers
+          ? `Stopping scrape — ${data.note}. Menus already scraped are kept.`
+          : "Stopping scrape after the current restaurant. Scraped menus are kept."
+      );
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function toggleRefreshEnabled(restaurant) {
     const enabled = !Boolean(restaurant.refresh_enabled);
     const response = await fetch(
@@ -2058,7 +2078,11 @@ export default function Admin() {
           </div>
         )}
 
-        <JobProgressPanel job={ingestJob} title="Scraping menus" />
+        <JobProgressPanel
+          job={ingestJob}
+          title="Scraping menus"
+          onStop={stopIngest}
+        />
         <JobProgressPanel
           job={classifyJob}
           title="Classifying dishes"

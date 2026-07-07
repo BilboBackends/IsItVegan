@@ -15,6 +15,7 @@ frontend only ever talks to our own backend — no keys client-side.
 from __future__ import annotations
 
 import gzip
+import os
 import threading
 
 from flask import Flask, jsonify, request
@@ -180,11 +181,16 @@ _ingest_state: dict = {
     "recent": [],      # last few per-restaurant results, newest first
     "summary": None,   # {"succeeded": N, "failed": N} once finished
     "error": None,     # fatal job error (not per-restaurant failures)
+    "cancel_requested": False,
     # "started" once a then_classify chain launched, or the error string
     # explaining why it couldn't (e.g. a classify job was already running).
     "chained_classify": None,
 }
 _ingest_lock = threading.Lock()
+# Set to request a graceful stop before the next restaurant. A scrape
+# already in flight (a hung headless browser) is unstuck separately by
+# terminating the orphaned browser processes — see stop_ingest.
+_ingest_cancel = threading.Event()
 
 
 def _ingest_worker(
@@ -212,6 +218,7 @@ def _ingest_worker(
             stale_days=stale_days,
             restaurant_ids=restaurant_ids,
             on_progress=on_progress,
+            should_stop=_ingest_cancel.is_set,
         )
         with _ingest_lock:
             _ingest_state["summary"] = {
@@ -314,14 +321,71 @@ def run_ingest() -> object:
         _ingest_state.update(
             running=True, total=None, done=0, succeeded=0, failed=0,
             current=None, recent=[], summary=None, error=None,
-            chained_classify=None,
+            cancel_requested=False, chained_classify=None,
         )
+        _ingest_cancel.clear()
     threading.Thread(
         target=_ingest_worker,
         args=(bool(payload.get("all")), stale_days, restaurant_ids, then_classify),
         daemon=True,
     ).start()
     return jsonify({"started": True}), 202
+
+
+def _kill_orphan_browsers() -> int:
+    """Terminate headless browser processes left over from a hung scrape.
+
+    A scrape can wedge on a headless page that never settles; the worker
+    thread is then blocked inside the browser call and a graceful stop can't
+    reach it. Killing the browser processes makes that call raise, so the
+    thread unblocks, marks the restaurant failed, and honors the stop.
+
+    Uses the platform's process killer targeting only browser image names —
+    no extra dependency. This never targets the Python backend itself.
+    """
+    import subprocess
+
+    # Playwright ships Chromium as headless_shell / chrome (chromium on
+    # Linux). Kill by image name so only browser children die.
+    if os.name == "nt":
+        images = ("headless_shell.exe", "chrome.exe", "chromium.exe")
+        killed = 0
+        for image in images:
+            result = subprocess.run(
+                ["taskkill", "/F", "/T", "/IM", image],
+                capture_output=True, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            # taskkill prints one "SUCCESS" line per process terminated.
+            killed += (result.stdout or "").upper().count("SUCCESS")
+        return killed
+
+    result = subprocess.run(
+        ["pkill", "-f", "headless_shell|chromium|chrome"],
+        capture_output=True, text=True,
+    )
+    return 0 if result.returncode not in (0, 1) else -1  # -1: count unknown
+
+
+@app.post("/api/ingest/stop")
+def stop_ingest() -> object:
+    """Stop the running scrape. Requests a graceful halt before the next
+    restaurant, AND terminates any orphaned headless-browser processes so a
+    scrape wedged on a hung page unblocks instead of hanging forever. Menus
+    already scraped are kept."""
+    with _ingest_lock:
+        if not _ingest_state["running"]:
+            return jsonify({"error": "No menu scrape is active."}), 409
+        _ingest_state["cancel_requested"] = True
+        _ingest_cancel.set()
+    try:
+        killed = _kill_orphan_browsers()
+    except Exception as exc:
+        killed = None
+        stop_note = f"browser cleanup failed: {exc}"
+    else:
+        stop_note = f"terminated {killed} browser process(es)"
+    return jsonify({"stopping": True, "browsers": killed, "note": stop_note}), 202
 
 
 @app.get("/api/ingest/status")
