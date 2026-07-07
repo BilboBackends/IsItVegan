@@ -1004,6 +1004,7 @@ export default function Admin() {
   const [discovering, setDiscovering] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
   const [operationalFilter, setOperationalFilter] = useState("all");
@@ -1273,6 +1274,23 @@ export default function Admin() {
       setError(reviewError.message);
     } finally {
       setQualityBusy(null);
+    }
+  }
+
+  // Export the consumer snapshots and push them — GitHub Pages redeploys,
+  // so the phone-reachable public site catches up with local data.
+  async function runPublish() {
+    setPublishing(true);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/publish", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Publish failed (${res.status})`);
+      setNotice(data.message);
+    } catch (e) {
+      setNotice(`Publish failed: ${e.message}`);
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -1855,6 +1873,14 @@ export default function Admin() {
             </p>
           </div>
           <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">
+            <button
+              onClick={runPublish}
+              disabled={publishing}
+              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              title="Export the current restaurants/dishes as static snapshots, commit, and push — the public site redeploys with your latest data in ~2 minutes"
+            >
+              {publishing ? "Publishing…" : "⬆ Publish to live site"}
+            </button>
             <button
               onClick={() => {
                 setAddOpen(true);

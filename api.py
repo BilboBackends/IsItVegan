@@ -589,6 +589,19 @@ def dish_vote_endpoint() -> object:
     return jsonify({"ok": True})
 
 
+@app.post("/api/publish")
+def publish_site_endpoint() -> object:
+    """Export consumer snapshots, commit, and push — updates the PUBLIC
+    static site (GitHub Pages redeploys on push). Local Admin only."""
+    import publish_static
+
+    try:
+        summary = publish_static.publish(push=True)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+    return jsonify(summary)
+
+
 @app.get("/api/audit/summary")
 def audit_summary_endpoint() -> object:
     """Monitoring rollup for the cheap classification tier: guardrail flag

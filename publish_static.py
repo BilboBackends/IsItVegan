@@ -78,6 +78,50 @@ def export() -> dict:
     return {"restaurants": len(restaurants), "dishes": len(dishes)}
 
 
+def publish(push: bool = False) -> dict:
+    """Export snapshots; optionally commit + push them (Pages redeploys).
+
+    Only the data directory is staged, so uncommitted code changes are never
+    swept into a publish. Callable from the CLI and the Admin publish button
+    (POST /api/publish). Raises RuntimeError when the push itself fails.
+    """
+    summary = export()
+    summary["pushed"] = False
+    summary["message"] = (
+        f"Exported {summary['restaurants']} restaurants and "
+        f"{summary['dishes']} dishes."
+    )
+    if not push:
+        return summary
+
+    root = Path(__file__).parent
+    subprocess.run(
+        ["git", "add", str(DATA_DIR)],
+        cwd=root, capture_output=True, text=True, check=True,
+    )
+    commit = subprocess.run(
+        ["git", "commit", "-m", "Publish site data"],
+        cwd=root, capture_output=True, text=True,
+    )
+    if commit.returncode != 0:
+        summary["message"] = "Live site already up to date — data unchanged."
+        return summary
+    pushed = subprocess.run(
+        ["git", "push"], cwd=root, capture_output=True, text=True, timeout=180,
+    )
+    if pushed.returncode != 0:
+        raise RuntimeError(
+            "git push failed: "
+            + ((pushed.stderr or pushed.stdout or "").strip()[-400:])
+        )
+    summary["pushed"] = True
+    summary["message"] = (
+        f"Published {summary['restaurants']} restaurants / "
+        f"{summary['dishes']} dishes — the live site redeploys in ~2 minutes."
+    )
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publish static site data.")
     parser.add_argument(
@@ -85,23 +129,8 @@ def main() -> None:
         help="Commit the exported data and push (triggers the Pages deploy).",
     )
     args = parser.parse_args()
-
-    summary = export()
-    print(
-        f"Exported {summary['restaurants']} restaurants and "
-        f"{summary['dishes']} dishes to {DATA_DIR}"
-    )
-    if args.push:
-        subprocess.run(["git", "add", str(DATA_DIR)], check=True)
-        result = subprocess.run(
-            ["git", "commit", "-m", "Publish site data"], capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print("Nothing new to publish (data unchanged).")
-            return
-        subprocess.run(["git", "push"], check=True)
-        print("Pushed — the Pages deploy will pick it up.")
+    summary = publish(push=args.push)
+    print(summary["message"])
 
 
 if __name__ == "__main__":
