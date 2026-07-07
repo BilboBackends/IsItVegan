@@ -61,6 +61,13 @@ def _mock_qualified(text: str) -> bool:
     return any(word in lowered for word in _MOCK_WORDS)
 
 
+def unqualified_animal_word(text: str) -> bool:
+    """True when text plainly names an animal ingredient with no mock/plant
+    qualifier anywhere — the shared "is this actually risky?" primitive."""
+    match = _ANIMAL_RE.search(text)
+    return bool(match) and not _mock_qualified(text)
+
+
 def _dish_text(dish) -> str:
     return " ".join(
         str(part)

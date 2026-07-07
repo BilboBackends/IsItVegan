@@ -20,11 +20,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import re
+
 from classification_providers import PRICES as _PRICES
 from classification_providers import UNTRUSTED_PROVIDERS, run_provider
 from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
-from guardrails import apply_guardrails
+from guardrails import apply_guardrails, unqualified_animal_word
+
+# "Vegan Burger" is the restaurant declaring the dish vegan — the strongest
+# text evidence there is. Word-boundary match only; Ⓥ/"V" symbols are NOT
+# matched here because many menus use them for vegetarian.
+_VEGAN_NAME_RE = re.compile(r"\bvegan\b", re.IGNORECASE)
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). This is the METERED
@@ -200,6 +207,11 @@ mean food; a vegan soda is not a "vegan option".
 - Copy calories only when the menu explicitly prints them for that item. Keep
   the displayed number or range and unit (for example "450 cal" or
   "450-700 calories"); otherwise set calories to null. Never estimate calories.
+- A dish whose NAME says "vegan" ("Vegan Burger", "Vegan Pad Thai") is the \
+restaurant's own declaration: verdict vegan with confidence 0.9+ unless the \
+menu text visibly contradicts it. Treat an explicit menu-printed vegan label \
+on the item the same way (but a bare "V" often means vegetarian — only trust \
+unambiguous vegan markings).
 - Calibrate, don't hedge reflexively: a dish centered on a plant protein
   (tofu, tempeh, seitan) or made entirely of vegetables, with NO animal
   ingredient named anywhere, is vegan when its listed ingredients are
@@ -369,6 +381,23 @@ def result_from_data(
         name = (dish.get("name") or "").strip()
         if not name:
             continue
+        # Backstop for hedging models: a name that says "vegan" is the
+        # restaurant's own declaration, so a timid likely_vegan/adaptable/
+        # unclear gets upgraded — unless the description plainly names an
+        # unqualified animal ingredient, or the model said not_vegan (it may
+        # have seen a contradiction; trust it).
+        reasoning = dish.get("reasoning") or ""
+        if (
+            verdict in ("likely_vegan", "vegan_adaptable", "unclear")
+            and _VEGAN_NAME_RE.search(name)
+            and not unqualified_animal_word(str(dish.get("description") or ""))
+        ):
+            verdict = "vegan"
+            confidence = max(confidence, 0.85)
+            reasoning = (
+                (reasoning + " " if reasoning else "")
+                + "Dish name itself declares it vegan."
+            )
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):
             category = "food"
@@ -401,7 +430,7 @@ def result_from_data(
                 category=category,
                 verdict=verdict,
                 confidence=confidence,
-                reasoning=dish.get("reasoning") or "",
+                reasoning=reasoning,
                 evidence=dish.get("evidence") or "",
                 dairy_status=(
                     dish.get("dairy_status")

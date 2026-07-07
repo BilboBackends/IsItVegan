@@ -16,7 +16,11 @@ import pytest  # noqa: E402
 
 import db  # noqa: E402
 import learning  # noqa: E402
-from classifier import ClassificationResult, ClassifiedDish  # noqa: E402
+from classifier import (  # noqa: E402
+    ClassificationResult,
+    ClassifiedDish,
+    result_from_data,
+)
 from guardrails import apply_guardrails  # noqa: E402
 
 
@@ -72,6 +76,57 @@ def test_implausible_vegan_rate_flags_run_without_downgrading():
     flags = apply_guardrails(result)
     assert any(f["rule"] == "implausible_vegan_rate" for f in flags)
     assert all(d.verdict == "vegan" for d in result.dishes)  # flag only
+
+
+def _raw(name, verdict, description=None, confidence=0.6):
+    return {
+        "name": name, "description": description, "price": "$10",
+        "calories": None, "category": "food", "verdict": verdict,
+        "confidence": confidence, "reasoning": "hedged", "evidence": "",
+        "dairy_status": "unclear", "gluten_status": "unclear",
+        "nut_status": "unclear", "protein_level": "unclear",
+        "serving_role": "meal", "meal_types": [], "key_ingredients": [],
+    }
+
+
+def _validate(*dishes):
+    return result_from_data(
+        {"dishes": list(dishes)}, provider="deepseek", model="m", billing="x"
+    )
+
+
+def test_vegan_in_name_upgrades_hedged_verdicts():
+    result = _validate(
+        _raw("Vegan Burger", "likely_vegan"),
+        _raw("Vegan Pad Thai", "unclear"),
+        _raw("Vegan Mac", "vegan_adaptable"),
+    )
+    assert [d.verdict for d in result.dishes] == ["vegan"] * 3
+    assert all(d.confidence >= 0.85 for d in result.dishes)
+    assert "declares it vegan" in result.dishes[0].reasoning
+
+
+def test_vegan_name_upgrade_respects_contradictions():
+    result = _validate(
+        # Description plainly names an unqualified animal ingredient.
+        _raw("Vegan Cobb", "unclear", description="bacon, blue cheese, egg"),
+        # The model outright said not_vegan — it may have seen something.
+        _raw("Vegan Burger", "not_vegan"),
+        # "vegan" as a substring of another word must not trigger.
+        _raw("Veganesca Pasta Special", "unclear"),
+        # No "vegan" in the name: untouched.
+        _raw("Garden Burger", "likely_vegan"),
+    )
+    verdicts = [d.verdict for d in result.dishes]
+    assert verdicts == ["unclear", "not_vegan", "unclear", "likely_vegan"]
+
+
+def test_vegan_name_with_mock_qualified_description_still_upgrades():
+    result = _validate(
+        _raw("Vegan Philly", "likely_vegan",
+             description="seitan steak, cashew cheese whiz"),
+    )
+    assert result.dishes[0].verdict == "vegan"
 
 
 @pytest.fixture()
