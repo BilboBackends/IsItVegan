@@ -751,22 +751,26 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
               className="rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs font-semibold text-violet-800 shadow-sm disabled:text-slate-400"
               aria-label="Classification provider for the one-go run"
             >
-              <option
-                value="deepseek,claude,codex"
-                disabled={!config?.classifier?.providers?.deepseek?.available}
-              >
-                DeepSeek first → subscriptions
-              </option>
-              <option value="auto">Auto (subscriptions)</option>
-              {["claude", "codex", "anthropic", "deepseek"].map((name) => (
+              <optgroup label="Chains — fail over automatically">
                 <option
-                  key={name}
-                  value={name}
-                  disabled={!config?.classifier?.providers?.[name]?.available}
+                  value="deepseek,claude,codex"
+                  disabled={!config?.classifier?.providers?.deepseek?.available}
                 >
-                  {PROVIDER_LABELS[name]}
+                  DeepSeek → Claude → Codex (default)
                 </option>
-              ))}
+                <option value="auto">Claude → Codex (subscriptions only)</option>
+              </optgroup>
+              <optgroup label="Pin one provider">
+                {["claude", "codex", "deepseek", "anthropic"].map((name) => (
+                  <option
+                    key={name}
+                    value={name}
+                    disabled={!config?.classifier?.providers?.[name]?.available}
+                  >
+                    {PROVIDER_LABELS[name]}
+                  </option>
+                ))}
+              </optgroup>
             </select>
             <button
               onClick={addAndRunAll}
@@ -1928,42 +1932,41 @@ export default function Admin() {
               aria-label="Classification provider"
               title="Choose how menu classifications are generated"
             >
-              <option
-                value="deepseek,claude,codex"
-                disabled={!config?.classifier?.providers?.deepseek?.available}
-              >
-                DeepSeek first → subscriptions fallback
-              </option>
-              <option value="auto">
-                Auto — subscriptions only (
-                {PROVIDER_LABELS[config?.classifier?.resolved] ||
-                  "none available"}
-                )
-              </option>
-              <option
-                value="claude"
-                disabled={!config?.classifier?.providers?.claude?.available}
-              >
-                Claude subscription
-              </option>
-              <option
-                value="codex"
-                disabled={!config?.classifier?.providers?.codex?.available}
-              >
-                Codex subscription
-              </option>
-              <option
-                value="anthropic"
-                disabled={!config?.classifier?.providers?.anthropic?.available}
-              >
-                Anthropic API
-              </option>
-              <option
-                value="deepseek"
-                disabled={!config?.classifier?.providers?.deepseek?.available}
-              >
-                DeepSeek — cheap, guardrailed
-              </option>
+              <optgroup label="Chains — fail over automatically">
+                <option
+                  value="deepseek,claude,codex"
+                  disabled={!config?.classifier?.providers?.deepseek?.available}
+                >
+                  DeepSeek → Claude → Codex (default)
+                </option>
+                <option value="auto">Claude → Codex (subscriptions only)</option>
+              </optgroup>
+              <optgroup label="Pin one provider">
+                <option
+                  value="claude"
+                  disabled={!config?.classifier?.providers?.claude?.available}
+                >
+                  Claude subscription
+                </option>
+                <option
+                  value="codex"
+                  disabled={!config?.classifier?.providers?.codex?.available}
+                >
+                  Codex subscription
+                </option>
+                <option
+                  value="deepseek"
+                  disabled={!config?.classifier?.providers?.deepseek?.available}
+                >
+                  DeepSeek (metered, cheap)
+                </option>
+                <option
+                  value="anthropic"
+                  disabled={!config?.classifier?.providers?.anthropic?.available}
+                >
+                  Anthropic API (metered)
+                </option>
+              </optgroup>
             </select>
             <select
               value={classifyMode}
