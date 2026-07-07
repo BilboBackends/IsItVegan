@@ -47,12 +47,21 @@ def _all_available(monkeypatch):
     monkeypatch.setattr(cp, "_provider_available", lambda name: True)
 
 
-def test_auto_chain_is_subscriptions_only():
-    # The metered API must NEVER be reachable from auto — API billing is
-    # opt-in per run, by explicit selection only.
+def test_auto_chain_is_subscriptions_only(monkeypatch):
+    # The metered APIs must NEVER be reachable from auto — metered billing
+    # is opt-in, by explicit selection (which includes an explicitly
+    # configured CLASSIFIER_PROVIDER chain in .env).
     assert cp._provider_chain("auto") == ["claude", "codex"]
-    assert cp._provider_chain(None) == ["claude", "codex"]
     assert "anthropic" not in cp._AUTO_CHAIN
+    assert "deepseek" not in cp._AUTO_CHAIN
+    # With nothing requested, the CONFIGURED default chain applies — pin it
+    # here so the test doesn't depend on the developer's .env.
+    import dataclasses
+
+    monkeypatch.setattr(
+        cp, "settings", dataclasses.replace(cp.settings, classifier_provider="auto")
+    )
+    assert cp._provider_chain(None) == ["claude", "codex"]
 
 
 def test_auto_never_falls_back_to_api(monkeypatch):

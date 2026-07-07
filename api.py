@@ -180,12 +180,18 @@ _ingest_state: dict = {
     "recent": [],      # last few per-restaurant results, newest first
     "summary": None,   # {"succeeded": N, "failed": N} once finished
     "error": None,     # fatal job error (not per-restaurant failures)
+    # "started" once a then_classify chain launched, or the error string
+    # explaining why it couldn't (e.g. a classify job was already running).
+    "chained_classify": None,
 }
 _ingest_lock = threading.Lock()
 
 
 def _ingest_worker(
-    do_all: bool, stale_days: int | None, restaurant_ids: list[int] | None
+    do_all: bool,
+    stale_days: int | None,
+    restaurant_ids: list[int] | None,
+    then_classify: dict | None = None,
 ) -> None:
     def on_progress(event: dict) -> None:
         with _ingest_lock:
@@ -212,6 +218,18 @@ def _ingest_worker(
                 "succeeded": summary["succeeded"],
                 "failed": summary["failed"],
             }
+        # Server-side chain: kick off classification for the same ids before
+        # the scrape job reports finished, so the handoff can never be lost
+        # to a closed tab (the original one-go-button failure mode).
+        if then_classify is not None:
+            error, _ = _start_classify_job(
+                requested_provider=then_classify.get("provider"),
+                restaurant_ids=restaurant_ids,
+                parallel=int(then_classify.get("parallel", 3)),
+                mode=then_classify.get("mode", "auto"),
+            )
+            with _ingest_lock:
+                _ingest_state["chained_classify"] = error or "started"
     except (Exception, SystemExit) as exc:
         with _ingest_lock:
             _ingest_state["error"] = str(exc)
@@ -265,16 +283,42 @@ def run_ingest() -> object:
     if restaurant_ids is not None:
         restaurant_ids = list(dict.fromkeys(restaurant_ids))
 
+    # Optional server-side handoff: when the scrape finishes, start a
+    # classification job for the same restaurant_ids. Validated up front so
+    # a bad provider fails the request, not the chain an hour later.
+    then_classify = payload.get("then_classify")
+    if then_classify is not None:
+        if not isinstance(then_classify, dict):
+            return jsonify({"error": "then_classify must be an object."}), 400
+        if restaurant_ids is None:
+            return jsonify(
+                {"error": "then_classify requires restaurant_ids."}
+            ), 400
+        try:
+            resolve_provider(then_classify.get("provider"))
+        except ProviderUnavailable as exc:
+            return jsonify({"error": str(exc)}), 400
+        chain_parallel = then_classify.get("parallel", 3)
+        if (
+            not isinstance(chain_parallel, int)
+            or isinstance(chain_parallel, bool)
+            or not 1 <= chain_parallel <= 6
+        ):
+            return jsonify({"error": "then_classify.parallel must be 1-6."}), 400
+        if then_classify.get("mode", "auto") not in ("auto", "full"):
+            return jsonify({"error": "then_classify.mode must be auto or full."}), 400
+
     with _ingest_lock:
         if _ingest_state["running"]:
             return jsonify({"error": "A menu scrape is already running."}), 409
         _ingest_state.update(
             running=True, total=None, done=0, succeeded=0, failed=0,
             current=None, recent=[], summary=None, error=None,
+            chained_classify=None,
         )
     threading.Thread(
         target=_ingest_worker,
-        args=(bool(payload.get("all")), stale_days, restaurant_ids),
+        args=(bool(payload.get("all")), stale_days, restaurant_ids, then_classify),
         daemon=True,
     ).start()
     return jsonify({"started": True}), 202
@@ -782,6 +826,49 @@ def _classify_worker(
             _classify_state["current"] = None
 
 
+def _start_classify_job(
+    *,
+    requested_provider: str | None,
+    restaurant_ids: list[int] | None = None,
+    parallel: int = 3,
+    mode: str = "auto",
+    do_all: bool = False,
+    restaurant_id: int | None = None,
+) -> tuple[str | None, str | None]:
+    """Initialize the classify-job state and spawn its worker thread.
+
+    Returns (error, resolved_provider); error is None on success. Shared by
+    POST /api/classify and the ingest worker's then_classify chain, so a
+    scrape can hand off to classification entirely server-side — the chain
+    survives page navigation and browser closes.
+    """
+    try:
+        provider = resolve_provider(requested_provider)
+    except ProviderUnavailable as exc:
+        return str(exc), None
+    with _classify_lock:
+        if _classify_state["running"]:
+            return "A classification run is already running.", provider
+        _classify_state.update(
+            running=True, cancel_requested=False, total=None, done=0,
+            succeeded=0, failed=0,
+            cost=0.0, current=None, recent=[], summary=None, error=None,
+            provider=provider,
+            billing={
+                "claude": "claude_subscription",
+                "codex": "chatgpt_subscription",
+            }.get(provider, "api"),
+        )
+        _classify_cancel.clear()
+    threading.Thread(
+        target=_classify_worker,
+        args=(do_all, restaurant_ids, requested_provider, restaurant_id,
+              parallel, mode),
+        daemon=True,
+    ).start()
+    return None, provider
+
+
 @app.post("/api/classify")
 def run_classify() -> object:
     """Classify dishes via the provider chain: Claude Code subscription,
@@ -830,32 +917,18 @@ def run_classify() -> object:
     if mode not in ("auto", "full"):
         return jsonify({"error": "mode must be auto or full."}), 400
 
-    with _classify_lock:
-        if _classify_state["running"]:
-            return jsonify({"error": "A classification run is already running."}), 409
-        _classify_state.update(
-            running=True, cancel_requested=False, total=None, done=0,
-            succeeded=0, failed=0,
-            cost=0.0, current=None, recent=[], summary=None, error=None,
-            provider=provider,
-            billing={
-                "claude": "claude_subscription",
-                "codex": "chatgpt_subscription",
-            }.get(provider, "api"),
+    error, provider = _start_classify_job(
+        requested_provider=requested_provider,
+        restaurant_ids=restaurant_ids,
+        parallel=parallel,
+        mode=mode,
+        do_all=bool(payload.get("all")),
+        restaurant_id=restaurant_id,
+    )
+    if error:
+        return jsonify({"error": error}), (
+            409 if "already running" in error else 400
         )
-        _classify_cancel.clear()
-    threading.Thread(
-        target=_classify_worker,
-        args=(
-            bool(payload.get("all")),
-            restaurant_ids,
-            requested_provider,
-            restaurant_id,
-            parallel,
-            mode,
-        ),
-        daemon=True,
-    ).start()
     return jsonify({"started": True, "provider": provider}), 202
 
 

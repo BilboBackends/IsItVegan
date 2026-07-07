@@ -590,32 +590,33 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
       onAdded?.();
       if (ids.length === 0) throw new Error("Nothing was added.");
 
+      // then_classify makes the handoff SERVER-side: the classify job
+      // launches from the scrape worker, so navigating away (or closing
+      // the browser) can no longer strand the run half-done.
       setPipeline({ stage: "Scraping", done: 0, total: ids.length });
       const ingestRes = await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ restaurant_ids: ids }),
+        body: JSON.stringify({
+          restaurant_ids: ids,
+          then_classify: { provider: pipelineProvider, parallel: 3 },
+        }),
       });
       if (!ingestRes.ok) {
         const data = await ingestRes.json();
         throw new Error(data.error || "Scrape job could not start");
       }
       const ingestState = await poll("/api/ingest/status", "Scraping");
+      if (
+        ingestState.chained_classify &&
+        ingestState.chained_classify !== "started"
+      ) {
+        throw new Error(
+          `Classification could not start: ${ingestState.chained_classify}`
+        );
+      }
 
       setPipeline({ stage: "Classifying", done: 0, total: null });
-      const classifyRes = await fetch("/api/classify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          restaurant_ids: ids,
-          provider: pipelineProvider,
-          parallel: 3,
-        }),
-      });
-      if (!classifyRes.ok) {
-        const data = await classifyRes.json();
-        throw new Error(data.error || "Classify job could not start");
-      }
       const classifyState = await poll("/api/classify/status", "Classifying");
 
       const cost = classifyState.summary?.cost;
@@ -750,6 +751,12 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
               className="rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs font-semibold text-violet-800 shadow-sm disabled:text-slate-400"
               aria-label="Classification provider for the one-go run"
             >
+              <option
+                value="deepseek,claude,codex"
+                disabled={!config?.classifier?.providers?.deepseek?.available}
+              >
+                DeepSeek first → subscriptions
+              </option>
               <option value="auto">Auto (subscriptions)</option>
               {["claude", "codex", "anthropic", "deepseek"].map((name) => (
                 <option
@@ -1045,7 +1052,11 @@ export default function Admin() {
   const [qualityBusy, setQualityBusy] = useState(null);
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [selectedIds, setSelectedIds] = useState([]);
-  const [classifierProvider, setClassifierProvider] = useState("auto");
+  // Default chain: DeepSeek (cheap, explicitly chosen) first, subscriptions
+  // as automatic fallback if it errors or runs out of balance.
+  const [classifierProvider, setClassifierProvider] = useState(
+    "deepseek,claude,codex"
+  );
 
   async function loadData() {
     setLoading(true);
@@ -1917,6 +1928,12 @@ export default function Admin() {
               aria-label="Classification provider"
               title="Choose how menu classifications are generated"
             >
+              <option
+                value="deepseek,claude,codex"
+                disabled={!config?.classifier?.providers?.deepseek?.available}
+              >
+                DeepSeek first → subscriptions fallback
+              </option>
               <option value="auto">
                 Auto — subscriptions only (
                 {PROVIDER_LABELS[config?.classifier?.resolved] ||
