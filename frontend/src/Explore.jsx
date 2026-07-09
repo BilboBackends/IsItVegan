@@ -15,7 +15,7 @@ import {
   relativeDate,
   todayOpeningHours,
 } from "./RestaurantMeta.jsx";
-import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import { cuisineLabel, cuisineOptions, isDessertVenue } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
 
@@ -371,8 +371,9 @@ export default function Explore({
       count.style.cssText = `font-size:13px;font-weight:600;color:${
         (r.vegan_options || 0) > 0 ? "#047857" : "#57534e"
       }`;
+      const countUnit = isDessertVenue(r.primary_type) ? "treat" : "meal";
       count.textContent = analyzed
-        ? `${r.vegan_options || 0} vegan meal${r.vegan_options === 1 ? "" : "s"}` +
+        ? `${r.vegan_options || 0} vegan ${countUnit}${r.vegan_options === 1 ? "" : "s"}` +
           ((r.vegan_sides || 0) > 0
             ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
             : "")
@@ -593,14 +594,19 @@ export default function Explore({
               className="h-2 w-2 shrink-0 rounded-full"
               style={{ background: pinColor(r) }}
             />
-            {r.vegan_options > 0
-              ? `${r.vegan_options} vegan meal${r.vegan_options === 1 ? "" : "s"}` +
-                ((r.vegan_sides || 0) > 0
-                  ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
-                  : "")
-              : (r.vegan_sides || 0) > 0
-                ? `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`
-                : "no vegan meals found"}
+            {(() => {
+              // Dessert venues (ice cream, bakeries): the counted items are
+              // their desserts, so say "treats", never "meals".
+              const unit = isDessertVenue(r.primary_type) ? "treat" : "meal";
+              return r.vegan_options > 0
+                ? `${r.vegan_options} vegan ${unit}${r.vegan_options === 1 ? "" : "s"}` +
+                    ((r.vegan_sides || 0) > 0
+                      ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
+                      : "")
+                : (r.vegan_sides || 0) > 0
+                  ? `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`
+                  : `no vegan ${unit}s found`;
+            })()}
           </span>
         ) : (
           <span className="text-xs italic text-stone-400">

@@ -3,6 +3,7 @@ import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, TodayHours } from "./RestaurantMeta.jsx";
 import { calorieLabel } from "./calories.js";
+import { isDessertVenue } from "./cuisine.js";
 import { isCountedVegan } from "./verdicts.js";
 import { fetchRestaurantDishes } from "./staticData.js";
 import ThumbVote from "./ThumbVote.jsx";
@@ -165,7 +166,8 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
             <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
               <span className="text-sm font-normal text-slate-400">
-                {restaurant.vegan_options} vegan meal
+                {restaurant.vegan_options} vegan{" "}
+                {isDessertVenue(restaurant.primary_type) ? "treat" : "meal"}
                 {restaurant.vegan_options === 1 ? "" : "s"}
                 {restaurant.vegan_sides > 0 &&
                   ` · ${restaurant.vegan_sides} side${

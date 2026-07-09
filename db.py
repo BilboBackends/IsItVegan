@@ -1776,6 +1776,17 @@ def resolve_report(report_id: int, db_path: str | None = None) -> bool:
 # Mirrored in frontend/src/verdicts.js.
 STRICT_LIKELY_VEGAN_MIN_CONFIDENCE = 0.75
 
+# Venues whose PRODUCT is dessert: for them, vegan desserts ARE the vegan
+# options, so the dessert exclusion below would zero out a perfectly
+# vegan-friendly ice cream shop (Sampaguita: 7 vegan flavors, headline "no
+# vegan meals"). Google primary_type values. Mirrored in
+# frontend/src/cuisine.js (isDessertVenue) for the "vegan treats" label.
+DESSERT_VENUE_TYPES = frozenset({
+    "ice_cream_shop", "dessert_shop", "dessert_restaurant", "bakery",
+    "donut_shop", "bagel_shop", "chocolate_shop", "chocolate_factory",
+    "candy_store", "confectionery", "frozen_yogurt_shop", "acai_shop",
+})
+
 
 def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
     """Per restaurant: dish total (all), per-verdict maps over FOOD only
@@ -1783,9 +1794,12 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
 
     Drinks and desserts are excluded from the verdict maps so "12 vegan
     meals" can't mean sodas or brownies, and sides are counted separately so
-    it can't mean 12 bags of chips either. NULL category (pre-category rows) is treated as food;
-    NULL/'unclear' serving_role (pre-role rows) is treated as a meal so the
-    headline count doesn't collapse before dishes are re-classified.
+    it can't mean 12 bags of chips either — EXCEPT at dessert venues
+    (DESSERT_VENUE_TYPES), where desserts are the product and count toward
+    the headline number (the UI labels them "treats", not "meals").
+    NULL category (pre-category rows) is treated as food; NULL/'unclear'
+    serving_role (pre-role rows) is treated as a meal so the headline count
+    doesn't collapse before dishes are re-classified.
 
     vegan_meals / vegan_sides apply the strict standard (see
     STRICT_LIKELY_VEGAN_MIN_CONFIDENCE); the by_verdict maps keep the full
@@ -1794,8 +1808,9 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT d.restaurant_id, c.verdict,
+            SELECT d.restaurant_id, c.verdict, r.primary_type,
                    (d.category IS NULL OR d.category = 'food') AS is_food,
+                   (d.category = 'dessert') AS is_dessert,
                    (c.serving_role = 'side') AS is_side,
                    COUNT(*) AS n,
                    SUM(CASE
@@ -1805,13 +1820,14 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                        ELSE 0
                    END) AS strict_n
             FROM dishes d
+            JOIN restaurants r ON r.id = d.restaurant_id
             JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
                 WHERE dish_id = d.id
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
             )
-            GROUP BY d.restaurant_id, c.verdict, is_food, is_side
+            GROUP BY d.restaurant_id, c.verdict, is_food, is_dessert, is_side
             """,
             {"min_confidence": STRICT_LIKELY_VEGAN_MIN_CONFIDENCE},
         ).fetchall()
@@ -1828,12 +1844,19 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
             },
         )
         entry["total"] += r["n"]
-        if r["is_food"]:
-            bucket = "sides_by_verdict" if r["is_side"] else "by_verdict"
+        dessert_venue_product = (
+            r["is_dessert"] and r["primary_type"] in DESSERT_VENUE_TYPES
+        )
+        if r["is_food"] or dessert_venue_product:
+            # A dessert venue's desserts are its PRODUCT — the classifier
+            # tags scoops/slices serving_role 'side', but here they belong
+            # in the headline count, never the sides bucket.
+            is_side = r["is_side"] and not dessert_venue_product
+            bucket = "sides_by_verdict" if is_side else "by_verdict"
             entry[bucket][r["verdict"]] = (
                 entry[bucket].get(r["verdict"], 0) + r["n"]
             )
-            entry["vegan_sides" if r["is_side"] else "vegan_meals"] += r["strict_n"]
+            entry["vegan_sides" if is_side else "vegan_meals"] += r["strict_n"]
     return out
 
 

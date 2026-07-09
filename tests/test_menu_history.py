@@ -230,6 +230,35 @@ def test_restaurant_votes_follow_the_same_one_per_client_rule(test_db):
     assert not db.record_restaurant_vote(999, "up", client_id="c1", db_path=test_db)
 
 
+def test_dessert_venues_count_vegan_desserts_as_headline_options(test_db):
+    # An ice cream shop's product IS dessert: its vegan flavors must reach
+    # the headline count (labeled "treats" in the UI). A normal restaurant's
+    # desserts stay excluded so a vegan brownie can't inflate a steakhouse.
+    with db.connect(test_db) as conn:
+        conn.execute(
+            "INSERT INTO restaurants (id, name, place_id, primary_type) "
+            "VALUES (2, 'Scoops', 'p2', 'ice_cream_shop')"
+        )
+        for rid, name in ((1, "Vegan Brownie"), (2, "Vegan Oat Ube")):
+            dish = conn.execute(
+                "INSERT INTO dishes (restaurant_id, name, category) "
+                "VALUES (?, ?, 'dessert') RETURNING id",
+                (rid, name),
+            ).fetchone()[0]
+            # serving_role 'side' mirrors how the classifier actually tags
+            # scoops/slices — a dessert venue must still count it as a
+            # headline option, not a side.
+            conn.execute(
+                "INSERT INTO classifications (dish_id, verdict, confidence, "
+                "reasoning, serving_role, created_at) "
+                "VALUES (?, 'vegan', 0.95, 'x', 'side', '2026-07-09')",
+                (dish,),
+            )
+    counts = db.verdict_counts_by_restaurant(db_path=test_db)
+    assert counts[1]["vegan_meals"] == 0  # plain restaurant: dessert excluded
+    assert counts[2]["vegan_meals"] == 1  # ice cream shop: dessert counts
+
+
 def test_classification_result_dedupes_formatting_but_keeps_size_variant():
     def dish(name, price):
         return {
