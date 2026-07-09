@@ -531,28 +531,38 @@ def _hit_output_cap(response) -> bool:
     return "max_tokens" in (response.error or "").lower()
 
 
+# A section this small that still overflows the output cap isn't a size
+# problem — stop splitting and surface the failure.
+_MIN_CHUNK_CHARS = 1_500
+
+
 def _classify_in_chunks(
     menu: str, *, context: str, provider: str | None, system_prompt: str
 ) -> ProviderResponse | None:
-    """Full extraction of an oversized menu, one part at a time.
+    """Full extraction of an oversized menu, one section at a time.
 
-    Returns the merged ok response, the first failing chunk's response (so
-    the normal failure path reports it), or None when the menu can't be
-    split any further.
+    ADAPTIVE: dense menus (e.g. 170 dishes in 12k chars of Vietnamese menu)
+    can overflow the output cap even for a normal-sized section, so any
+    section that hits the cap is split in half and re-queued, down to
+    _MIN_CHUNK_CHARS. Returns the merged ok response, the first
+    unrecoverable failure (so the normal failure path reports it), or None
+    when the menu has no line breaks to split on at all.
     """
-    chunks = _split_menu_lines(menu)
-    if len(chunks) < 2:
+    pending = _split_menu_lines(menu)
+    if len(pending) < 2:
         return None
     raw_dishes: list = []
     input_tokens = output_tokens = 0
     cost = 0.0
     last: ProviderResponse | None = None
-    for index, chunk in enumerate(chunks, 1):
+    sections_done = 0
+    while pending:
+        chunk = pending.pop(0)
         prompt = (
             context
-            + f"\n\nMenu text scraped from the restaurant's website — PART "
-            f"{index} of {len(chunks)}. Other parts are classified "
-            "separately; extract every dish in THIS part:\n\n"
+            + "\n\nMenu text scraped from the restaurant's website — ONE "
+            "SECTION of a larger menu (other sections are classified "
+            "separately; extract every dish in THIS section):\n\n"
             + chunk
         )
         response = run_provider(
@@ -561,13 +571,27 @@ def _classify_in_chunks(
             user_prompt=prompt,
             schema=_SCHEMA,
         )
+        if not response.ok and _hit_output_cap(response) and len(chunk) >= 2 * _MIN_CHUNK_CHARS:
+            halves = _split_menu_lines(chunk, target=max(_MIN_CHUNK_CHARS, len(chunk) // 2))
+            if len(halves) >= 2:
+                print(
+                    f"         chunk of {len(chunk)} chars still overflowed "
+                    f"the output cap — splitting into {len(halves)}"
+                )
+                pending = halves + pending
+                continue
         if not response.ok or response.data is None:
             return response
         last = response
+        sections_done += 1
         raw_dishes.extend(response.data.get("dishes") or [])
         input_tokens += response.input_tokens
         output_tokens += response.output_tokens
         cost += response.cost_estimate
+    print(
+        f"         oversized menu classified in {sections_done} section(s), "
+        f"{len(raw_dishes)} raw dishes"
+    )
     return ProviderResponse(
         ok=True,
         provider=last.provider,
