@@ -226,6 +226,69 @@ def test_headless_stops_after_complete_structured_landing_payload(monkeypatch):
     assert instances[0].calls == ["https://x.com/location/1"]
 
 
+# ---- menu scoring: the Sampaguita failure pair ------------------------------
+
+GIFT_CARD_TEXT = """
+Sampaguita Ice Cream LLC
+Buy gift card
+Reload card
+Check balance
+Give the Perfect Gift
+Get a voucher for yourself or gift one to a friend
+Send a gift card to one recipient or make a bulk purchase
+eGift card amount
+$10.00
+Pay $10.00
+$25.00
+Pay $25.00
+$50.00
+Pay $45.00
+$100.00
+Pay $90.00
+"""
+
+PRICELESS_FLAVOR_MENU = "\n".join(
+    ["Menu", "Handmade Flavors", "Desserts"]
+    + [
+        line
+        for i in range(1, 16)
+        for line in (
+            f"Flavor Number {i} Supreme",
+            f"Vanilla ice cream with roasted mango chunks, toasted rice "
+            f"crunch and coconut cream swirl number {i}.",
+            "*Contains dairy, egg, gluten",
+        )
+    ]
+)
+
+
+def test_gift_card_page_is_not_a_menu_despite_prices():
+    # squareup.com/gift pages carry card denominations that read as prices;
+    # one was stored as Sampaguita's menu while the real menu was rejected.
+    from menu_score import score_menu_text
+
+    result = score_menu_text(GIFT_CARD_TEXT)
+    assert not result.is_menu
+    assert "gift" in result.reason
+
+
+def test_priceless_menu_with_dense_food_content_is_kept():
+    # Ice cream shops and "market price" places print no prices; food-word
+    # density plus dish-shaped lines must be able to carry the score alone.
+    from menu_score import score_menu_text
+
+    result = score_menu_text(PRICELESS_FLAVOR_MENU)
+    assert result.price_count == 0
+    assert result.is_menu, f"score {result.score}: {result.reason}"
+
+
+def test_gift_links_never_followed():
+    assert not _looks_menu_like(
+        "Gift Cards", "https://squareup.com/gift/MLZ65N27SASE0/order"
+    )
+    assert not _looks_menu_like("Order eGift Voucher", "/gift-cards")
+
+
 # ---- scrape_menu_text entry points (no network) ----------------------------
 
 def test_social_profile_website_fails_fast():

@@ -113,9 +113,13 @@ _SECTION_PATH_RE_WORDS = (
 )
 
 # Links we never follow even if they look menu-ish (socials / maps / forms).
+# "gift" covers gift-card shops: squareup.com/gift/... ends in /order, which
+# matched the order hint and got a GIFT CARD page stored as Sampaguita's menu
+# (its $10/$25/$50 amounts then out-scored the real, price-less menu).
 _SKIP_HINTS = (
     "facebook.", "instagram.", "twitter.", "yelp.", "tel:", "mailto:",
     "maps.app.goo.gl", "google.com/maps", "forms.gle", "youtube.", "tiktok.",
+    "gift", "voucher", "donate", "merch", "careers", "hiring",
 )
 
 # Third-party menu/ordering hosts. If the menu link points here, the page is

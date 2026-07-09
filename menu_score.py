@@ -82,6 +82,14 @@ class MenuScore:
 # A page must clear this to count as a real menu.
 MENU_THRESHOLD = 0.45
 
+# Gift-card / voucher storefront tells. Such pages carry several dollar
+# amounts (the card denominations), which the price signal would otherwise
+# read as a strong menu.
+_GIFT_WORDS = (
+    "gift card", "egift", "e-gift", "gift cards", "voucher",
+    "check balance", "reload card", "recipient",
+)
+
 
 def _count_food_words(low: str) -> int:
     return sum(low.count(w) for w in _FOOD_WORDS)
@@ -120,8 +128,40 @@ def score_menu_text(text: str) -> MenuScore:
         + 0.20 * section_sig
         + 0.15 * struct_sig
     )
+
+    # Menus WITHOUT printed prices are real (ice cream shops, "market
+    # price" places, coffee menus). When there are no prices at all, score
+    # on the remaining signals at full weight instead of forfeiting 40% —
+    # a text dense with food words and dish-shaped lines still clears the
+    # bar on their strength; thin marketing copy still can't (food alone
+    # maxes at 0.40 < threshold, so structure/sections must corroborate).
+    if price_count == 0:
+        score = max(
+            score,
+            0.40 * food_sig + 0.30 * section_sig + 0.30 * struct_sig,
+        )
+
+    # Gift-card storefronts (Square gift pages etc.) are all prices and no
+    # food — cap them below the menu bar no matter how "pricey" they look.
+    gift_hits = sum(low.count(w) for w in _GIFT_WORDS)
+    is_gift_page = gift_hits >= 3 and food_hits < 10
+    if is_gift_page:
+        score = min(score, 0.25)
+
     score = round(min(score, 1.0), 3)
     is_menu = score >= MENU_THRESHOLD
+
+    if is_gift_page:
+        return MenuScore(
+            score=score,
+            is_menu=False,
+            price_count=price_count,
+            food_word_hits=food_hits,
+            section_hits=section_hits,
+            short_line_ratio=round(short_line_ratio, 3),
+            line_count=line_count,
+            reason="looks like a gift-card/voucher page, not a menu",
+        )
 
     if is_menu:
         reason = (
