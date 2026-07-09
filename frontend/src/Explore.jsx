@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import DishDetail from "./DishDetail.jsx";
 import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
 import LocationPicker from "./LocationPicker.jsx";
@@ -83,8 +84,9 @@ const LEGEND = [
 
 export default function Explore({
   embedded = false,
-  favorites = { restaurants: [] },
+  favorites = { restaurants: [], dishes: [] },
   toggleRestaurant = () => {},
+  toggleDish = () => {},
 }) {
   const [restaurants, setRestaurants] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -107,6 +109,11 @@ export default function Explore({
     () => window.matchMedia("(min-width: 1024px)").matches
   );
   const [dishesFor, setDishesFor] = useState(null);
+  // Dish detail opened from the menu modal — hosted HERE so it never
+  // navigates away to the Food items tab. The dish is merged with its
+  // restaurant's fields because the per-restaurant dish rows don't carry
+  // restaurant context.
+  const [detailDish, setDetailDish] = useState(null);
   // {id, ts, source: "card" | "map"} — card click flies the map; pin click
   // highlights + scrolls the card. Only card-sourced focus moves the map.
   const [focus, setFocus] = useState(null);
@@ -855,7 +862,51 @@ export default function Explore({
       </div>
 
       {dishesFor && (
-        <DishModal restaurant={dishesFor} onClose={() => setDishesFor(null)} />
+        <DishModal
+          restaurant={dishesFor}
+          onClose={() => setDishesFor(null)}
+          onOpenDish={(d) =>
+            setDetailDish({
+              ...d,
+              restaurant_id: dishesFor.id,
+              restaurant_name: dishesFor.name,
+              place_id: dishesFor.place_id,
+              address: dishesFor.address,
+              website_url: dishesFor.website_url,
+              lat: dishesFor.lat,
+              lng: dishesFor.lng,
+              rating: dishesFor.rating,
+              user_rating_count: dishesFor.user_rating_count,
+              open_now: dishesFor.open_now,
+              enriched_at: dishesFor.enriched_at,
+              opening_hours: dishesFor.opening_hours,
+              menu_fetched_at: dishesFor.menu_fetched_at,
+              primary_type: dishesFor.primary_type,
+              price_level: dishesFor.price_level,
+              distance: dishesFor.distance,
+            })
+          }
+        />
+      )}
+      {detailDish && (
+        <DishDetail
+          dish={detailDish}
+          onClose={() => setDetailDish(null)}
+          shareUrl={`${window.location.origin}${window.location.pathname}#dishes?dish=${detailDish.id}`}
+          favorite={favorites.dishes?.includes(detailDish.id)}
+          onToggleFavorite={() => toggleDish(detailDish.id)}
+          restaurantFavorite={favorites.restaurants.includes(
+            detailDish.restaurant_id
+          )}
+          onToggleRestaurant={() => toggleRestaurant(detailDish.restaurant_id)}
+          onShowMap={() => {
+            const placeId = detailDish.place_id;
+            setDetailDish(null);
+            setDishesFor(null);
+            if (!isDesktop) setView("map");
+            if (placeId) setFocus({ id: placeId, ts: Date.now(), source: "card" });
+          }}
+        />
       )}
     </div>
   );

@@ -75,7 +75,7 @@ function dishCategory(d) {
     : "food";
 }
 
-export default function DishModal({ restaurant, onClose }) {
+export default function DishModal({ restaurant, onClose, onOpenDish }) {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("food");
@@ -355,12 +355,23 @@ export default function DishModal({ restaurant, onClose }) {
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}
-                  <a
-                    href={`#dishes?dish=${d.id}`}
-                    className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
-                  >
-                    Details, share, or report →
-                  </a>
+                  {onOpenDish ? (
+                    // Host provides its own detail panel — stay on the
+                    // current tab instead of navigating to Food items.
+                    <button
+                      onClick={() => onOpenDish(d)}
+                      className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
+                    >
+                      Details, share, or report →
+                    </button>
+                  ) : (
+                    <a
+                      href={`#dishes?dish=${d.id}`}
+                      className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
+                    >
+                      Details, share, or report →
+                    </a>
+                  )}
                 </li>
               ))}
                     </ul>

@@ -33,6 +33,10 @@ export default function DishDetail({
   onToggleFavorite,
   restaurantFavorite,
   onToggleRestaurant,
+  // Canonical link for sharing. Hosts that open this panel WITHOUT a dish
+  // deep-link in the address bar (the Restaurants tab) pass the #dishes
+  // deep-link so recipients still land on the dish.
+  shareUrl,
 }) {
   const [reportOpen, setReportOpen] = useState(false);
   const [issueType, setIssueType] = useState("animal_ingredient");
@@ -44,7 +48,7 @@ export default function DishDetail({
   const details = splitReasoning(dish.reasoning);
 
   async function share() {
-    const url = window.location.href;
+    const url = shareUrl || window.location.href;
     try {
       if (navigator.share) {
         await navigator.share({ title: `${dish.name} at ${dish.restaurant_name}`, url });

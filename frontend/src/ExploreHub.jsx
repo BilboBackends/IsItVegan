@@ -107,6 +107,7 @@ export default function ExploreHub({ view = "restaurants" }) {
           embedded
           favorites={favorites}
           toggleRestaurant={(id) => toggle("restaurants", id)}
+          toggleDish={(id) => toggle("dishes", id)}
         />
       )}
     </div>
