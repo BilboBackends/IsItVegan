@@ -83,7 +83,10 @@ _MENU_HINTS = (
     "tacos",
     "sushi",
     "desserts",
+    "dessert",  # The Chapman's nav uses the singular
     "deserts",  # a common menu misspelling
+    "happy hour",
+    "happy-hour",
     "beverages",
     "drinks",
     "specials",

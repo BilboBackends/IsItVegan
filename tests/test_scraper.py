@@ -308,6 +308,24 @@ def test_find_pdf_urls_sees_viewer_scripts_and_relative_hrefs():
     assert not any("gift" in u for u in urls)
 
 
+def test_letter_spaced_pdf_text_is_collapsed():
+    # Some design-tool PDFs render kerning as one space per letter, two per
+    # word gap — The Chapman's dessert menu extracted as "M e r i n g u e".
+    from pdf_menu import _fix_letter_spacing
+
+    spaced = (
+        "D e s s e r t s\n"
+        "S k y  H i g h  C i t r u s  M e r i n g u e  P i e\n"
+        "G i n g e r s n a p  c r u s t ,  o r a n g e  z e s t  1 7\n"
+        "Normal line stays untouched, even with $12 prices."
+    )
+    fixed = _fix_letter_spacing(spaced)
+    assert "Desserts" in fixed
+    assert "Sky High Citrus Meringue Pie" in fixed
+    assert "Gingersnap crust, orange zest 17" in fixed
+    assert "Normal line stays untouched, even with $12 prices." in fixed
+
+
 def test_mediocre_learned_route_triggers_rediscovery():
     # A 0.49-score learned route (index blurbs) must not lock out discovery.
     from scraper import _try_learned_context

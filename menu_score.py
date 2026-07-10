@@ -64,6 +64,11 @@ _FOOD_WORDS = (
     "vegan", "vegetarian", "gluten", "dairy", "egg", "cream", "butter",
     "wrap", "bowl", "plate", "taco", "burrito", "sandwich", "burger", "salad",
     "soup", "appetizer", "dessert", "espresso", "latte",
+    # dessert-menu vocabulary — without it, a dessert PDF full of tortes
+    # and ganache read as "few food words" and got rejected (The Chapman).
+    "chocolate", "vanilla", "caramel", "cake", "cheesecake", "brownie",
+    "cookie", "sorbet", "gelato", "ice cream", "custard", "pudding",
+    "tart", "pie", "mousse", "ganache", "meringue", "sundae",
 )
 
 

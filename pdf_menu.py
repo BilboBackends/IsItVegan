@@ -26,6 +26,38 @@ _MIN_LOCAL_CHARS = 200
 _MODEL = "claude-haiku-4-5"
 
 
+def _fix_letter_spacing(text: str) -> str:
+    """Collapse per-glyph spacing some design-tool PDFs produce.
+
+    pypdf renders their kerning as "D e s s e r t s" — one space between
+    letters, two-plus between words — which defeats every downstream word
+    match (menu scoring saw The Chapman's dessert PDF as "few food words",
+    and "1 7" isn't a price). Lines that are mostly single-character tokens
+    get their letters rejoined and word gaps restored.
+    """
+    fixed: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        tokens = stripped.split(" ")
+        single_chars = sum(1 for token in tokens if len(token) == 1)
+        if len(tokens) >= 6 and single_chars / len(tokens) > 0.7:
+            words: list[str] = []
+            current: list[str] = []
+            for token in stripped.split(" "):
+                if token == "":  # the 2nd of a double space: a word gap
+                    if current:
+                        words.append("".join(current))
+                        current = []
+                else:
+                    current.append(token)
+            if current:
+                words.append("".join(current))
+            fixed.append(" ".join(words))
+        else:
+            fixed.append(line)
+    return "\n".join(fixed)
+
+
 def _extract_local(pdf_bytes: bytes) -> str:
     """Pull embedded text from a PDF with pypdf. Empty string on failure."""
     try:
@@ -37,7 +69,7 @@ def _extract_local(pdf_bytes: bytes) -> str:
             txt = page.extract_text() or ""
             if txt.strip():
                 parts.append(txt.strip())
-        return "\n".join(parts).strip()
+        return _fix_letter_spacing("\n".join(parts).strip())
     except Exception:
         return ""
 
