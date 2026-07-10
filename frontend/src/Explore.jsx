@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
 import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
-import LocationPicker from "./LocationPicker.jsx";
+import LocationPicker, { NearMeIconButton } from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 import { formatRatingCount, ratingText } from "./RatingBadge.jsx";
@@ -978,7 +978,8 @@ export default function Explore({
         </FilterSidebar>
 
         <div className="min-w-0 flex-1">
-      <div className="relative mb-4">
+      <div className="mb-4 flex items-center gap-2">
+      <div className="relative min-w-0 flex-1">
         <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
         <input
           autoFocus
@@ -1000,12 +1001,23 @@ export default function Explore({
           </button>
         )}
       </div>
+      {/* Phones: near-me one tap from the search bar — the full picker
+          lives behind the collapsed filter sidebar. */}
+      <NearMeIconButton
+        className="lg:hidden"
+        onOrigin={(point, label) => {
+          setOrigin(point);
+          setOriginLabel(label);
+          setSortBy("distance");
+        }}
+      />
+      </div>
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
         onClick={() => setView(view === "list" ? "map" : "list")}
-        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+        className="fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
       >
         {view === "list" ? "🗺 Map" : "☰ List"}
       </button>

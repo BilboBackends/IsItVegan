@@ -12,6 +12,46 @@ const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 // another state. left,top,right,bottom around greater Orlando.
 const ORLANDO_VIEWBOX = "-81.65,28.85,-81.15,28.30";
 
+// Compact one-tap "use my location" button for MOBILE, where the full
+// LocationPicker sits behind the collapsed filter sidebar — near-me must be
+// immediately reachable, not two taps deep.
+export function NearMeIconButton({ onOrigin, className = "" }) {
+  const [locating, setLocating] = useState(false);
+
+  function locate() {
+    if (!navigator.geolocation || locating) return;
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        onOrigin(
+          { lat: pos.coords.latitude, lng: pos.coords.longitude },
+          "your location"
+        );
+        setLocating(false);
+      },
+      () => setLocating(false),
+      { timeout: 8000 }
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={locate}
+      disabled={locating}
+      title="Use my location"
+      aria-label="Use my location"
+      className={`flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-2xl border border-stone-300 bg-white text-xl shadow-sm transition active:scale-95 disabled:opacity-50 ${className}`}
+    >
+      {locating ? (
+        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
+      ) : (
+        "📍"
+      )}
+    </button>
+  );
+}
+
 export default function LocationPicker({ originLabel, onOrigin }) {
   const [address, setAddress] = useState("");
   const [locating, setLocating] = useState(false);

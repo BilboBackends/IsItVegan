@@ -5,7 +5,7 @@ import DishDetail from "./DishDetail.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
-import LocationPicker from "./LocationPicker.jsx";
+import LocationPicker, { NearMeIconButton } from "./LocationPicker.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
@@ -924,7 +924,8 @@ export default function DishExplore({
       </FilterSidebar>
 
       <div className="min-w-0 flex-1">
-      <div className="relative mb-4">
+      <div className="mb-4 flex items-center gap-2">
+      <div className="relative min-w-0 flex-1">
         <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
         <input
           autoFocus
@@ -945,6 +946,17 @@ export default function DishExplore({
             ×
           </button>
         )}
+      </div>
+      {/* Phones: near-me one tap from the search bar — the full picker
+          lives behind the collapsed filter sidebar. */}
+      <NearMeIconButton
+        className="lg:hidden"
+        onOrigin={(point, label) => {
+          setOrigin(point);
+          setOriginLabel(label);
+          setSortBy("distance");
+        }}
+      />
       </div>
 
       {/* Active filters — front and center above the results, never buried
@@ -1058,7 +1070,7 @@ export default function DishExplore({
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
         onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className="fixed bottom-5 left-1/2 z-30 -translate-x-1/2 rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
+        className="fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
       >
         {mobileView === "list" ? "🗺 Map" : "☰ List"}
       </button>
