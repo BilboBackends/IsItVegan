@@ -68,6 +68,109 @@ export function veganScoreClasses(score) {
   return "bg-stone-100 text-stone-500";
 }
 
+function ScoreBar({ label, value, max, note }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="font-semibold text-stone-700">{label}</span>
+        <span className="font-bold tabular-nums text-stone-900">
+          {value}
+          <span className="font-normal text-stone-400">/{max}</span>
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-stone-100">
+        <div
+          className="h-full rounded-full bg-emerald-500"
+          style={{ width: `${Math.min(100, (value / max) * 100)}%` }}
+        />
+      </div>
+      <div className="mt-0.5 text-[11px] leading-snug text-stone-400">{note}</div>
+    </div>
+  );
+}
+
+// Click the score badge → a small popover shows the actual math: one bar
+// per component with what earned it. Explainability as UI, not a wall of
+// tooltip text.
+function VeganScoreBadge({ r }) {
+  const [open, setOpen] = useState(false);
+  const p = r.vegan_score_parts;
+  if (r.vegan_score == null || !(r.dish_count > 0) || !p) return null;
+  const treat = p.basis === "treat_variety";
+  const unit = treat ? "treat" : "meal";
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
+        title="How is this score calculated? Click to see the math"
+        aria-expanded={open}
+      >
+        🌱 {r.vegan_score.toFixed(1)}
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+            }}
+          />
+          <div
+            className="absolute left-0 top-full z-50 mt-1.5 w-64 space-y-2.5 rounded-xl border border-stone-200 bg-white p-3 text-left shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-baseline justify-between border-b border-stone-100 pb-1.5">
+              <span className="text-xs font-extrabold uppercase tracking-wide text-stone-500">
+                🌱 Vegan score
+              </span>
+              <span className="text-sm font-extrabold text-stone-900">
+                {r.vegan_score.toFixed(1)}
+                <span className="font-normal text-stone-400">/10</span>
+              </span>
+            </div>
+            <ScoreBar
+              label="Selection"
+              value={p.selection}
+              max={5}
+              note={
+                `${r.vegan_options} vegan ${unit}${r.vegan_options === 1 ? "" : "s"}` +
+                ((r.vegan_sides || 0) > 0 ? ` + ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}` : "") +
+                " — each extra option counts a little less"
+              }
+            />
+            <ScoreBar
+              label="Substance"
+              value={p.substance}
+              max={3}
+              note={
+                treat
+                  ? "Vegan treat variety — it's a dessert spot"
+                  : "Filling options: protein-rich dishes, purpose-built vegan mains, or vegan proteins on the menu"
+              }
+            />
+            <ScoreBar
+              label="Reputation"
+              value={p.reputation}
+              max={2}
+              note={
+                r.rating != null
+                  ? `${Number(r.rating).toFixed(1)}★ on Google (3.0★ → 0, 5.0★ → 2)`
+                  : "No Google rating yet — scored neutral"
+              }
+            />
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
 function veganScoreTitle(r) {
   const p = r.vegan_score_parts;
   if (!p) return "Vegan score";
@@ -554,14 +657,7 @@ export default function Explore({
       </div>
       {(r.distance != null || (r.vegan_score != null && r.dish_count > 0)) && (
         <div className="mt-1.5 flex items-center gap-1.5">
-          {r.vegan_score != null && r.dish_count > 0 && (
-            <span
-              className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
-              title={veganScoreTitle(r)}
-            >
-              🌱 {r.vegan_score.toFixed(1)}
-            </span>
-          )}
+          <VeganScoreBadge r={r} />
           {r.distance != null && (
             <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
               {r.distance.toFixed(1)} mi
