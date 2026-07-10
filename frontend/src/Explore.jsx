@@ -243,6 +243,20 @@ export default function Explore({
   // place_id of the card whose score popover is open (that card gets a
   // higher z-index so the popover isn't painted under the map).
   const [scoreOpenFor, setScoreOpenFor] = useState(null);
+  // Per-card disclosures: full address, and the editorial blurb (collapsed
+  // by default to keep cards lean).
+  const [openAddresses, setOpenAddresses] = useState(() => new Set());
+  const [openSummaries, setOpenSummaries] = useState(() => new Set());
+
+  const toggleIn = (setter) => (id) =>
+    setter((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleAddress = toggleIn(setOpenAddresses);
+  const toggleSummary = toggleIn(setOpenSummaries);
   // Dish detail opened from the menu modal — hosted HERE so it never
   // navigates away to the Food items tab. The dish is merged with its
   // restaurant's fields because the per-restaurant dish rows don't carry
@@ -738,13 +752,37 @@ export default function Explore({
         );
       })()}
       {r.address && (
-        <div className="mt-1 line-clamp-1 text-xs leading-snug text-stone-500">
+        // One line by default; tap to unfold the full address.
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleAddress(r.place_id);
+          }}
+          title={r.address}
+          className={`mt-1 block w-full text-left text-xs leading-snug text-stone-500 ${
+            openAddresses.has(r.place_id) ? "" : "truncate"
+          }`}
+        >
           {r.address}
-        </div>
+        </button>
       )}
       {r.editorial_summary && (
-        <div className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
-          {r.editorial_summary}
+        // The blurb is nice-to-have, not at-a-glance — collapsed by default.
+        <div className="mt-1.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleSummary(r.place_id);
+            }}
+            className="text-xs font-semibold text-stone-400 hover:text-stone-600"
+          >
+            About {openSummaries.has(r.place_id) ? "▴" : "▾"}
+          </button>
+          {openSummaries.has(r.place_id) && (
+            <div className="mt-1 text-xs leading-relaxed text-stone-500">
+              {r.editorial_summary}
+            </div>
+          )}
         </div>
       )}
       {/* The routine "checked N days ago" chip is noise; only warn when the
