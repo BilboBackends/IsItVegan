@@ -1874,7 +1874,21 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                        WHEN c.verdict = 'likely_vegan'
                             AND c.confidence >= :min_confidence THEN 1
                        ELSE 0
-                   END) AS strict_n
+                   END) AS strict_n,
+                   SUM(CASE
+                       WHEN c.protein_level = 'high' AND (
+                            c.verdict = 'vegan'
+                            OR (c.verdict = 'likely_vegan'
+                                AND c.confidence >= :min_confidence)
+                       ) THEN 1 ELSE 0
+                   END) AS strict_high_protein,
+                   SUM(CASE
+                       WHEN c.protein_level = 'moderate' AND (
+                            c.verdict = 'vegan'
+                            OR (c.verdict = 'likely_vegan'
+                                AND c.confidence >= :min_confidence)
+                       ) THEN 1 ELSE 0
+                   END) AS strict_moderate_protein
             FROM dishes d
             JOIN restaurants r ON r.id = d.restaurant_id
             JOIN classifications c ON c.id = (
@@ -1897,6 +1911,11 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 "sides_by_verdict": {},
                 "vegan_meals": 0,
                 "vegan_sides": 0,
+                # protein distribution of the counted vegan meals — feeds
+                # the Vegan Score's substance component (a menu of plain
+                # salads is not the same as one with tofu bowls).
+                "vegan_meals_high_protein": 0,
+                "vegan_meals_moderate_protein": 0,
             },
         )
         entry["total"] += r["n"]
@@ -1913,6 +1932,11 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 entry[bucket].get(r["verdict"], 0) + r["n"]
             )
             entry["vegan_sides" if is_side else "vegan_meals"] += r["strict_n"]
+            if not is_side:
+                entry["vegan_meals_high_protein"] += r["strict_high_protein"]
+                entry["vegan_meals_moderate_protein"] += (
+                    r["strict_moderate_protein"]
+                )
     return out
 
 

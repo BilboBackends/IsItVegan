@@ -30,6 +30,7 @@ import menu_audit
 from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
 from menu_score import score_menu_text
+from vegan_score import compute_vegan_score
 from venue_filter import is_consumer_food_venue
 
 app = Flask(__name__)
@@ -125,6 +126,19 @@ def get_restaurants() -> object:
         # number. Meals only; sides counted separately.
         r["vegan_options"] = c["vegan_meals"] if c else 0
         r["vegan_sides"] = c["vegan_sides"] if c else 0
+        # One explainable 0-10 number for "how good is this place for a
+        # vegan" — selection + substance + reputation (vegan_score.py).
+        score = compute_vegan_score(
+            vegan_meals=c["vegan_meals"] if c else 0,
+            vegan_sides=c["vegan_sides"] if c else 0,
+            high_protein_meals=c.get("vegan_meals_high_protein", 0) if c else 0,
+            moderate_protein_meals=(
+                c.get("vegan_meals_moderate_protein", 0) if c else 0
+            ),
+            google_rating=r.get("rating"),
+        )
+        r["vegan_score"] = score["score"]
+        r["vegan_score_parts"] = score
         # Pre-run classification cost estimate from menu size; the actual
         # cost of the last run (if any) rides along as last_classify_cost.
         r["classify_estimate"] = (

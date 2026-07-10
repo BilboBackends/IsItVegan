@@ -52,12 +52,32 @@ function pinColor(r) {
 }
 
 const SORTS = [
+  { key: "score", label: "Vegan score (best)" },
   { key: "vegan", label: "Most vegan meals" },
   { key: "rating", label: "Top rated" },
   { key: "distance", label: "Closest" },
   { key: "price", label: "Cheapest" },
   { key: "name", label: "Name A–Z" },
 ];
+
+// Badge color tiers for the 0-10 Vegan Score.
+export function veganScoreClasses(score) {
+  if (score >= 7) return "bg-emerald-600 text-white";
+  if (score >= 4.5) return "bg-emerald-100 text-emerald-800";
+  if (score >= 2) return "bg-amber-100 text-amber-800";
+  return "bg-stone-100 text-stone-500";
+}
+
+function veganScoreTitle(r) {
+  const p = r.vegan_score_parts;
+  if (!p) return "Vegan score";
+  return (
+    `Vegan score ${p.score}/10 — selection ${p.selection}/5 ` +
+    `(vegan meals with diminishing returns), substance ${p.substance}/3 ` +
+    `(how filling those meals are), reputation ${p.reputation}/2 ` +
+    `(Google rating)`
+  );
+}
 
 // Max Google price tier to show; 0 = any. Only three tiers exist locally.
 const PRICE_TIERS = [
@@ -93,7 +113,7 @@ export default function Explore({
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
   const [cuisine, setCuisine] = useState("all");
-  const [sortBy, setSortBy] = useState("vegan");
+  const [sortBy, setSortBy] = useState("score");
   const [priceTier, setPriceTier] = useState(0);
   const [openFilter, setOpenFilter] = useState("all");
   const [maxMiles, setMaxMiles] = useState(0);
@@ -153,7 +173,7 @@ export default function Explore({
     setQuery("");
     setCuisine("all");
     setOpenFilter("all");
-    setSortBy("vegan");
+    setSortBy("score");
     setMaxMiles(0);
     setPriceTier(0);
   }
@@ -208,6 +228,11 @@ export default function Explore({
       });
     }
     return [...out].sort((a, b) => {
+      if (sortBy === "score") {
+        if ((b.vegan_score || 0) !== (a.vegan_score || 0))
+          return (b.vegan_score || 0) - (a.vegan_score || 0);
+        return (a.distance ?? 1e9) - (b.distance ?? 1e9);
+      }
       if (sortBy === "vegan") {
         if ((b.vegan_options || 0) !== (a.vegan_options || 0))
           return (b.vegan_options || 0) - (a.vegan_options || 0);
@@ -371,6 +396,14 @@ export default function Explore({
       count.style.cssText = `font-size:13px;font-weight:600;color:${
         (r.vegan_options || 0) > 0 ? "#047857" : "#57534e"
       }`;
+      if (r.vegan_score != null && analyzed) {
+        const scoreBadge = document.createElement("div");
+        scoreBadge.style.cssText =
+          "font-size:12px;font-weight:700;color:#047857;margin-bottom:2px";
+        scoreBadge.textContent = `Ⓥ Vegan score ${r.vegan_score.toFixed(1)}/10`;
+        scoreBadge.title = veganScoreTitle(r);
+        vegan.append(scoreBadge);
+      }
       const countUnit = isDessertVenue(r.primary_type) ? "treat" : "meal";
       count.textContent = analyzed
         ? `${r.vegan_options || 0} vegan ${countUnit}${r.vegan_options === 1 ? "" : "s"}` +
@@ -507,6 +540,14 @@ export default function Explore({
       <div className="flex items-start justify-between gap-2">
         <div className="font-bold leading-snug text-stone-900">{r.name}</div>
         <div className="flex shrink-0 items-center gap-2">
+          {r.vegan_score != null && r.dish_count > 0 && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
+              title={veganScoreTitle(r)}
+            >
+              Ⓥ {r.vegan_score.toFixed(1)}
+            </span>
+          )}
           {r.distance != null && (
             <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
               {r.distance.toFixed(1)} mi
@@ -693,7 +734,7 @@ export default function Explore({
         >
           <button
             onClick={clearFilters}
-            disabled={activeFilterCount === 0 && !query && sortBy === "vegan"}
+            disabled={activeFilterCount === 0 && !query && sortBy === "score"}
             className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-700 transition hover:border-rose-300 hover:text-rose-600 disabled:cursor-default disabled:opacity-40"
           >
             ↺ Reset all filters
