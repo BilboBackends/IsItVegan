@@ -691,9 +691,17 @@ export default function DishExplore({
     setMobileView("list");
   }
 
+  function clearRestaurantFilter() {
+    setRestaurant("all");
+    // Filtering to a restaurant auto-switched the sort to dish name; when
+    // the filter goes, return to the Best match default — unless the user
+    // picked a different sort themselves in the meantime.
+    setSortBy((current) => (current === "name" ? "recommended" : current));
+  }
+
   function toggleRestaurantFilter(restaurantId) {
     // Clicking the chip of the already-filtered restaurant removes the filter.
-    if (restaurant === String(restaurantId)) setRestaurant("all");
+    if (restaurant === String(restaurantId)) clearRestaurantFilter();
     else showRestaurantItems(restaurantId);
   }
 
@@ -769,7 +777,7 @@ export default function DishExplore({
               value={restaurant}
               onChange={(event) => {
                 const value = event.target.value;
-                if (value === "all") setRestaurant("all");
+                if (value === "all") clearRestaurantFilter();
                 else showRestaurantItems(value);
               }}
               className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
@@ -971,7 +979,7 @@ export default function DishExplore({
           </span>
           {selectedRestaurant && (
             <button
-              onClick={() => setRestaurant("all")}
+              onClick={clearRestaurantFilter}
               className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
               title="Remove restaurant filter"
             >
