@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 import re
 
+from alcohol import ALCOHOL_STATUSES, classify_alcohol
 from classification_providers import PRICES as _PRICES
 from classification_providers import (
     ProviderResponse,
@@ -144,6 +145,14 @@ _SCHEMA = {
                         "description": "Whether this is a full meal or a "
                         "side/accompaniment/snack.",
                     },
+                    "alcohol_status": {
+                        "type": "string",
+                        "enum": ["alcoholic", "non_alcoholic", "unclear"],
+                        "description": "For drinks: alcoholic (beer, wine, "
+                        "cocktails, spirits, sake, hard seltzer) vs "
+                        "non_alcoholic (soda, juice, coffee, tea, smoothies, "
+                        "mocktails). Non-drinks: unclear.",
+                    },
                     "meal_types": {
                         "type": "array",
                         "items": {
@@ -172,6 +181,7 @@ _SCHEMA = {
                     "nut_status",
                     "protein_level",
                     "serving_role",
+                    "alcohol_status",
                     "meal_types",
                     "key_ingredients",
                 ],
@@ -259,6 +269,10 @@ unambiguous vegan markings).
     than an inflated one.
   - meal_types contains every plausible context from breakfast, brunch, lunch,
     dinner, and snack. Use menu section headings and ordinary dish usage.
+  - alcohol_status separates the bar list from soft drinks: alcoholic for
+    beer, wine, cocktails, spirits, sake, hard seltzer/cider; non_alcoholic
+    for soda, juice, coffee, tea, smoothies, milkshakes, mocktails/virgin
+    drinks. Use unclear only for non-drinks or genuinely ambiguous items.
   - key_ingredients contains up to 8 concise lowercase ingredient names useful
     for search, such as tofu, seitan, mushroom, chickpea, or rice. Do not invent
     ingredients merely because they are typical; only include menu-supported or
@@ -301,6 +315,7 @@ class ClassifiedDish:
     nut_status: str = "unclear"
     protein_level: str = "unclear"
     serving_role: str = "unclear"  # meal | side | unclear
+    alcohol_status: str = "unclear"  # alcoholic | non_alcoholic | unclear
     meal_types: list[str] = field(default_factory=list)
     key_ingredients: list[str] = field(default_factory=list)
 
@@ -435,6 +450,17 @@ def result_from_data(
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):
             category = "food"
+        # Alcohol labeling: model value validated, then the word-list
+        # backstop settles drinks the model left unclear ("Coke" and
+        # "tequila" are not the same kind of drink). Deterministic and
+        # free — also used by the backfill for pre-attribute rows.
+        alcohol_status = dish.get("alcohol_status")
+        if alcohol_status not in ALCOHOL_STATUSES:
+            alcohol_status = "unclear"
+        if category == "drink" and alcohol_status == "unclear":
+            alcohol_status = classify_alcohol(
+                f"{name} {dish.get('description') or ''}"
+            )
         dietary_values = {"free", "contains", "unclear"}
         protein_values = {"high", "moderate", "low", "unclear"}
         meal_values = {"breakfast", "brunch", "lunch", "dinner", "snack"}
@@ -491,6 +517,7 @@ def result_from_data(
                     if dish.get("serving_role") in ("meal", "side", "unclear")
                     else "unclear"
                 ),
+                alcohol_status=alcohol_status,
                 meal_types=list(dict.fromkeys(meal_types)),
                 key_ingredients=list(dict.fromkeys(key_ingredients)),
             )

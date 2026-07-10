@@ -213,6 +213,7 @@ def run(
             serving_role=d.serving_role,
             meal_types=d.meal_types,
             key_ingredients=d.key_ingredients,
+            alcohol_status=d.alcohol_status,
         )
 
     def _handle(r: dict, source, result, prior, text_hash) -> None:

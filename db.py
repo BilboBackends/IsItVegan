@@ -313,6 +313,9 @@ _MIGRATIONS = {
         "serving_role": "TEXT NOT NULL DEFAULT 'unclear'",
         "meal_types": "TEXT NOT NULL DEFAULT '[]'",
         "key_ingredients": "TEXT NOT NULL DEFAULT '[]'",
+        # alcoholic | non_alcoholic | unclear — a Coke and a Negroni are not
+        # the same kind of "drink"; the Drinks tab sections on this.
+        "alcohol_status": "TEXT NOT NULL DEFAULT 'unclear'",
     },
     "reports": {
         "dish_name": "TEXT",
@@ -1144,6 +1147,7 @@ def insert_classification(
     serving_role: str = "unclear",
     meal_types: list[str] | None = None,
     key_ingredients: list[str] | None = None,
+    alcohol_status: str = "unclear",
     db_path: str | None = None,
 ) -> None:
     with connect(db_path) as conn:
@@ -1153,11 +1157,11 @@ def insert_classification(
                 (dish_id, verdict, confidence, reasoning, source_id,
                  model_version, created_at, dairy_status, gluten_status,
                  nut_status, protein_level, serving_role, meal_types,
-                 key_ingredients)
+                 key_ingredients, alcohol_status)
             VALUES (:dish_id, :verdict, :confidence, :reasoning, :source_id,
                     :model_version, :created_at, :dairy_status, :gluten_status,
                     :nut_status, :protein_level, :serving_role, :meal_types,
-                    :key_ingredients)
+                    :key_ingredients, :alcohol_status)
             """,
             {
                 "dish_id": dish_id,
@@ -1174,6 +1178,7 @@ def insert_classification(
                 "serving_role": serving_role,
                 "meal_types": json.dumps(meal_types or []),
                 "key_ingredients": json.dumps(key_ingredients or []),
+                "alcohol_status": alcohol_status,
             },
         )
 
@@ -1216,7 +1221,7 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
                    c.protein_level, c.serving_role, c.meal_types,
-                   c.key_ingredients,
+                   c.key_ingredients, c.alcohol_status,
                    (SELECT COUNT(*) FROM dish_votes v
                      WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
                    (SELECT COUNT(*) FROM dish_votes v
@@ -1264,7 +1269,7 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    c.created_at AS classified_at,
                    c.dairy_status, c.gluten_status, c.nut_status,
                    c.protein_level, c.serving_role, c.meal_types,
-                   c.key_ingredients,
+                   c.key_ingredients, c.alcohol_status,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
                    r.archived,

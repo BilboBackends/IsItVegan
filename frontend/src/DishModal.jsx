@@ -134,6 +134,18 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
       : servingFilter === "side"
         ? sideItems
         : mealItems;
+  // Drinks split the bar list from soft drinks — a Coke and a tequila are
+  // not the same kind of "drink". Anything classified before the
+  // alcohol_status attribute existed lands in "Uncategorized".
+  const softDrinks = verdictShown.filter(
+    (d) => d.alcohol_status === "non_alcoholic"
+  );
+  const alcoholicDrinks = verdictShown.filter(
+    (d) => d.alcohol_status === "alcoholic"
+  );
+  const unlabeledDrinks = verdictShown.filter(
+    (d) => d.alcohol_status !== "non_alcoholic" && d.alcohol_status !== "alcoholic"
+  );
   const displayGroups =
     tab === "food"
       ? [
@@ -150,7 +162,28 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
             items: sideItems,
           },
         ].filter(Boolean)
-      : [{ key: tab, label: null, description: null, items: shown }];
+      : tab === "drink"
+        ? [
+            {
+              key: "soft",
+              label: "Soft drinks & non-alcoholic",
+              description: "Sodas, juices, coffee, tea, smoothies, mocktails.",
+              items: softDrinks,
+            },
+            {
+              key: "alcohol",
+              label: "Alcoholic",
+              description: "Beer, wine, cocktails, and spirits.",
+              items: alcoholicDrinks,
+            },
+            unlabeledDrinks.length > 0 && {
+              key: "unlabeled",
+              label: "Uncategorized drinks",
+              description: "Classified before alcohol labeling existed.",
+              items: unlabeledDrinks,
+            },
+          ].filter(Boolean)
+        : [{ key: tab, label: null, description: null, items: shown }];
 
   return (
     <div
