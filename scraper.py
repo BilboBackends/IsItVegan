@@ -280,6 +280,65 @@ def _fetched_to_text(page: "_Fetched") -> str:
     return ""
 
 
+# PDF menus referenced from pages (not fetched AS pages). The URL often only
+# exists inside a JS viewer's config (The Chapman renders its menu PDFs to
+# canvas — the DOM has no text and no <a href>), so scan the whole markup.
+_PDF_URL_ABS_RE = re.compile(
+    r'https?://[^\s\'"<>()]+\.pdf(?:[?#][^\s\'"<>()]*)?', re.I
+)
+_PDF_ATTR_RE = re.compile(
+    r'(?:href|src|data)\s*=\s*["\']([^"\']+\.pdf(?:[?#][^"\']*)?)["\']', re.I
+)
+_MAX_PDF_FETCHES = 6
+_MAX_PDF_DOWNLOAD_BYTES = 16_000_000
+
+
+def _find_pdf_urls(html: str, base_url: str) -> list[str]:
+    """Every PDF referenced anywhere in a page — hrefs, embeds, viewer
+    scripts. Skip-hint URLs (gift/press/careers) are excluded; junk PDFs
+    (wine flights, press kits) are handled by normal scoring afterwards."""
+    candidates = list(_PDF_URL_ABS_RE.findall(html))
+    candidates += [urljoin(base_url, m) for m in _PDF_ATTR_RE.findall(html)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.split("#")[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        if any(skip in candidate.lower() for skip in _SKIP_HINTS):
+            continue
+        out.append(candidate)
+    return out
+
+
+def _fetch_pdf_pages(pdf_urls: list[str]) -> list[tuple[str, str]]:
+    """Download referenced menu PDFs and extract text as page candidates."""
+    pages: list[tuple[str, str]] = []
+    if not pdf_urls:
+        return pages
+    from pdf_menu import extract_pdf_menu_text
+
+    with httpx.Client(
+        timeout=60, follow_redirects=True, headers={"User-Agent": _USER_AGENT}
+    ) as client:
+        for pdf_url in pdf_urls[:_MAX_PDF_FETCHES]:
+            try:
+                resp = client.get(pdf_url)
+            except httpx.HTTPError:
+                continue
+            if (
+                resp.status_code != 200
+                or len(resp.content) > _MAX_PDF_DOWNLOAD_BYTES
+                or not resp.content[:5].startswith(b"%PDF")
+            ):
+                continue
+            text = extract_pdf_menu_text(resp.content)
+            if text.strip():
+                pages.append((pdf_url, text))
+    return pages
+
+
 def _looks_menu_like(text: str, href: str) -> bool:
     blob = f"{text} {href}".lower()
     if any(skip in blob for skip in _SKIP_HINTS):
@@ -440,6 +499,7 @@ def _collect_http(
             return u.split("#")[0].rstrip("/")
 
         pages: list[tuple[str, str]] = _pages_from_html(url, landing.html)
+        pdf_urls = _find_pdf_urls(landing.html, url)
         queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links]
         seen = {_norm(url)} | {_norm(lk) for lk in menu_links}
         # "/menu" is a near-universal convention — probe it even when the
@@ -462,6 +522,10 @@ def _collect_http(
                 text = _fetched_to_text(page)  # PDFs
                 if text:
                     pages.append((link, text))
+            if page.html is not None:
+                for pdf_url in _find_pdf_urls(page.html, link):
+                    if pdf_url not in pdf_urls:
+                        pdf_urls.append(pdf_url)
             if hop == 1 and page.html is not None:
                 more_links, more_tp, more_tp_urls = _find_menu_links(page.html, link)
                 for host in more_tp:
@@ -474,6 +538,8 @@ def _collect_http(
                     if _norm(nxt) not in seen:
                         seen.add(_norm(nxt))
                         queue.append((nxt, 2))
+    # Referenced PDF menus (not fetched as pages above): download + extract.
+    pages.extend(_fetch_pdf_pages(pdf_urls))
     return pages, third_party, tp_urls, landing
 
 
@@ -505,6 +571,7 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
 
             max_renders = 9
             pages: list[tuple[str, str]] = _pages_from_html(url, landing_html)
+            pdf_urls = _find_pdf_urls(landing_html, url)
             # Some location pages populate the complete catalog in browser
             # storage immediately. Once validated, extra category renders add
             # latency and duplicates but no coverage.
@@ -525,6 +592,11 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
                 renders += 1
                 if page_html is None:
                     continue
+                # PDF menus are often only referenced from the RENDERED DOM
+                # (a JS viewer painting to canvas) — collect them here.
+                for pdf_url in _find_pdf_urls(page_html, link):
+                    if pdf_url not in pdf_urls:
+                        pdf_urls.append(pdf_url)
                 page_candidates = _pages_from_html(link, page_html)
                 pages.extend(page_candidates)
                 best_here = max(
@@ -541,6 +613,7 @@ def _collect_headless(url: str) -> tuple[list[tuple[str, str]], list[str]]:
                         if _norm(nxt) not in seen:
                             seen.add(_norm(nxt))
                             queue.append((nxt, 2))
+            pages.extend(_fetch_pdf_pages(pdf_urls))
             return pages, third_party
     except Exception:
         return [], []
@@ -608,12 +681,18 @@ def _collect_known_headless(home_url: str, urls: list[str]) -> list[tuple[str, s
             if home_html is not None and home_normalized in learned_normalized:
                 pages.extend(_pages_from_html(home_url, home_html))
                 seen.add(home_normalized)
+            pdf_urls: list[str] = []
             for saved_url in urls[:9]:
                 fetch_url = saved_url.removesuffix("#structured-menu")
                 normalized = fetch_url.rstrip("/")
                 if normalized in seen:
                     continue
                 seen.add(normalized)
+                # Learned PDF sources: rendering a PDF in the browser paints
+                # a viewer, not text — download and extract instead.
+                if fetch_url.lower().split("?")[0].endswith(".pdf"):
+                    pdf_urls.append(fetch_url)
+                    continue
                 html, _ = session.fetch(
                     fetch_url, settle_ms=6_000, tab_words=_TAB_WORDS
                 )
@@ -621,6 +700,7 @@ def _collect_known_headless(home_url: str, urls: list[str]) -> list[tuple[str, s
                     pages.extend(_pages_from_html(fetch_url, html))
     except Exception:
         return []
+    pages.extend(_fetch_pdf_pages(pdf_urls))
     return pages
 
 
@@ -648,6 +728,13 @@ def _try_learned_context(
         )
     ):
         return None
+    # A route whose best-ever capture was mediocre isn't worth re-walking —
+    # rediscover instead (The Chapman: /menu index blurbs at 0.68 while the
+    # real menus were PDFs behind each section page). Unknown score (older
+    # profiles) still gets the learned attempt; the post-fetch checks apply.
+    known_score = (crawl_context or {}).get("menu_score")
+    if known_score is not None and float(known_score) < 0.75:
+        return None
     if method == "headless":
         if not use_headless or not is_available():
             return None
@@ -666,6 +753,11 @@ def _try_learned_context(
     )
     result = _validate_completeness(result)
     if not result.ok:
+        return None
+    # A learned route that only ever captured a mediocre menu must not lock
+    # out rediscovery forever (The Chapman: the /menu index blurbs scored
+    # 0.49 while the real menus were PDFs behind each section page).
+    if result.menu_score < 0.6:
         return None
     # A JS widget can render only its first category and still look menu-like.
     # Treat a major size regression as a stale route and run full discovery;
@@ -767,7 +859,7 @@ def scrape_menu_text(
     if learned is not None:
         return learned
 
-    pages, third_party, tp_urls, landing = _collect_http(url, timeout)
+    pages, third_party, _tp_urls, landing = _collect_http(url, timeout)
 
     # If the landing page itself was fetchable, try scoring the HTTP result.
     http_result = None
@@ -788,9 +880,16 @@ def scrape_menu_text(
         # A tiny "menu" isn't trusted either, whatever it scored — a real
         # menu is rarely under ~1200 chars; it's usually a teaser with the
         # full menu behind JS.
-        confident = http_result.ok and (
-            http_result.menu_score >= 0.75 or not (third_party or tp_urls)
-        ) and http_result.char_count >= 1200
+        # A sub-0.75 score is usually an index/marketing page standing in
+        # for the real menu (The Chapman: section blurbs at 0.68 while the
+        # actual menus were PDFs only visible in the RENDERED section
+        # pages). Whatever HTTP found below that bar, headless gets a shot
+        # and the better capture wins.
+        confident = (
+            http_result.ok
+            and http_result.menu_score >= 0.75
+            and http_result.char_count >= 1200
+        )
         # A single kept page whose URL names one menu section (/breakfast) is
         # probably a partial menu with the other sections behind JS-rendered
         # nav — escalate to headless to find them.

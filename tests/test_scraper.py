@@ -289,6 +289,41 @@ def test_gift_links_never_followed():
     assert not _looks_menu_like("Order eGift Voucher", "/gift-cards")
 
 
+# ---- PDF menu references (The Chapman pattern) ------------------------------
+
+def test_find_pdf_urls_sees_viewer_scripts_and_relative_hrefs():
+    from scraper import _find_pdf_urls
+
+    html = """
+    <html><body>
+    <a href="/wp-content/uploads/2025/03/Dinner.pdf">Dinner</a>
+    <script>var viewer = {file: "https://thechapman.com/uploads/Lunch26.pdf"};</script>
+    <a href="https://x.com/giftcard-menu.pdf">Gift</a>
+    </body></html>
+    """
+    urls = _find_pdf_urls(html, "https://thechapman.com/lunch/")
+    assert "https://thechapman.com/wp-content/uploads/2025/03/Dinner.pdf" in urls
+    assert "https://thechapman.com/uploads/Lunch26.pdf" in urls
+    # gift-card PDFs are junk, same as gift-card links
+    assert not any("gift" in u for u in urls)
+
+
+def test_mediocre_learned_route_triggers_rediscovery():
+    # A 0.49-score learned route (index blurbs) must not lock out discovery.
+    from scraper import _try_learned_context
+
+    result = _try_learned_context(
+        "https://x.com/",
+        {"menu_urls": ["https://x.com/menu"], "crawl_method": "http",
+         "menu_score": 0.49, "char_count": 2283},
+        timeout=5.0,
+        use_headless=False,
+    )
+    # _collect_known_http would need network; the gate must reject BEFORE
+    # accepting a mediocre result — a None here means rediscovery runs.
+    assert result is None
+
+
 # ---- scrape_menu_text entry points (no network) ----------------------------
 
 def test_social_profile_website_fails_fast():
