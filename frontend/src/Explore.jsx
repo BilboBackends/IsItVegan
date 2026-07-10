@@ -538,8 +538,12 @@ export default function Explore({
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="font-bold leading-snug text-stone-900">{r.name}</div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="min-w-0 font-bold leading-snug text-stone-900">
+          {r.name}
+        </div>
+        {/* Chips WRAP inside the card rather than pushing the heart off the
+            edge (the shrink-0 overflow bug, third time's the charm). */}
+        <div className="flex max-w-[55%] shrink-0 flex-wrap items-center justify-end gap-1.5">
           {r.vegan_score != null && r.dish_count > 0 && (
             <span
               className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
