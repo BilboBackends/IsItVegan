@@ -99,6 +99,20 @@ def hidden_batter_risk(text: str) -> str | None:
     return None
 
 
+def defining_animal_ingredient(name: str, full_text: str) -> str | None:
+    """The animal word in a dish's NAME, unless a mock/plant qualifier
+    appears anywhere in the dish's text.
+
+    A name-level animal ingredient is DEFINITIONAL: a "Cheese Empanada"
+    without cheese isn't that dish, so vegan_adaptable is wrong for it —
+    unlike feta on a salad, where the name survives the removal.
+    """
+    match = _ANIMAL_RE.search(name)
+    if match and not _mock_qualified(full_text):
+        return match.group(0)
+    return None
+
+
 def unqualified_animal_word(text: str) -> bool:
     """True when text plainly names an animal ingredient with no mock/plant
     qualifier anywhere — the shared "is this actually risky?" primitive."""

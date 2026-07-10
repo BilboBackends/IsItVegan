@@ -208,6 +208,33 @@ def test_marked_vegan_batter_dishes_are_exempt():
     ]
 
 
+def test_namesake_animal_ingredient_kills_vegan_adaptable():
+    # A cheese empanada without cheese isn't an empanada — "adaptable" only
+    # makes sense when the dish survives the removal.
+    result = _validate(
+        _raw("Cheese Empanada", "vegan_adaptable", confidence=0.7),
+        _raw("Cheese Pizza", "vegan_adaptable",
+             description="mozzarella, red sauce"),
+        _raw("Shrimp Fried Rice", "vegan_adaptable"),
+    )
+    assert [d.verdict for d in result.dishes] == ["not_vegan"] * 3
+    assert all(d.confidence >= 0.8 for d in result.dishes)
+    assert "namesake" in result.dishes[0].reasoning
+
+
+def test_removable_toppings_keep_vegan_adaptable():
+    result = _validate(
+        # Name is clean — the feta is a topping, the salad survives.
+        _raw("Greek Salad", "vegan_adaptable",
+             description="cucumber, olives, feta — hold the feta"),
+        # Explicit vegan option: the name declares it, upgrade rule wins.
+        _raw("Vegan Cheese Pizza", "vegan_adaptable",
+             description="cashew mozzarella"),
+    )
+    assert result.dishes[0].verdict == "vegan_adaptable"
+    assert result.dishes[1].verdict == "vegan"
+
+
 def test_dense_chunks_split_adaptively_until_they_fit(monkeypatch):
     # A dense menu (170 dishes in one 12k chunk) can overflow the output cap
     # even after the first split — the section must then split again instead

@@ -33,6 +33,7 @@ from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
 from guardrails import (
     apply_guardrails,
+    defining_animal_ingredient,
     hidden_batter_risk,
     unqualified_animal_word,
 )
@@ -203,7 +204,11 @@ Verdicts:
 plausible (unknown sauce, possible butter/ghee, fish sauce in Thai curries, \
 honey, chicken stock in rice/beans, egg in noodles or bread).
 - vegan_adaptable: one obvious removable animal ingredient (e.g. "hold the \
-cheese/feta/yogurt"). Name the modification in reasoning.
+cheese/feta/yogurt"). Name the modification in reasoning. The dish must \
+still BE that dish after the removal: feta on a salad or cheese on a veggie \
+burger is removable, but when the animal ingredient is the dish's core or \
+namesake (cheese pizza, cheese empanada, mac & cheese, quesadilla, chicken \
+wings), removing it doesn't leave the dish — that is not_vegan.
 - not_vegan: contains meat/fish/dairy/egg/honey or almost certainly does.
 - unclear: not enough information to judge.
 
@@ -446,6 +451,24 @@ def result_from_data(
                     (reasoning + " " if reasoning else "")
                     + f"[{batter_word} batter standardly contains "
                     "milk/butter/egg; no vegan version stated]"
+                )
+        # vegan_adaptable requires the dish to survive the modification. An
+        # animal ingredient in the NAME is definitional (Cheese Empanada,
+        # Shrimp Fried Rice) — removing it doesn't leave that dish, so the
+        # honest verdict is not_vegan. Feta on a Greek Salad (name clean)
+        # stays adaptable; "Vegan Cheese Pizza" was already upgraded above.
+        if verdict == "vegan_adaptable":
+            defining = defining_animal_ingredient(
+                name,
+                f"{name} {dish.get('description') or ''} {reasoning}",
+            )
+            if defining:
+                verdict = "not_vegan"
+                confidence = max(confidence, 0.8)
+                reasoning = (
+                    (reasoning + " " if reasoning else "")
+                    + f"[{defining} is the dish's namesake — removing it "
+                    "doesn't leave this dish]"
                 )
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):
