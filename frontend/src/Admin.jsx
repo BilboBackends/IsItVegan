@@ -89,6 +89,170 @@ function changeDetail(change) {
   return change.old_price || "";
 }
 
+// "Why did this menu fail?" — restaurants whose last scrape attempt failed,
+// each expandable to the scraper's per-URL trail: every URL it fetched, the
+// stage (http/headless), the menu score, and the keep/reject decision. The
+// evidence for deciding between a scraper fix, a manual URL, and the
+// photo-fallback queue. Self-contained: fetches /api/scrape-failures.
+function ScrapeFailuresPanel() {
+  const [failures, setFailures] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
+  const [retrying, setRetrying] = useState(null); // restaurant id
+
+  const load = () =>
+    fetch("/api/scrape-failures")
+      .then((res) => (res.ok ? res.json() : { failures: [] }))
+      .then((data) => setFailures(data.failures || []))
+      .catch(() => setFailures([]));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function retry(failure) {
+    setRetrying(failure.id);
+    try {
+      await fetch("/api/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restaurant_id: failure.id }),
+      });
+      await load();
+    } finally {
+      setRetrying(null);
+    }
+  }
+
+  if (!failures || failures.length === 0) return null;
+
+  const stamp = (value) =>
+    value
+      ? new Date(value).toLocaleString([], {
+          month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+        })
+      : "never";
+
+  return (
+    <section className="mb-6 rounded-xl border border-rose-200 bg-rose-50 p-4">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <h2 className="font-bold text-rose-950">
+          Scrape failures
+          <span className="ml-2 text-xs font-medium text-rose-700">
+            why each menu failed — per-URL evidence
+          </span>
+        </h2>
+        <span className="rounded-full bg-rose-200 px-2 py-0.5 text-xs font-bold text-rose-900">
+          {failures.length} {open ? "▾" : "▸"}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          {failures.map((f) => (
+            <div key={f.id} className="rounded-lg bg-white p-3 text-sm shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="font-bold text-slate-900">{f.name}</span>
+                  <span className="ml-2 text-xs font-semibold text-rose-700">
+                    {f.consecutive_failures} failed attempt
+                    {f.consecutive_failures === 1 ? "" : "s"}
+                  </span>
+                  <span className="ml-2 text-xs text-slate-400">
+                    last tried {stamp(f.last_attempt_at)}
+                    {f.last_success_at &&
+                      ` · last success ${stamp(f.last_success_at)}`}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-3 text-xs font-bold">
+                  {f.website_url && (
+                    <a
+                      href={f.website_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-slate-600 hover:text-emerald-700"
+                    >
+                      Website ↗
+                    </a>
+                  )}
+                  {(f.diagnostics?.length ?? 0) > 0 && (
+                    <button
+                      onClick={() =>
+                        setExpandedId(expandedId === f.id ? null : f.id)
+                      }
+                      className="text-slate-600 hover:text-slate-900"
+                    >
+                      {expandedId === f.id
+                        ? "Hide trail ▴"
+                        : `URL trail (${f.diagnostics.length}) ▾`}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => retry(f)}
+                    disabled={retrying !== null}
+                    className="rounded-lg border border-emerald-300 px-2.5 py-1 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                  >
+                    {retrying === f.id ? "Scraping…" : "Retry"}
+                  </button>
+                </div>
+              </div>
+              <div className="mt-1 text-xs text-rose-800">{f.last_error}</div>
+              {expandedId === f.id && (
+                <div className="mt-2 overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                        <th className="py-1 pr-3">Stage</th>
+                        <th className="py-1 pr-3">Score</th>
+                        <th className="py-1 pr-3">Prices</th>
+                        <th className="py-1 pr-3">Food words</th>
+                        <th className="py-1 pr-3">Decision</th>
+                        <th className="py-1">URL</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {f.diagnostics.map((d, i) => (
+                        <tr key={i} className="text-slate-600">
+                          <td className="py-1 pr-3">{d.stage}</td>
+                          <td className={`py-1 pr-3 font-semibold ${
+                            (d.score ?? 0) >= 0.45 ? "text-emerald-700" : "text-slate-500"
+                          }`}>
+                            {d.score?.toFixed(2) ?? "—"}
+                          </td>
+                          <td className="py-1 pr-3">{d.prices ?? "—"}</td>
+                          <td className="py-1 pr-3">{d.food_words ?? "—"}</td>
+                          <td className={`py-1 pr-3 font-semibold ${
+                            d.decision === "keep" ? "text-emerald-700" : "text-rose-600"
+                          }`}>
+                            {d.decision}
+                          </td>
+                          <td className="max-w-[360px] truncate py-1">
+                            <a
+                              href={d.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-sky-700 hover:underline"
+                              title={d.url}
+                            >
+                              {d.url}
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // Trust dashboard for the cheap classification tier (DeepSeek): guardrail
 // flags, spot-check agreement vs a frontier reference, and the learned
 // corrections currently injected into the cheap model's prompt. Self-
@@ -2178,6 +2342,7 @@ export default function Admin() {
           </section>
         )}
 
+        <ScrapeFailuresPanel />
         <AuditPanel />
 
         {menuQuality.length > 0 && (

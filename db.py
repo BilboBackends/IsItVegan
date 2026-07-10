@@ -320,6 +320,12 @@ _MIGRATIONS = {
     "dish_votes": {
         "client_id": "TEXT",
     },
+    "crawl_profiles": {
+        # JSON list of per-URL scrape diagnostics from the last FAILED
+        # attempt (stage, score, decision, prices, food words) — the "why
+        # did this menu fail" evidence for the Admin scrape-failures panel.
+        "last_diagnostics": "TEXT",
+    },
 }
 
 
@@ -678,24 +684,63 @@ def record_crawl_failure(
     error: str,
     *,
     attempted_at: str | None = None,
+    diagnostics: list | None = None,
     db_path: str | None = None,
 ) -> None:
-    """Record a failed attempt without discarding the last successful route."""
+    """Record a failed attempt without discarding the last successful route.
+
+    diagnostics (the scraper's per-URL trail: what was fetched, how it
+    scored, why it was rejected) is persisted so the Admin panel can show
+    WHY the menu failed, not just that it did.
+    """
     timestamp = attempted_at or datetime.now(timezone.utc).isoformat()
+    diag_json = json.dumps(diagnostics[:40]) if diagnostics else None
     with connect(db_path) as conn:
         conn.execute(
             """
             INSERT INTO crawl_profiles
                 (restaurant_id, menu_urls, last_attempt_at,
-                 consecutive_failures, last_error)
-            VALUES (?, '[]', ?, 1, ?)
+                 consecutive_failures, last_error, last_diagnostics)
+            VALUES (?, '[]', ?, 1, ?, ?)
             ON CONFLICT (restaurant_id) DO UPDATE SET
                 last_attempt_at = excluded.last_attempt_at,
                 consecutive_failures = crawl_profiles.consecutive_failures + 1,
-                last_error = excluded.last_error
+                last_error = excluded.last_error,
+                last_diagnostics = excluded.last_diagnostics
             """,
-            (restaurant_id, timestamp, (error or "unknown crawl failure")[:1000]),
+            (
+                restaurant_id,
+                timestamp,
+                (error or "unknown crawl failure")[:1000],
+                diag_json,
+            ),
         )
+
+
+def scrape_failures(db_path: str | None = None) -> list[dict]:
+    """Restaurants whose LAST scrape attempt failed, with the evidence:
+    error, attempt counts, and the per-URL diagnostics trail."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT r.id, r.name, r.website_url, r.archived,
+                   p.last_error, p.consecutive_failures,
+                   p.last_attempt_at, p.last_success_at, p.last_diagnostics
+            FROM crawl_profiles p
+            JOIN restaurants r ON r.id = p.restaurant_id
+            WHERE p.consecutive_failures > 0 AND r.archived = 0
+            ORDER BY p.last_attempt_at DESC
+            """
+        ).fetchall()
+    out = []
+    for row in rows:
+        entry = dict(row)
+        try:
+            entry["diagnostics"] = json.loads(entry.pop("last_diagnostics") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            entry["diagnostics"] = []
+        out.append(entry)
+    return out
 
 
 def record_menu_version(

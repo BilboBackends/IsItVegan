@@ -188,7 +188,10 @@ def run(
             failures.append((t["name"], result.error or "unknown error"))
             if not dry_run:
                 db.record_crawl_failure(
-                    t["id"], result.error or "unknown error", attempted_at=now
+                    t["id"],
+                    result.error or "unknown error",
+                    attempted_at=now,
+                    diagnostics=result.diagnostics,
                 )
             print(f"  [fail] {t['name']}  — {result.error}")
             _emit({"result": {

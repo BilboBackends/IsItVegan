@@ -259,6 +259,31 @@ def test_dessert_venues_count_vegan_desserts_as_headline_options(test_db):
     assert counts[2]["vegan_meals"] == 1  # ice cream shop: dessert counts
 
 
+def test_scrape_failures_keep_the_diagnostics_trail(test_db):
+    db.record_crawl_failure(
+        1,
+        "No real menu found (score 0.15)",
+        diagnostics=[
+            {"url": "https://x.com/", "stage": "http", "score": 0.15,
+             "decision": "reject-lower-quality", "prices": 0, "food_words": 3},
+        ],
+        db_path=test_db,
+    )
+    failures = db.scrape_failures(db_path=test_db)
+    assert len(failures) == 1
+    assert failures[0]["name"] == "Cafe"
+    assert failures[0]["consecutive_failures"] == 1
+    assert failures[0]["diagnostics"][0]["decision"] == "reject-lower-quality"
+
+    # A subsequent success clears the failure from the panel.
+    db.record_crawl_success(
+        1, menu_urls=["https://x.com/menu"], crawl_method="http",
+        content_hash="h", menu_score=0.9, char_count=1000,
+        crawled_at="2026-07-10T00:00:00+00:00", db_path=test_db,
+    )
+    assert db.scrape_failures(db_path=test_db) == []
+
+
 def test_classification_result_dedupes_formatting_but_keeps_size_variant():
     def dish(name, price):
         return {

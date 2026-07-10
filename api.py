@@ -395,6 +395,15 @@ def ingest_status() -> object:
         return jsonify({**_ingest_state, "recent": list(_ingest_state["recent"])})
 
 
+@app.get("/api/scrape-failures")
+def scrape_failures_endpoint() -> object:
+    """Restaurants whose last scrape failed, with per-URL diagnostics —
+    the Admin "why did this menu fail" panel."""
+    db.init_db()
+    failures = db.scrape_failures()
+    return jsonify({"count": len(failures), "failures": failures})
+
+
 @app.get("/api/provider-usage")
 def provider_usage() -> object:
     """Subscription usage windows for the claude/codex providers (cached)."""
