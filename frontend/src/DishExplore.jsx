@@ -105,8 +105,11 @@ export default function DishExplore({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
-  const [verdict, setVerdict] = useState("all");
-  const [category, setCategory] = useState("food");
+  // Multi-select toggle sets: pick any combination (vegan + adaptable, or
+  // food + desserts). Empty verdict set = all verdicts; type defaults to
+  // food and empty = all types.
+  const [verdicts, setVerdicts] = useState(() => new Set());
+  const [categories, setCategories] = useState(() => new Set(["food"]));
   const [servingRole, setServingRole] = useState("all"); // all | meal | side
   const [maxPrice, setMaxPrice] = useState(0); // 0 = any; else dollar cap
   const [restaurant, setRestaurant] = useState("all");
@@ -241,14 +244,43 @@ export default function DishExplore({
   );
   const parsedQuery = useMemo(() => parseDishQuery(deferredQuery), [deferredQuery]);
 
+  // Meals/sides grouping and its filter only make sense when the list is
+  // food alone — a mixed food+drinks view has no meaningful role headings.
+  const foodOnly = categories.size === 1 && categories.has("food");
+
+  function toggleVerdict(key) {
+    if (key === "all") {
+      setVerdicts(new Set());
+      return;
+    }
+    setVerdicts((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleCategory(key) {
+    setCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const shown = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
     const out = dishesWithDistance.filter((dish) => {
-      if (verdict !== "all" && dish.verdict !== verdict) return false;
-      if (categoryOf(dish) !== category) return false;
-      // Legacy/unclear roles count as meals so unclassified data isn't hidden.
-      if (category === "food" && servingRole === "meal" && dish.serving_role === "side") return false;
-      if (category === "food" && servingRole === "side" && dish.serving_role !== "side") return false;
+      if (verdicts.size > 0 && !verdicts.has(dish.verdict)) return false;
+      if (categories.size > 0 && !categories.has(categoryOf(dish))) return false;
+      // Legacy/unclear roles count as meals so unclassified data isn't
+      // hidden. The meals/sides filter only applies to food dishes.
+      if (categoryOf(dish) === "food") {
+        if (servingRole === "meal" && dish.serving_role === "side") return false;
+        if (servingRole === "side" && dish.serving_role !== "side") return false;
+      }
       // A price cap only keeps dishes we can PRICE — "Market Price" and
       // unpriced items can't honestly claim to be under $15.
       if (maxPrice > 0 && (dish.priceValue == null || dish.priceValue > maxPrice)) return false;
@@ -287,7 +319,7 @@ export default function DishExplore({
       }
       // The default food list remains complete, but substantial meals lead;
       // sides and small plates follow instead of being mixed alphabetically.
-      if (category === "food" && servingRole === "all") {
+      if (foodOnly && servingRole === "all") {
         const roleOrder = Number(a.serving_role === "side") - Number(b.serving_role === "side");
         if (roleOrder) return roleOrder;
       }
@@ -331,8 +363,9 @@ export default function DishExplore({
     deferredQuery,
     parsedQuery,
     searchIndex,
-    verdict,
-    category,
+    verdicts,
+    categories,
+    foodOnly,
     servingRole,
     maxPrice,
     restaurant,
@@ -346,8 +379,8 @@ export default function DishExplore({
     setVisibleLimit(RESULTS_PAGE_SIZE);
   }, [
     deferredQuery,
-    verdict,
-    category,
+    verdicts,
+    categories,
     servingRole,
     maxPrice,
     restaurant,
@@ -390,10 +423,11 @@ export default function DishExplore({
     restaurant === "all"
       ? null
       : restaurants.find((item) => String(item.id) === restaurant);
+  const categoriesActive = !foodOnly;
   const hasActiveFilters =
-    verdict !== "all" || servingRole !== "all" || maxPrice > 0 ||
-    restaurant !== "all" || cuisine !== "all" || openFilter !== "all" ||
-    maxMiles > 0;
+    verdicts.size > 0 || categoriesActive || servingRole !== "all" ||
+    maxPrice > 0 || restaurant !== "all" || cuisine !== "all" ||
+    openFilter !== "all" || maxMiles > 0;
 
   const mappedRestaurants = useMemo(() => {
     const groups = new Map();
@@ -650,7 +684,7 @@ export default function DishExplore({
     setCuisine("all");
     setOpenFilter("all");
     setQuery("");
-    setVerdict("all");
+    setVerdicts(new Set());
     setServingRole("all");
     setMaxMiles(0);
     setSortBy("name");
@@ -678,8 +712,8 @@ export default function DishExplore({
 
   function clearFilters() {
     setQuery("");
-    setVerdict("all");
-    setCategory("food");
+    setVerdicts(new Set());
+    setCategories(new Set(["food"]));
     setServingRole("all");
     setMaxPrice(0);
     setRestaurant("all");
@@ -690,8 +724,8 @@ export default function DishExplore({
   }
 
   const activeFilterCount =
-    Number(verdict !== "all") +
-    Number(category !== "food") +
+    Number(verdicts.size > 0) +
+    Number(categoriesActive) +
     Number(servingRole !== "all") +
     Number(maxPrice > 0) +
     Number(restaurant !== "all") +
@@ -767,7 +801,7 @@ export default function DishExplore({
               <option value="open">Open now</option>
               <option value="closed">Closed now</option>
             </select>
-            {category === "food" && (
+            {(categories.size === 0 || categories.has("food")) && (
               <select
                 value={servingRole}
                 onChange={(e) => setServingRole(e.target.value)}
@@ -831,19 +865,19 @@ export default function DishExplore({
               of wrapping rows — even cells read as one control, not débris. */}
           <div>
             <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-stone-400">
-              Type
+              Type · pick any combination
             </div>
             <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-50 p-1">
               {CATEGORIES.map((item) => {
                 const count = categoryCounts[item.key];
-                const active = category === item.key;
+                // Empty set means "everything" — show all three as on.
+                const active =
+                  categories.size === 0 || categories.has(item.key);
                 return (
                   <button
                     key={item.key}
-                    onClick={() => {
-                      setCategory(item.key);
-                      if (item.key !== "food") setServingRole("all");
-                    }}
+                    onClick={() => toggleCategory(item.key)}
+                    aria-pressed={active}
                     className={`flex flex-col items-center rounded-lg px-1 py-1.5 text-xs font-bold transition ${
                       active
                         ? "bg-stone-800 text-white shadow-sm"
@@ -861,22 +895,29 @@ export default function DishExplore({
           </div>
           <div>
             <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-stone-400">
-              Verdict
+              Verdict · pick any combination
             </div>
             <div className="grid grid-cols-2 gap-1">
-              {VERDICTS.map((item) => (
-                <button
-                  key={item.key}
-                  onClick={() => setVerdict(item.key)}
-                  className={`rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
-                    verdict === item.key
-                      ? "bg-emerald-700 text-white shadow-sm"
-                      : "border border-stone-200 bg-white text-stone-600 hover:border-emerald-500"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
+              {VERDICTS.map((item) => {
+                const active =
+                  item.key === "all"
+                    ? verdicts.size === 0
+                    : verdicts.has(item.key);
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => toggleVerdict(item.key)}
+                    aria-pressed={active}
+                    className={`rounded-lg px-2 py-1.5 text-xs font-semibold transition ${
+                      active
+                        ? "bg-emerald-700 text-white shadow-sm"
+                        : "border border-stone-200 bg-white text-stone-600 hover:border-emerald-500"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -926,13 +967,31 @@ export default function DishExplore({
               <span aria-hidden="true" className="text-base leading-none">×</span>
             </button>
           )}
-          {verdict !== "all" && (
+          {verdicts.size > 0 && (
             <button
-              onClick={() => setVerdict("all")}
+              onClick={() => setVerdicts(new Set())}
               className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
-              title="Remove verdict filter"
+              title="Remove verdict filters"
             >
-              Verdict: {VERDICTS.find((item) => item.key === verdict)?.label}
+              Verdict:{" "}
+              {VERDICTS.filter((item) => verdicts.has(item.key))
+                .map((item) => item.label)
+                .join(" + ")}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {categoriesActive && (
+            <button
+              onClick={() => setCategories(new Set(["food"]))}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Back to food only"
+            >
+              Type:{" "}
+              {categories.size === 0
+                ? "Everything"
+                : CATEGORIES.filter((item) => categories.has(item.key))
+                    .map((item) => item.label)
+                    .join(" + ")}
               <span aria-hidden="true" className="text-base leading-none">×</span>
             </button>
           )}
@@ -1029,7 +1088,7 @@ export default function DishExplore({
                 ? "Updating results…"
                 : `${shown.length.toLocaleString()} menu item${shown.length === 1 ? "" : "s"}`}
             </span>
-            {(query || verdict !== "all" || category !== "food" || servingRole !== "all" || restaurant !== "all" || cuisine !== "all" || openFilter !== "all" || maxMiles > 0) && (
+            {(query || hasActiveFilters) && (
               <button onClick={clearFilters} className="normal-case tracking-normal text-emerald-700 hover:underline">
                 Clear filters
               </button>
@@ -1043,7 +1102,7 @@ export default function DishExplore({
               const isSide = dish.serving_role === "side";
               const previousWasSide = visibleDishes[index - 1]?.serving_role === "side";
               const showRoleHeading =
-                category === "food" &&
+                foodOnly &&
                 servingRole === "all" &&
                 (index === 0 || isSide !== previousWasSide);
               return (
