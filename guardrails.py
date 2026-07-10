@@ -61,6 +61,44 @@ def _mock_qualified(text: str) -> bool:
     return any(word in lowered for word in _MOCK_WORDS)
 
 
+# Batter/laminated-dough dishes whose STANDARD recipe contains milk, butter,
+# or eggs even though the menu never names them: a plain "Blueberry Waffles"
+# is almost never vegan. French toast is egg-based by definition.
+_BATTER_WORDS = (
+    "pancake", "pancakes", "waffle", "waffles", "french toast", "crepe",
+    "crepes", "crêpe", "crêpes", "croissant", "croissants", "brioche",
+    "challah", "biscuit", "biscuits", "muffin", "muffins", "donut",
+    "donuts", "doughnut", "doughnuts",
+)
+_BATTER_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _BATTER_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+# "Pancake"/"crepe" dishes whose TRADITIONAL batter is plant-based — Asian
+# scallion pancakes are flour-water-oil dough, bánh xèo is rice flour and
+# coconut milk, dosa/injera/socca are naturally vegan ferments. "chay" is
+# Vietnamese for vegetarian/vegan. Western buttermilk batter rules must not
+# downgrade these.
+_BATTER_EXEMPT = (
+    "scallion pancake", "green onion pancake", "spring onion pancake",
+    "banh xeo", "bánh xèo", "dosa", "injera", "socca", "jianbing",
+    "moo shu", "mu shu", "chay",
+)
+
+
+def hidden_batter_risk(text: str) -> str | None:
+    """The batter word found when text names a standardly-non-vegan batter
+    dish with no vegan/plant qualifier anywhere; None otherwise."""
+    lowered = text.lower()
+    if any(word in lowered for word in _BATTER_EXEMPT):
+        return None
+    match = _BATTER_RE.search(text)
+    if match and not _mock_qualified(text):
+        return match.group(0)
+    return None
+
+
 def unqualified_animal_word(text: str) -> bool:
     """True when text plainly names an animal ingredient with no mock/plant
     qualifier anywhere — the shared "is this actually risky?" primitive."""

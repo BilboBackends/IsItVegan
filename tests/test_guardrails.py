@@ -166,6 +166,48 @@ def test_output_cap_overflow_retries_in_chunks(monkeypatch):
     assert result.cost_estimate == pytest.approx(0.001 * (len(calls) - 1))
 
 
+def test_plain_batter_dishes_never_stay_likely_vegan():
+    # Standard pancake/waffle batter contains buttermilk and eggs even when
+    # the menu only lists toppings — hedged vegan verdicts become unclear.
+    result = _validate(
+        _raw("Blueberry Waffles", "likely_vegan",
+             description="fresh blueberries, maple syrup"),
+        _raw("Banana Pancakes", "vegan", description="banana, walnuts"),
+        _raw("Chocolate Croissant", "likely_vegan"),
+    )
+    assert [d.verdict for d in result.dishes] == ["unclear"] * 3
+    assert all(d.confidence <= 0.4 for d in result.dishes)
+    assert "batter" in result.dishes[0].reasoning
+
+
+def test_traditionally_vegan_batters_are_exempt():
+    # Asian "pancakes"/"crepes" are not Western buttermilk batter: scallion
+    # pancakes are flour-water-oil, bánh xèo is rice flour + coconut milk.
+    result = _validate(
+        _raw("Scallion Pancake", "likely_vegan",
+             description="crispy flour pancake, scallions"),
+        _raw("Banh Xeo Chay - Crispy Golden Crepe", "vegan",
+             description="rice flour, turmeric, bean sprouts"),
+    )
+    assert [d.verdict for d in result.dishes] == ["likely_vegan", "vegan"]
+
+
+def test_marked_vegan_batter_dishes_are_exempt():
+    result = _validate(
+        # Name declares vegan: the upgrade rule applies, batter rule stands
+        # down (qualifier present).
+        _raw("Vegan Waffles", "likely_vegan", description="oat milk batter"),
+        # Description declares the plant version.
+        _raw("Sunday Pancakes", "likely_vegan",
+             description="plant-based buttermilk batter, aquafaba"),
+        # not_vegan verdicts are never touched.
+        _raw("Belgian Waffle", "not_vegan"),
+    )
+    assert [d.verdict for d in result.dishes] == [
+        "vegan", "likely_vegan", "not_vegan",
+    ]
+
+
 def test_dense_chunks_split_adaptively_until_they_fit(monkeypatch):
     # A dense menu (170 dishes in one 12k chunk) can overflow the output cap
     # even after the first split — the section must then split again instead

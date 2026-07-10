@@ -30,7 +30,11 @@ from classification_providers import (
 )
 from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
-from guardrails import apply_guardrails, unqualified_animal_word
+from guardrails import (
+    apply_guardrails,
+    hidden_batter_risk,
+    unqualified_animal_word,
+)
 
 # "Vegan Burger" is the restaurant declaring the dish vegan — the strongest
 # text evidence there is. Word-boundary match only; Ⓥ/"V" symbols are NOT
@@ -202,6 +206,12 @@ sauce and egg; refried beans often have lard; pizza dough is usually vegan \
 but check toppings; miso soup usually uses fish dashi; yakitori/izakaya tare \
 glaze often contains chicken stock or bonito — grilled items with tare are \
 likely_vegan at best, never vegan.
+- Batter and enriched/laminated doughs hide dairy and egg: pancakes, \
+waffles, crepes, muffins, donuts, biscuits, croissants, brioche, and \
+challah standardly contain milk/buttermilk, butter, or eggs even when the \
+menu lists only toppings — not_vegan unless the menu explicitly offers a \
+vegan version. French toast is egg-based by definition. Never call these \
+likely_vegan just because no animal ingredient is printed.
 - Only extract real dishes (things a customer can order). Skip hours, \
 addresses, marketing copy.
 - Categorize each item: drink (any beverage — soda, juice, tea, coffee, \
@@ -402,6 +412,26 @@ def result_from_data(
                 (reasoning + " " if reasoning else "")
                 + "Dish name itself declares it vegan."
             )
+        # Backstop for hidden batter: a plain pancake/waffle/croissant is
+        # standardly made with milk and eggs even when the menu only lists
+        # toppings — a vegan/likely_vegan verdict on one (with no vegan
+        # qualifier anywhere) becomes unclear. The vegan-name rule above
+        # already exempted marked-vegan versions via the qualifier check.
+        if verdict in ("vegan", "likely_vegan"):
+            batter_text = " ".join((
+                name,
+                str(dish.get("description") or ""),
+                reasoning,
+            ))
+            batter_word = hidden_batter_risk(batter_text)
+            if batter_word:
+                verdict = "unclear"
+                confidence = min(confidence, 0.4)
+                reasoning = (
+                    (reasoning + " " if reasoning else "")
+                    + f"[{batter_word} batter standardly contains "
+                    "milk/butter/egg; no vegan version stated]"
+                )
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):
             category = "food"
