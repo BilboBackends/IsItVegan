@@ -91,20 +91,22 @@ function ScoreBar({ label, value, max, note }) {
 
 // Click the score badge → a small popover shows the actual math: one bar
 // per component with what earned it. Explainability as UI, not a wall of
-// tooltip text.
-function VeganScoreBadge({ r }) {
-  const [open, setOpen] = useState(false);
+// tooltip text. open/onToggle are controlled by the card list so the card
+// with an open popover can be LIFTED above the map's stacking layer —
+// otherwise the map paints over popovers on adjacent cards.
+function VeganScoreBadge({ r, open, onToggle }) {
   const p = r.vegan_score_parts;
   if (r.vegan_score == null || !(r.dish_count > 0) || !p) return null;
   const treat = p.basis === "treat_variety";
   const unit = treat ? "treat" : "meal";
+  const setOpen = (value) => onToggle(value ? r.place_id : null);
   return (
     <span className="relative inline-block">
       <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((v) => !v);
+          setOpen(!open);
         }}
         className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
         title="How is this score calculated? Click to see the math"
@@ -238,6 +240,9 @@ export default function Explore({
   // "all" | "veganish" — clicking a card's vegan-count text opens the menu
   // pre-filtered to the vegan-friendly items.
   const [dishesFilter, setDishesFilter] = useState("all");
+  // place_id of the card whose score popover is open (that card gets a
+  // higher z-index so the popover isn't painted under the map).
+  const [scoreOpenFor, setScoreOpenFor] = useState(null);
   // Dish detail opened from the menu modal — hosted HERE so it never
   // navigates away to the Food items tab. The dish is merged with its
   // restaurant's fields because the per-restaurant dish rows don't carry
@@ -643,7 +648,9 @@ export default function Explore({
       id={`vf-card-${r.place_id}`}
       onClick={() => focusRestaurant(r)}
       title={r.lat != null ? "Show on map" : undefined}
-      className={`group flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+      className={`group relative flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+        scoreOpenFor === r.place_id ? "z-40" : ""
+      } ${
         focus != null && focus.id != null && focus.id === r.place_id
           ? "border-emerald-600 ring-1 ring-emerald-600"
           : "border-stone-200/80"
@@ -663,7 +670,11 @@ export default function Explore({
       </div>
       {(r.distance != null || (r.vegan_score != null && r.dish_count > 0)) && (
         <div className="mt-1.5 flex items-center gap-1.5">
-          <VeganScoreBadge r={r} />
+          <VeganScoreBadge
+            r={r}
+            open={scoreOpenFor === r.place_id}
+            onToggle={setScoreOpenFor}
+          />
           {r.distance != null && (
             <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
               {r.distance.toFixed(1)} mi
