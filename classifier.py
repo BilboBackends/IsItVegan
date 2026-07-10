@@ -437,13 +437,12 @@ def result_from_data(
         # toppings — a vegan/likely_vegan verdict on one (with no vegan
         # qualifier anywhere) becomes unclear. The vegan-name rule above
         # already exempted marked-vegan versions via the qualifier check.
+        # Qualifier checks below read the MENU's words only — the model's
+        # reasoning routinely says "remove X to make it plant-based", which
+        # would wrongly mock-qualify the dish being screened.
+        menu_words = f"{name} {dish.get('description') or ''}"
         if verdict in ("vegan", "likely_vegan"):
-            batter_text = " ".join((
-                name,
-                str(dish.get("description") or ""),
-                reasoning,
-            ))
-            batter_word = hidden_batter_risk(batter_text)
+            batter_word = hidden_batter_risk(menu_words)
             if batter_word:
                 verdict = "unclear"
                 confidence = min(confidence, 0.4)
@@ -458,10 +457,7 @@ def result_from_data(
         # honest verdict is not_vegan. Feta on a Greek Salad (name clean)
         # stays adaptable; "Vegan Cheese Pizza" was already upgraded above.
         if verdict == "vegan_adaptable":
-            defining = defining_animal_ingredient(
-                name,
-                f"{name} {dish.get('description') or ''} {reasoning}",
-            )
+            defining = defining_animal_ingredient(name, menu_words)
             if defining:
                 verdict = "not_vegan"
                 confidence = max(confidence, 0.8)

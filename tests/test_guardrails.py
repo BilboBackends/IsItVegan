@@ -222,6 +222,35 @@ def test_namesake_animal_ingredient_kills_vegan_adaptable():
     assert "namesake" in result.dishes[0].reasoning
 
 
+def test_adaptation_advice_in_reasoning_cannot_exempt_the_dish():
+    # Antonio's escape route: the model's reasoning said "remove mozzarella
+    # to make it plant-based" and "plant-based" mock-qualified the dish.
+    # Only the MENU's words may exempt.
+    result = _validate(
+        dict(_raw("Pizza (10\") Cheese", "vegan_adaptable", confidence=0.98,
+                  description="Antonio's pizza sauce, mozzarella."),
+             reasoning="Remove mozzarella to make the pizza plant-based."),
+        dict(_raw("Pizza (14\") Margherita", "vegan_adaptable",
+                  description="Fresh basil, fresh milk mozzarella."),
+             reasoning="Remove mozzarella to make the pizza plant-based."),
+        dict(_raw("Caprese", "vegan_adaptable",
+                  description="Fresh milk mozzarella, tomatoes, basil."),
+             reasoning="Remove mozzarella to leave tomatoes and basil."),
+    )
+    assert [d.verdict for d in result.dishes] == ["not_vegan"] * 3
+
+
+def test_veggie_pizza_with_removable_mozzarella_stays_adaptable():
+    # Quattro: mushrooms, artichokes, pepperonata + mozzarella — remove the
+    # cheese and a vegetable pizza remains. Genuinely adaptable.
+    result = _validate(
+        _raw("Pizza (10\") Quattro", "vegan_adaptable",
+             description="Mushrooms, artichokes, basil, pepperonata, "
+             "pizza sauce, mozzarella."),
+    )
+    assert result.dishes[0].verdict == "vegan_adaptable"
+
+
 def test_removable_toppings_keep_vegan_adaptable():
     result = _validate(
         # Name is clean — the feta is a topping, the salad survives.

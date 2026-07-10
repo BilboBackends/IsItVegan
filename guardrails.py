@@ -99,16 +99,35 @@ def hidden_batter_risk(text: str) -> str | None:
     return None
 
 
-def defining_animal_ingredient(name: str, full_text: str) -> str | None:
-    """The animal word in a dish's NAME, unless a mock/plant qualifier
-    appears anywhere in the dish's text.
+# Dishes whose NAME doesn't contain an animal word but which ARE dairy/egg
+# by definition — a Margherita or Caprese without mozzarella isn't that dish.
+_ANIMAL_DEFINED_DISHES = (
+    "margherita", "caprese", "bianca", "quattro formaggi", "formaggio",
+    "quesadilla", "mac and cheese", "mac & cheese", "grilled cheese",
+    "saganaki", "tiramisu", "cannoli", "flan", "creme brulee",
+    "crème brûlée", "milk tea",
+)
+_ANIMAL_DEFINED_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _ANIMAL_DEFINED_DISHES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def defining_animal_ingredient(name: str, menu_text: str) -> str | None:
+    """The animal word (or animal-defined dish name) in a dish's NAME,
+    unless the MENU's own words carry a mock/plant qualifier.
 
     A name-level animal ingredient is DEFINITIONAL: a "Cheese Empanada"
     without cheese isn't that dish, so vegan_adaptable is wrong for it —
     unlike feta on a salad, where the name survives the removal.
+
+    menu_text must be the menu's words only (name + description). NEVER
+    include the model's reasoning: adaptation advice like "remove the
+    mozzarella to make it plant-based" would mock-qualify the very dish
+    the rule exists to catch (how Antonio's Cheese Pizza slipped through).
     """
-    match = _ANIMAL_RE.search(name)
-    if match and not _mock_qualified(full_text):
+    match = _ANIMAL_RE.search(name) or _ANIMAL_DEFINED_RE.search(name)
+    if match and not _mock_qualified(menu_text):
         return match.group(0)
     return None
 
