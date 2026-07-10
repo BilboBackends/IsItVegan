@@ -68,6 +68,30 @@ export function veganScoreClasses(score) {
   return "bg-stone-100 text-stone-500";
 }
 
+// Inline sprout icon: strokes follow the text color, so it's white on the
+// solid badge and emerald on light ones — and it renders identically on
+// every platform, unlike the 🌱 emoji (which blends into the green badge
+// on phones).
+function SproutIcon({ className = "" }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`inline-block h-3.5 w-3.5 align-[-2px] ${className}`}
+      aria-hidden="true"
+    >
+      <path d="M7 20h10" />
+      <path d="M10 20c5.5-2.5.8-6.4 3-10" />
+      <path d="M9.5 9.4c1.1.8 1.8 2.2 2.3 3.7-2 .4-3.5.4-4.8-.3-1.2-.6-2.3-1.9-3-4.2 2.8-.5 4.4 0 5.5.8z" />
+      <path d="M14.1 6a7 7 0 0 0-1.1 4c1.9-.1 3.3-.6 4.3-1.4 1-1 1.6-2.3 1.7-4.6-2.7.1-4 1-4.9 2z" />
+    </svg>
+  );
+}
+
 function ScoreBar({ label, value, max, note }) {
   return (
     <div>
@@ -112,7 +136,7 @@ function VeganScoreBadge({ r, open, onToggle }) {
         title="How is this score calculated? Click to see the math"
         aria-expanded={open}
       >
-        🌱 {r.vegan_score.toFixed(1)}
+        <SproutIcon /> {r.vegan_score.toFixed(1)}
       </button>
       {open && (
         <>
@@ -129,7 +153,7 @@ function VeganScoreBadge({ r, open, onToggle }) {
           >
             <div className="flex items-baseline justify-between border-b border-stone-100 pb-1.5">
               <span className="text-xs font-extrabold uppercase tracking-wide text-stone-500">
-                🌱 Vegan score
+                <SproutIcon className="text-emerald-600" /> Vegan score
               </span>
               <span className="text-sm font-extrabold text-stone-900">
                 {r.vegan_score.toFixed(1)}
