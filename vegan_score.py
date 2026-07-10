@@ -23,27 +23,42 @@ _SELECTION_SATURATION = 12
 _SIDE_WEIGHT = 0.25
 
 
+# A dessert venue with this many fully-vegan treats has a genuinely deep
+# vegan lineup — earns the full substance credit.
+_TREAT_VARIETY_SATURATION = 5
+
+
 def compute_vegan_score(
     vegan_meals: int,
     vegan_sides: int = 0,
     high_protein_meals: int = 0,
     moderate_protein_meals: int = 0,
     google_rating: float | None = None,
+    dessert_venue: bool = False,
 ) -> dict:
-    """Score a restaurant. Returns {score, selection, substance, reputation}."""
+    """Score a restaurant. Returns {score, selection, substance,
+    reputation, basis}.
+
+    dessert_venue switches the substance question: at an ice cream shop,
+    "is it filling?" is meaningless — nobody goes for protein. Substance
+    there measures vegan TREAT VARIETY instead (Sampaguita's seven vegan
+    flavors are an excellent dessert stop, not a failed dinner).
+    """
     effective = max(0.0, vegan_meals + _SIDE_WEIGHT * vegan_sides)
     selection = 5.0 * min(
         1.0, math.log1p(effective) / math.log1p(_SELECTION_SATURATION)
     )
 
-    if vegan_meals > 0:
+    if vegan_meals <= 0:
+        substance = 0.0
+    elif dessert_venue:
+        substance = 3.0 * min(1.0, vegan_meals / _TREAT_VARIETY_SATURATION)
+    else:
         filling = min(
             1.0,
             (high_protein_meals + 0.6 * moderate_protein_meals) / vegan_meals,
         )
         substance = 3.0 * filling
-    else:
-        substance = 0.0
 
     if google_rating is None:
         reputation = 1.0  # unknown, not bad
@@ -55,4 +70,6 @@ def compute_vegan_score(
         "selection": round(selection, 1),
         "substance": round(substance, 1),
         "reputation": round(reputation, 1),
+        # what the substance number means — the tooltip says it honestly.
+        "basis": "treat_variety" if dessert_venue else "protein",
     }

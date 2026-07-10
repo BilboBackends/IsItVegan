@@ -136,6 +136,7 @@ def get_restaurants() -> object:
                 c.get("vegan_meals_moderate_protein", 0) if c else 0
             ),
             google_rating=r.get("rating"),
+            dessert_venue=r.get("primary_type") in db.DESSERT_VENUE_TYPES,
         )
         r["vegan_score"] = score["score"]
         r["vegan_score_parts"] = score

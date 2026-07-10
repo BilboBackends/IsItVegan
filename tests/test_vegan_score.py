@@ -60,6 +60,20 @@ def test_sides_help_a_little():
     assert some < compute_vegan_score(3, vegan_sides=0)["selection"] + 0.01
 
 
+def test_dessert_venues_score_substance_on_treat_variety():
+    # An ice cream shop's treats are low-protein BY DESIGN — substance there
+    # measures vegan variety, so Sampaguita's 7 flavors aren't a failed
+    # dinner menu.
+    protein_view = compute_vegan_score(7, google_rating=4.8)
+    treat_view = compute_vegan_score(7, google_rating=4.8, dessert_venue=True)
+    assert protein_view["substance"] == 0.0
+    assert treat_view["substance"] == 3.0
+    assert treat_view["score"] > protein_view["score"]
+    assert treat_view["basis"] == "treat_variety"
+    # One lone vegan flavor is still thin variety.
+    assert compute_vegan_score(1, dessert_venue=True)["substance"] < 1.0
+
+
 def test_score_is_bounded_zero_to_ten():
     best = compute_vegan_score(
         50, vegan_sides=20, high_protein_meals=50, google_rating=5.0

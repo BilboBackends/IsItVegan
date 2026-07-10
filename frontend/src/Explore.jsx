@@ -71,11 +71,14 @@ export function veganScoreClasses(score) {
 function veganScoreTitle(r) {
   const p = r.vegan_score_parts;
   if (!p) return "Vegan score";
+  const substanceMeaning =
+    p.basis === "treat_variety"
+      ? "(vegan treat variety — it's a dessert spot)"
+      : "(how filling those meals are)";
   return (
     `Vegan score ${p.score}/10 — selection ${p.selection}/5 ` +
-    `(vegan meals with diminishing returns), substance ${p.substance}/3 ` +
-    `(how filling those meals are), reputation ${p.reputation}/2 ` +
-    `(Google rating)`
+    `(vegan options with diminishing returns), substance ${p.substance}/3 ` +
+    `${substanceMeaning}, reputation ${p.reputation}/2 (Google rating)`
   );
 }
 
