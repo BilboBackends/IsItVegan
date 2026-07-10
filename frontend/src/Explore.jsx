@@ -235,6 +235,9 @@ export default function Explore({
     () => window.matchMedia("(min-width: 1024px)").matches
   );
   const [dishesFor, setDishesFor] = useState(null);
+  // "all" | "veganish" — clicking a card's vegan-count text opens the menu
+  // pre-filtered to the vegan-friendly items.
+  const [dishesFilter, setDishesFilter] = useState("all");
   // Dish detail opened from the menu modal — hosted HERE so it never
   // navigates away to the Food items tab. The dish is merged with its
   // restaurant's fields because the per-restaurant dish rows don't carry
@@ -548,7 +551,10 @@ export default function Explore({
           btn.textContent = "See dishes →";
           btn.style.cssText =
             "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-          btn.onclick = () => setDishesFor(r);
+          btn.onclick = () => {
+            setDishesFilter("all");
+            setDishesFor(r);
+          };
           row.append(btn);
         }
         actions.append(row);
@@ -741,8 +747,16 @@ export default function Explore({
         {r.dish_count > 0 ? (
           // Dot + plain text, colored like the map pin for this restaurant —
           // quieter than a filled pill, and card ↔ pin read as one system.
-          <span
-            className="flex items-center gap-1.5 text-xs font-semibold"
+          // Clicking jumps straight into the menu, pre-filtered to the
+          // vegan-friendly items the count is talking about.
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setDishesFilter("veganish");
+              setDishesFor(r);
+            }}
+            title="See these vegan-friendly items"
+            className="flex items-center gap-1.5 text-xs font-semibold hover:underline"
             style={{ color: pinColor(r) }}
           >
             <span
@@ -762,7 +776,7 @@ export default function Explore({
                   ? `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`
                   : `no vegan ${unit}s found`;
             })()}
-          </span>
+          </button>
         ) : (
           <span className="text-xs italic text-stone-400">
             menu not analyzed yet
@@ -789,6 +803,7 @@ export default function Explore({
             <button
               onClick={(e) => {
                 e.stopPropagation();
+                setDishesFilter("all");
                 setDishesFor(r);
               }}
               className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
@@ -1026,6 +1041,7 @@ export default function Explore({
         <DishModal
           restaurant={dishesFor}
           onClose={() => setDishesFor(null)}
+          initialFilter={dishesFilter}
           onOpenDish={(d) =>
             setDetailDish({
               ...d,

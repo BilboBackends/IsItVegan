@@ -76,7 +76,14 @@ function dishCategory(d) {
     : "food";
 }
 
-export default function DishModal({ restaurant, onClose, onOpenDish }) {
+export default function DishModal({
+  restaurant,
+  onClose,
+  onOpenDish,
+  // "veganish" opens the menu pre-filtered to vegan-friendly items — the
+  // card's vegan-count text uses this as a direct shortcut.
+  initialFilter = "all",
+}) {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("food");
@@ -102,7 +109,7 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
     if (!restaurant) return;
     setLoading(true);
     setDishes([]);
-    setFilter("all");
+    setFilter(initialFilter);
     setServingFilter("all");
     setFiltersOpen(false);
     setCollapsed(new Set());
@@ -119,7 +126,7 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
       })
       .catch(() => setDishes([]))
       .finally(() => setLoading(false));
-  }, [restaurant]);
+  }, [restaurant, initialFilter]);
 
   const byCategory = useMemo(() => {
     const groups = { food: [], dessert: [], drink: [] };
