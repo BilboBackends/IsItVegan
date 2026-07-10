@@ -240,15 +240,30 @@ def test_adaptation_advice_in_reasoning_cannot_exempt_the_dish():
     assert [d.verdict for d in result.dishes] == ["not_vegan"] * 3
 
 
-def test_veggie_pizza_with_removable_mozzarella_stays_adaptable():
-    # Quattro: mushrooms, artichokes, pepperonata + mozzarella — remove the
-    # cheese and a vegetable pizza remains. Genuinely adaptable.
+def test_any_pizza_with_dairy_cheese_is_not_vegan():
+    # Product decision: baked-in cheese is not a removable topping — a pizza
+    # that doesn't already offer vegan cheese is not vegan, even a veggie
+    # pizza like Antonio's Quattro.
     result = _validate(
         _raw("Pizza (10\") Quattro", "vegan_adaptable",
              description="Mushrooms, artichokes, basil, pepperonata, "
              "pizza sauce, mozzarella."),
+        _raw("Garden Flatbread", "likely_vegan",
+             description="seasonal vegetables, fontina"),
+    )
+    assert [d.verdict for d in result.dishes] == ["not_vegan"] * 2
+    assert "baked in" in result.dishes[0].reasoning
+
+
+def test_vegan_cheese_and_cheeseless_pizzas_escape_the_pizza_rule():
+    result = _validate(
+        _raw("Quattro Pizza", "vegan_adaptable",
+             description="mushrooms, artichokes, vegan mozzarella available"),
+        _raw("Pizza Marinara", "likely_vegan",
+             description="tomato, garlic, oregano, olive oil"),
     )
     assert result.dishes[0].verdict == "vegan_adaptable"
+    assert result.dishes[1].verdict == "likely_vegan"
 
 
 def test_removable_toppings_keep_vegan_adaptable():

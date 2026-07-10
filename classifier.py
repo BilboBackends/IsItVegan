@@ -33,6 +33,7 @@ from config import settings
 from dish_identity import dish_identity_key, preferred_dish_name
 from guardrails import (
     apply_guardrails,
+    baked_in_dairy_cheese,
     defining_animal_ingredient,
     hidden_batter_risk,
     unqualified_animal_word,
@@ -221,6 +222,10 @@ sauce and egg; refried beans often have lard; pizza dough is usually vegan \
 but check toppings; miso soup usually uses fish dashi; yakitori/izakaya tare \
 glaze often contains chicken stock or bonito — grilled items with tare are \
 likely_vegan at best, never vegan.
+- Pizza/flatbread with dairy cheese listed is not_vegan, never \
+vegan_adaptable: baked-in cheese is not a removable topping. Only a pizza \
+whose menu offers vegan cheese (or lists none, like a marinara) can do \
+better.
 - Batter and enriched/laminated doughs hide dairy and egg: pancakes, \
 waffles, crepes, muffins, donuts, biscuits, croissants, brioche, and \
 challah standardly contain milk/buttermilk, butter, or eggs even when the \
@@ -465,6 +470,19 @@ def result_from_data(
                     (reasoning + " " if reasoning else "")
                     + f"[{defining} is the dish's namesake — removing it "
                     "doesn't leave this dish]"
+                )
+        # Pizza with dairy cheese listed is not vegan, full stop — baked-in
+        # cheese isn't a removable topping. Only menus offering vegan cheese
+        # (mock-qualified) or cheeseless pizzas (marinara) escape.
+        if verdict != "not_vegan":
+            baked_cheese = baked_in_dairy_cheese(name, menu_words)
+            if baked_cheese:
+                verdict = "not_vegan"
+                confidence = max(confidence, 0.8)
+                reasoning = (
+                    (reasoning + " " if reasoning else "")
+                    + f"[{baked_cheese} is baked in — not vegan unless the "
+                    "menu offers vegan cheese]"
                 )
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):

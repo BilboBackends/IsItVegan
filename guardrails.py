@@ -132,6 +132,39 @@ def defining_animal_ingredient(name: str, menu_text: str) -> str | None:
     return None
 
 
+# Pizza-family dishes: baked-in cheese is not a removable topping. Product
+# decision: a pizza that doesn't already offer vegan cheese is not vegan.
+_PIZZA_RE = re.compile(
+    r"\b(pizza|pizzas|pizzette|flatbread|flatbreads|calzone|stromboli)\b",
+    re.IGNORECASE,
+)
+_DAIRY_CHEESE_WORDS = (
+    "cheese", "mozzarella", "parmesan", "parmigiano", "pecorino",
+    "grana padano", "asiago", "fontina", "gorgonzola", "ricotta",
+    "provolone", "burrata", "stracciatella", "taleggio", "feta", "cheddar",
+    "queso", "brie", "gouda", "halloumi", "manchego",
+)
+_DAIRY_CHEESE_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _DAIRY_CHEESE_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def baked_in_dairy_cheese(name: str, menu_text: str) -> str | None:
+    """The dairy cheese named on a pizza/flatbread with no vegan qualifier.
+
+    Cheese on pizza is baked into every slice, not picked off — so unless
+    the menu itself offers a vegan cheese, the pizza is not vegan and
+    'adaptable' is the wrong promise.
+    """
+    if not _PIZZA_RE.search(name):
+        return None
+    match = _DAIRY_CHEESE_RE.search(menu_text)
+    if match and not _mock_qualified(menu_text):
+        return match.group(0)
+    return None
+
+
 def unqualified_animal_word(text: str) -> bool:
     """True when text plainly names an animal ingredient with no mock/plant
     qualifier anywhere — the shared "is this actually risky?" primitive."""
