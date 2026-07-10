@@ -85,6 +85,18 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
   // Phones only: the two filter rows start collapsed behind a "Filters"
   // disclosure so the dish list gets the space; desktop always shows them.
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Section disclosure (Full meals / Sides, Soft drinks / Alcoholic):
+  // everything starts OPEN; tapping a header collapses just that section.
+  const [collapsed, setCollapsed] = useState(() => new Set());
+
+  function toggleGroup(key) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!restaurant) return;
@@ -93,6 +105,7 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
     setFilter("all");
     setServingFilter("all");
     setFiltersOpen(false);
+    setCollapsed(new Set());
     fetchRestaurantDishes(restaurant.id)
       .then((res) => (res.ok ? res.json() : { dishes: [] }))
       .then((data) => {
@@ -335,19 +348,29 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
             <div className="space-y-5">
               {displayGroups.map((group) => {
                 if (group.items.length === 0) return null;
+                const isCollapsed = collapsed.has(group.key);
                 return (
                   <section key={group.key}>
                     {group.label && (
-                      <div className="mb-1 flex items-end justify-between gap-3 border-b border-slate-200 pb-2">
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group.key)}
+                        aria-expanded={!isCollapsed}
+                        className="mb-1 flex w-full items-end justify-between gap-3 border-b border-slate-200 pb-2 text-left"
+                      >
                         <div>
                           <h3 className="text-sm font-bold text-slate-800">{group.label}</h3>
-                          <p className="text-xs text-slate-400">{group.description}</p>
+                          {!isCollapsed && (
+                            <p className="text-xs text-slate-400">{group.description}</p>
+                          )}
                         </div>
                         <span className="shrink-0 text-xs font-semibold text-slate-400">
-                          {group.items.length} item{group.items.length === 1 ? "" : "s"}
+                          {group.items.length} item{group.items.length === 1 ? "" : "s"}{" "}
+                          <span aria-hidden="true">{isCollapsed ? "▸" : "▾"}</span>
                         </span>
-                      </div>
+                      </button>
                     )}
+                    {group.label && isCollapsed ? null : (
                     <ul className="divide-y divide-slate-100">
               {group.items.map((d) => (
                 <li key={d.id} className="py-3 first:pt-2">
@@ -410,6 +433,7 @@ export default function DishModal({ restaurant, onClose, onOpenDish }) {
                 </li>
               ))}
                     </ul>
+                    )}
                   </section>
                 );
               })}
