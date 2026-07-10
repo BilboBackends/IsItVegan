@@ -1876,19 +1876,24 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                        ELSE 0
                    END) AS strict_n,
                    SUM(CASE
-                       WHEN c.protein_level = 'high' AND (
-                            c.verdict = 'vegan'
+                       WHEN c.verdict = 'vegan'
                             OR (c.verdict = 'likely_vegan'
                                 AND c.confidence >= :min_confidence)
-                       ) THEN 1 ELSE 0
-                   END) AS strict_high_protein,
-                   SUM(CASE
-                       WHEN c.protein_level = 'moderate' AND (
-                            c.verdict = 'vegan'
-                            OR (c.verdict = 'likely_vegan'
-                                AND c.confidence >= :min_confidence)
-                       ) THEN 1 ELSE 0
-                   END) AS strict_moderate_protein
+                       THEN (CASE
+                           -- how "filling" is this counted vegan dish:
+                           -- protein-rich = fully; a dish the restaurant
+                           -- NAMED vegan is purpose-built and nearly so
+                           -- (Black Magic's Vegan Dr Pepperoni is a whole
+                           -- pizza, not a salad); moderate protein partial;
+                           -- anything else a sliver.
+                           WHEN c.protein_level = 'high' THEN 1.0
+                           WHEN LOWER(d.name) LIKE '%vegan%'
+                                OR d.name LIKE '%Ⓥ%' THEN 0.9
+                           WHEN c.protein_level = 'moderate' THEN 0.6
+                           ELSE 0.1
+                       END)
+                       ELSE 0
+                   END) AS strict_substance_points
             FROM dishes d
             JOIN restaurants r ON r.id = d.restaurant_id
             JOIN classifications c ON c.id = (
@@ -1911,11 +1916,11 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
                 "sides_by_verdict": {},
                 "vegan_meals": 0,
                 "vegan_sides": 0,
-                # protein distribution of the counted vegan meals — feeds
-                # the Vegan Score's substance component (a menu of plain
-                # salads is not the same as one with tofu bowls).
-                "vegan_meals_high_protein": 0,
-                "vegan_meals_moderate_protein": 0,
+                # weighted "how filling" points over the counted vegan
+                # meals — feeds the Vegan Score's substance component (a
+                # menu of plain salads is not the same as tofu bowls or a
+                # purpose-built vegan pizza line).
+                "vegan_substance_points": 0.0,
             },
         )
         entry["total"] += r["n"]
@@ -1933,10 +1938,7 @@ def verdict_counts_by_restaurant(db_path: str | None = None) -> dict[int, dict]:
             )
             entry["vegan_sides" if is_side else "vegan_meals"] += r["strict_n"]
             if not is_side:
-                entry["vegan_meals_high_protein"] += r["strict_high_protein"]
-                entry["vegan_meals_moderate_protein"] += (
-                    r["strict_moderate_protein"]
-                )
+                entry["vegan_substance_points"] += r["strict_substance_points"]
     return out
 
 

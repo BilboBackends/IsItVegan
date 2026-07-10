@@ -74,7 +74,7 @@ function veganScoreTitle(r) {
   const substanceMeaning =
     p.basis === "treat_variety"
       ? "(vegan treat variety — it's a dessert spot)"
-      : "(how filling those meals are)";
+      : "(filling vegan options: protein-rich dishes, purpose-built vegan mains, or vegan proteins offered on the menu)";
   return (
     `Vegan score ${p.score}/10 — selection ${p.selection}/5 ` +
     `(vegan options with diminishing returns), substance ${p.substance}/3 ` +

@@ -17,10 +17,28 @@ along for tooltips — never show a number without its why (CLAUDE.md).
 from __future__ import annotations
 
 import math
+import re
 
 # Selection saturates here: this many effective meals earns the full 5.
 _SELECTION_SATURATION = 12
 _SIDE_WEIGHT = 0.25
+
+# Substance saturates at this many "filling points" — roughly three
+# protein-rich dishes, or three-plus purpose-built vegan mains.
+_SUBSTANCE_SATURATION = 3.0
+
+# Menu-wide vegan-protein signal: a kitchen that stocks tofu/seitan/vegan
+# sausage can usually add it to dishes on request even when individual dish
+# descriptions don't say so — worth one filling point on its own.
+PLANT_PROTEIN_RE = re.compile(
+    r"\b(tofu|seitan|tempeh|edamame|beyond|impossible"
+    r"|vegan (?:protein|chick'?n|chicken|sausage|pepperoni|beef|steak|meat))\b",
+    re.IGNORECASE,
+)
+
+
+def menu_offers_plant_protein(menu_text: str | None) -> bool:
+    return bool(menu_text) and bool(PLANT_PROTEIN_RE.search(menu_text))
 
 
 # A dessert venue with this many fully-vegan treats has a genuinely deep
@@ -31,18 +49,26 @@ _TREAT_VARIETY_SATURATION = 5
 def compute_vegan_score(
     vegan_meals: int,
     vegan_sides: int = 0,
-    high_protein_meals: int = 0,
-    moderate_protein_meals: int = 0,
+    substance_points: float = 0.0,
     google_rating: float | None = None,
     dessert_venue: bool = False,
+    plant_protein_menu: bool = False,
 ) -> dict:
     """Score a restaurant. Returns {score, selection, substance,
     reputation, basis}.
 
-    dessert_venue switches the substance question: at an ice cream shop,
-    "is it filling?" is meaningless — nobody goes for protein. Substance
-    there measures vegan TREAT VARIETY instead (Sampaguita's seven vegan
-    flavors are an excellent dessert stop, not a failed dinner).
+    substance_points is the weighted "how filling" sum over counted vegan
+    meals (db.verdict_counts_by_restaurant): high protein 1.0, purpose-built
+    vegan-named dishes 0.9, moderate protein 0.6, everything else 0.1 —
+    ABSOLUTE, not a fraction, so breadth is never punished: the question is
+    "are there a few genuinely filling vegan options", not "what share".
+
+    plant_protein_menu adds one point when the menu mentions tofu/seitan/
+    vegan sausage anywhere — kitchens that stock vegan protein usually add
+    it on request even when dish descriptions don't say so.
+
+    dessert_venue switches the substance question entirely: at an ice cream
+    shop nobody goes for protein — substance measures vegan TREAT VARIETY.
     """
     effective = max(0.0, vegan_meals + _SIDE_WEIGHT * vegan_sides)
     selection = 5.0 * min(
@@ -54,11 +80,10 @@ def compute_vegan_score(
     elif dessert_venue:
         substance = 3.0 * min(1.0, vegan_meals / _TREAT_VARIETY_SATURATION)
     else:
-        filling = min(
-            1.0,
-            (high_protein_meals + 0.6 * moderate_protein_meals) / vegan_meals,
-        )
-        substance = 3.0 * filling
+        points = max(0.0, substance_points)
+        if plant_protein_menu:
+            points += 1.0
+        substance = 3.0 * min(1.0, points / _SUBSTANCE_SATURATION)
 
     if google_rating is None:
         reputation = 1.0  # unknown, not bad

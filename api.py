@@ -30,7 +30,7 @@ import menu_audit
 from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
 from menu_score import score_menu_text
-from vegan_score import compute_vegan_score
+from vegan_score import compute_vegan_score, menu_offers_plant_protein
 from venue_filter import is_consumer_food_venue
 
 app = Flask(__name__)
@@ -131,12 +131,12 @@ def get_restaurants() -> object:
         score = compute_vegan_score(
             vegan_meals=c["vegan_meals"] if c else 0,
             vegan_sides=c["vegan_sides"] if c else 0,
-            high_protein_meals=c.get("vegan_meals_high_protein", 0) if c else 0,
-            moderate_protein_meals=(
-                c.get("vegan_meals_moderate_protein", 0) if c else 0
-            ),
+            substance_points=c.get("vegan_substance_points", 0.0) if c else 0.0,
             google_rating=r.get("rating"),
             dessert_venue=r.get("primary_type") in db.DESSERT_VENUE_TYPES,
+            plant_protein_menu=menu_offers_plant_protein(
+                menu_source["content"] if menu_source else None
+            ),
         )
         r["vegan_score"] = score["score"]
         r["vegan_score_parts"] = score

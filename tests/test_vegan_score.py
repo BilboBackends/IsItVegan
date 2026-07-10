@@ -35,14 +35,27 @@ def test_selection_has_diminishing_returns():
 
 
 def test_substance_rewards_filling_meals_not_salad_lists():
-    salads = compute_vegan_score(6, high_protein_meals=0)
-    tofu_bowls = compute_vegan_score(6, high_protein_meals=6)
-    mixed = compute_vegan_score(6, high_protein_meals=2,
-                                moderate_protein_meals=2)
-    assert salads["substance"] == 0.0
+    # points: high protein 1.0/dish, vegan-named mains 0.9, moderate 0.6,
+    # plain dishes 0.1 — saturating at 3, ABSOLUTE so breadth isn't punished.
+    salads = compute_vegan_score(6, substance_points=6 * 0.1)
+    tofu_bowls = compute_vegan_score(6, substance_points=6 * 1.0)
+    vegan_pizza_line = compute_vegan_score(6, substance_points=6 * 0.9)
+    one_bowl = compute_vegan_score(6, substance_points=1.0)
+    assert salads["substance"] < 1.0
     assert tofu_bowls["substance"] == 3.0
-    assert 0 < mixed["substance"] < 3.0
+    # A purpose-built vegan menu (Black Magic) is as substantial as tofu.
+    assert vegan_pizza_line["substance"] == 3.0
+    assert 0 < one_bowl["substance"] < 3.0
     assert tofu_bowls["score"] > salads["score"]
+
+
+def test_menu_wide_plant_protein_earns_a_filling_point():
+    # "add tofu +$3" lives in the menu, not the dish descriptions.
+    without = compute_vegan_score(5, substance_points=0.5)
+    with_addon = compute_vegan_score(
+        5, substance_points=0.5, plant_protein_menu=True
+    )
+    assert with_addon["substance"] - without["substance"] == 1.0
 
 
 def test_reputation_scales_and_clamps():
@@ -76,7 +89,7 @@ def test_dessert_venues_score_substance_on_treat_variety():
 
 def test_score_is_bounded_zero_to_ten():
     best = compute_vegan_score(
-        50, vegan_sides=20, high_protein_meals=50, google_rating=5.0
+        50, vegan_sides=20, substance_points=50, google_rating=5.0
     )
     assert best["score"] == 10.0
     worst = compute_vegan_score(0, google_rating=1.0)
