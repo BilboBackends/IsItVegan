@@ -537,31 +537,35 @@ export default function Explore({
           : "border-stone-200/80"
       }`}
     >
-      {/* Name gets its own full-width line; the badges live on their own
-          row beneath so nothing can ever crowd the heart off the card. */}
-      <div className="font-bold leading-snug text-stone-900">{r.name}</div>
-      <div className="mt-1.5 flex items-center gap-1.5">
-        {r.vegan_score != null && r.dish_count > 0 && (
-          <span
-            className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
-            title={veganScoreTitle(r)}
-          >
-            Ⓥ {r.vegan_score.toFixed(1)}
-          </span>
-        )}
-        {r.distance != null && (
-          <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
-            {r.distance.toFixed(1)} mi
-          </span>
-        )}
-        <span className="ml-auto">
-          <FavoriteButton
-            active={favorites.restaurants.includes(r.id)}
-            onClick={() => toggleRestaurant(r.id)}
-            label="restaurant"
-          />
-        </span>
+      {/* Name + heart share the top line (heart is a fixed small square, so
+          it can't overflow); the score/mileage badges get their own row. */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 font-bold leading-snug text-stone-900">
+          {r.name}
+        </div>
+        <FavoriteButton
+          active={favorites.restaurants.includes(r.id)}
+          onClick={() => toggleRestaurant(r.id)}
+          label="restaurant"
+        />
       </div>
+      {(r.distance != null || (r.vegan_score != null && r.dish_count > 0)) && (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          {r.vegan_score != null && r.dish_count > 0 && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
+              title={veganScoreTitle(r)}
+            >
+              Ⓥ {r.vegan_score.toFixed(1)}
+            </span>
+          )}
+          {r.distance != null && (
+            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
+              {r.distance.toFixed(1)} mi
+            </span>
+          )}
+        </div>
+      )}
       {/* One quiet meta line: cuisine · price · Google rating. */}
       <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
         <span className="capitalize">
