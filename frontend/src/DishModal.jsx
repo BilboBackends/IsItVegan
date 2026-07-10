@@ -248,8 +248,9 @@ export default function DishModal({
           </button>
         </div>
 
-        {/* Category tabs */}
-        <div className="flex gap-1 border-b border-slate-200 px-4 pt-2">
+        {/* Category tabs. Tighter on phones and scrollable on overflow so a
+            big drinks count (Anh Hong's 36) can't be clipped off the edge. */}
+        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 px-4 pt-2">
           {CATEGORIES.map((c) => {
             const items = byCategory[c.key];
             if (!items || items.length === 0) return null;
@@ -261,18 +262,19 @@ export default function DishModal({
                   setTab(c.key);
                   setServingFilter("all");
                 }}
-                className={`relative -mb-px rounded-t-lg border px-3 py-2 text-sm font-medium transition ${
+                className={`relative -mb-px shrink-0 whitespace-nowrap rounded-t-lg border px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
                   tab === c.key
                     ? "border-slate-200 border-b-white bg-white text-slate-900"
                     : "border-transparent text-slate-500 hover:text-slate-800"
                 }`}
               >
-                {c.icon} {c.label}
-                <span className="ml-1.5 text-xs text-slate-400">
+                <span className="max-sm:hidden">{c.icon} </span>
+                {c.label}
+                <span className="ml-1 text-xs text-slate-400 sm:ml-1.5">
                   {items.length}
                 </span>
                 {veg > 0 && (
-                  <span className="ml-1.5 rounded-full bg-emerald-100 px-1.5 text-xs font-semibold text-emerald-700">
+                  <span className="ml-1 rounded-full bg-emerald-100 px-1.5 text-xs font-semibold text-emerald-700 sm:ml-1.5">
                     {veg}
                   </span>
                 )}
