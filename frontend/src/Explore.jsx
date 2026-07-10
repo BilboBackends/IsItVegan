@@ -403,7 +403,7 @@ export default function Explore({
         const scoreBadge = document.createElement("div");
         scoreBadge.style.cssText =
           "font-size:12px;font-weight:700;color:#047857;margin-bottom:2px";
-        scoreBadge.textContent = `Ⓥ Vegan score ${r.vegan_score.toFixed(1)}/10`;
+        scoreBadge.textContent = `🌱 Vegan score ${r.vegan_score.toFixed(1)}/10`;
         scoreBadge.title = veganScoreTitle(r);
         vegan.append(scoreBadge);
       }
@@ -559,7 +559,7 @@ export default function Explore({
               className={`rounded-full px-2 py-0.5 text-xs font-bold ${veganScoreClasses(r.vegan_score)}`}
               title={veganScoreTitle(r)}
             >
-              Ⓥ {r.vegan_score.toFixed(1)}
+              🌱 {r.vegan_score.toFixed(1)}
             </span>
           )}
           {r.distance != null && (
