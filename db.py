@@ -1339,7 +1339,9 @@ def restaurants_needing_refresh(
             continue
         if timestamp < cutoff:
             targets.append(
-                {"id": row["id"], "name": row["name"], "website_url": row["website_url"]}
+                {"id": row["id"], "name": row["name"],
+                 "website_url": row["website_url"],
+                 "address": row.get("address")}
             )
     return targets
 
@@ -1964,7 +1966,7 @@ def restaurants_needing_ingest(db_path: str | None = None) -> list[dict]:
     with connect(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT r.id, r.name, r.website_url
+            SELECT r.id, r.name, r.website_url, r.address
             FROM restaurants r
             WHERE r.website_url IS NOT NULL
               AND NOT EXISTS (

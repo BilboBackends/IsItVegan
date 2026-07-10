@@ -89,7 +89,7 @@ def test_stale_learned_route_falls_back_to_discovery(monkeypatch):
     monkeypatch.setattr(
         scraper,
         "_collect_http",
-        lambda url, timeout: (
+        lambda url, timeout, address=None: (
             [("https://learning-cafe.example/new-menu", MENU_TEXT)],
             [],
             [],
@@ -119,7 +119,7 @@ def test_weak_single_section_learned_route_forces_rediscovery(monkeypatch):
     monkeypatch.setattr(
         scraper,
         "_collect_http",
-        lambda url, timeout: (
+        lambda url, timeout, address=None: (
             [("https://learning-cafe.example/menu", MENU_TEXT)],
             [],
             [],
@@ -166,7 +166,7 @@ def test_ingest_passes_and_refreshes_learned_context(monkeypatch):
         lambda rid, **kwargs: captured.update({"restaurant_id": rid, **kwargs}),
     )
 
-    def fake_scrape(url, *, crawl_context):
+    def fake_scrape(url, *, crawl_context, address=None):
         assert crawl_context is profile
         return scraper.ScrapeResult(
             url="https://x.com/menu",

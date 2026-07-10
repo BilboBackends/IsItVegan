@@ -55,7 +55,8 @@ def _targets(
         if not rows[0].get("website_url"):
             raise SystemExit(f"Restaurant {restaurant_id} has no website_url.")
         return [{"id": rows[0]["id"], "name": rows[0]["name"],
-                 "website_url": rows[0]["website_url"]}]
+                 "website_url": rows[0]["website_url"],
+                 "address": rows[0].get("address")}]
 
     eligible = {
         r["id"]
@@ -65,13 +66,15 @@ def _targets(
     if restaurant_ids is not None:
         requested = set(restaurant_ids)
         targets = [
-            {"id": r["id"], "name": r["name"], "website_url": r["website_url"]}
+            {"id": r["id"], "name": r["name"], "website_url": r["website_url"],
+             "address": r.get("address")}
             for r in all_rows
             if r["id"] in requested and r.get("website_url")
         ]
     elif do_all:
         targets = [
-            {"id": r["id"], "name": r["name"], "website_url": r["website_url"]}
+            {"id": r["id"], "name": r["name"], "website_url": r["website_url"],
+             "address": r.get("address")}
             for r in all_rows
             if r.get("website_url")
         ]
@@ -126,7 +129,9 @@ def run(
         _emit({"current": t["name"]})
         crawl_profile = db.get_crawl_profile(t["id"])
         result = scrape_menu_text(
-            t["website_url"], crawl_context=crawl_profile
+            t["website_url"],
+            crawl_context=crawl_profile,
+            address=t.get("address"),
         )
         if result.ok:
             succeeded += 1
