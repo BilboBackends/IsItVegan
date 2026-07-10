@@ -250,7 +250,7 @@ export default function DishModal({
 
         {/* Category tabs. Tighter on phones and scrollable on overflow so a
             big drinks count (Anh Hong's 36) can't be clipped off the edge. */}
-        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 px-4 pt-2">
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-200 px-4 pt-2">
           {CATEGORIES.map((c) => {
             const items = byCategory[c.key];
             if (!items || items.length === 0) return null;
