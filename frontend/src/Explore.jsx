@@ -1049,7 +1049,7 @@ export default function Explore({
                   Nothing in the current map view — pan or zoom out.
                 </div>
               ) : (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                   {onMap.map(renderCard)}
                 </div>
               )}
@@ -1058,7 +1058,7 @@ export default function Explore({
                   <div className="mb-2 mt-8 text-xs font-medium uppercase tracking-wide text-stone-400">
                     Not on the map ({offMap.length})
                   </div>
-                  <div className="grid gap-3 opacity-90 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-3 opacity-90 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                     {offMap.map(renderCard)}
                   </div>
                 </>
