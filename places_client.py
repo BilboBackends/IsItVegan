@@ -76,6 +76,10 @@ _DETAILS_FIELD_MASK = ",".join(
         "rating",
         "userRatingCount",
         "currentOpeningHours",
+        # OPERATIONAL | CLOSED_TEMPORARILY | CLOSED_PERMANENTLY — how we
+        # notice a restaurant went out of business (Ethos) without a human
+        # stumbling onto it.
+        "businessStatus",
     ]
 )
 
@@ -248,6 +252,7 @@ def fetch_place_details(
         "user_rating_count": data.get("userRatingCount", 0),
         "open_now": hours.get("openNow"),
         "opening_hours": hours.get("weekdayDescriptions") or [],
+        "business_status": data.get("businessStatus"),
     }
 
 

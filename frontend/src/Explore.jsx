@@ -544,6 +544,15 @@ export default function Explore({
       </div>
       {/* One status line: open state · today's hours. */}
       {(() => {
+        // Google's business status outranks the hours math — don't tell
+        // anyone a temporarily closed restaurant is "open now".
+        if (r.business_status === "CLOSED_TEMPORARILY") {
+          return (
+            <div className="mt-1 text-xs font-bold text-rose-600">
+              Temporarily closed
+            </div>
+          );
+        }
         const openState = currentOpenState(
           r.open_now, r.enriched_at, r.opening_hours
         );

@@ -37,7 +37,7 @@ _RESTAURANT_FIELDS = (
     "id", "name", "address", "place_id", "website_url", "lat", "lng",
     "primary_type", "price_level", "serves_vegetarian", "editorial_summary",
     "rating", "user_rating_count", "open_now", "opening_hours",
-    "enriched_at", "menu_fetched_at",
+    "enriched_at", "menu_fetched_at", "business_status",
 )
 
 

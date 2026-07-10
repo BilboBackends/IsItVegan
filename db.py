@@ -292,6 +292,9 @@ _MIGRATIONS = {
         # Archived listings leave the Admin working set AND all consumer
         # views/pipeline runs (7-Eleven and friends). Data is kept.
         "archived": "INTEGER NOT NULL DEFAULT 0",
+        # Google businessStatus: OPERATIONAL | CLOSED_TEMPORARILY |
+        # CLOSED_PERMANENTLY. Enrichment auto-archives permanent closures.
+        "business_status": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -408,7 +411,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                    r.serves_vegetarian, r.price_level, r.primary_type,
                    r.editorial_summary, r.rating, r.user_rating_count,
                    r.open_now, r.opening_hours, r.hours_enriched_at,
-                   r.enriched_at,
+                   r.enriched_at, r.business_status,
                    (
                        SELECT MAX(s.fetched_at) FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -458,6 +461,7 @@ def update_food_signals(
     open_now: bool | None,
     opening_hours: list[str],
     enriched_at: str,
+    business_status: str | None = None,
     db_path: str | None = None,
 ) -> None:
     """Store Google-sourced structured food signals on a restaurant."""
@@ -474,7 +478,8 @@ def update_food_signals(
                 open_now          = :open_now,
                 opening_hours     = :opening_hours,
                 hours_enriched_at = :enriched,
-                enriched_at       = :enriched
+                enriched_at       = :enriched,
+                business_status   = :business_status
             WHERE id = :id
             """,
             {
@@ -489,6 +494,7 @@ def update_food_signals(
                 "open_now": None if open_now is None else int(open_now),
                 "opening_hours": json.dumps(opening_hours),
                 "enriched": enriched_at,
+                "business_status": business_status,
             },
         )
 

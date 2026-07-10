@@ -105,7 +105,14 @@ def run(
                 open_now=details["open_now"],
                 opening_hours=details["opening_hours"],
                 enriched_at=now,
+                business_status=details.get("business_status"),
             )
+            # Google says it's gone for good — retire the listing so it
+            # leaves consumer views and pipeline runs (data kept; Admin's
+            # Archived tab still shows it).
+            if details.get("business_status") == "CLOSED_PERMANENTLY":
+                db.set_restaurant_archived(t["id"], True)
+                print("          ⚠ CLOSED PERMANENTLY — auto-archived")
             # Persist the blurb as citable evidence alongside scraped menu text.
             if editorial:
                 db.upsert_menu_text(
