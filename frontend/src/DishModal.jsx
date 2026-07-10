@@ -268,8 +268,8 @@ export default function DishModal({
                     : "border-transparent text-slate-500 hover:text-slate-800"
                 }`}
               >
-                <span className="max-sm:hidden">{c.icon} </span>
-                {c.label}
+                {c.icon}
+                <span className="max-sm:hidden"> {c.label}</span>
                 <span className="ml-1 text-xs text-slate-400 sm:ml-1.5">
                   {items.length}
                 </span>
