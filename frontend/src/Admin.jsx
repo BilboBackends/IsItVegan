@@ -849,6 +849,11 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     );
     const center = [sweepCenter.lat, sweepCenter.lng];
     const map = L.map(mapEl.current, { scrollWheelZoom: true });
+    // Leaflet circles calculate projected bounds through the map. Establish
+    // an initial view first, and retain the map immediately so React Strict
+    // Mode can always clean it up if anything later in setup throws.
+    mapRef.current = map;
+    map.setView(center, 11);
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
     }).addTo(map);
@@ -901,10 +906,9 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
       });
     }
     map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
-    mapRef.current = map;
     return () => {
-      if (mapRef.current) {
-        mapRef.current.remove();
+      if (mapRef.current === map) {
+        map.remove();
         mapRef.current = null;
       }
     };
