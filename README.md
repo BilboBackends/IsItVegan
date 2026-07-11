@@ -81,7 +81,7 @@ Two top-level views:
   match, then choose whether to scrape/classify immediately), and inspect
   scraped menu text and scores. Bulk scrape and classify run as background
   jobs with live progress bars that survive page reloads; classification has
-  a provider select (Claude/Codex subscription or Anthropic API), a mode
+  a DeepSeek classifier control, a mode
   toggle (changes-only vs full re-extraction), and a concurrency select
   (1-6 at a time — sequential when subscription quota is low). A
   Subscription-limits panel shows each provider's 5-hour/weekly usage bars.
@@ -215,6 +215,20 @@ Quality is watched two ways so regressions surface without manual deep dives:
   text shared across restaurants, or a website with nothing scraped. Each
   finding has a one-click rescrape.
 
+Machine-repairable findings can also run through a bounded recursive repair
+loop:
+
+```bash
+python menu_repair.py --dry-run              # show repair candidates
+python menu_repair.py --max-passes 2         # audit -> scrape -> audit again
+python menu_repair.py --restaurant-id 274    # repair one known restaurant
+```
+
+Each pass compares audit fingerprints and stops when the finding clears, when
+evidence stops changing, or at the pass limit. Failed attempts preserve the
+last validated menu. Repaired restaurant IDs are printed for change-aware
+reclassification.
+
 When keyword matching finds no menu link, a cheap LLM navigator (Claude Haiku)
 picks the menu link from all the page's links — catching non-obvious labels
 ("Bill of Fare", "View Our Menu") the keyword list misses. Menu links that
@@ -273,21 +287,13 @@ Dietary fields are menu-text inferences, not allergy or cross-contact
 certification. Anthropic defaults to Claude Sonnet; override it with
 `ANTHROPIC_CLASSIFIER_MODEL` (the older `CLASSIFIER_MODEL` remains an alias).
 
-Classification transport is a provider CHAIN (`classification_providers.py`)
-with three transports: `claude` (headless Claude Code CLI on the local
-Claude subscription — model pinned to Sonnet, tools disabled, JSON-schema
-output, ANTHROPIC_API_KEY scrubbed so the subscription pays), `codex`
-(Codex CLI on a ChatGPT subscription — sandboxed, schema-enforced; found
-automatically even when only the VS Code extension's bundled copy exists),
-and `anthropic` (the metered API). `CLASSIFIER_PROVIDER=auto` means
-**subscriptions only**: claude, then codex — the API never runs unless
-explicitly selected (alone or in a custom list like `codex,claude,anthropic`).
-Any failure fails over to the next provider in the chain, and a usage-limit
-error puts that provider in a ~20-minute cooldown so bulk runs stop knocking
-on a closed door. The Admin provider selector chooses per run, and its
-Subscription-limits panel reads real usage: Claude live from the CLI's own
-usage endpoint, Codex from its local session logs (windows that already
-reset show as fresh).
+Classification uses DeepSeek exclusively (`classification_providers.py`).
+`CLASSIFIER_PROVIDER=deepseek` is the default; `auto` is an alias for the same
+single-provider behavior. A DeepSeek failure stops that classification instead
+of silently falling back to Claude, Codex, or Anthropic. Automatic classifier
+guardrails, spot checks, learned-correction injection, and audit records are
+disabled. Large menus are still split into bounded chunks before being sent to
+DeepSeek; that is response-size handling, not a second classifier or audit.
 
 Admin classification runs—including a single restaurant's **reclassify**
 button—run in the backend and expose live provider/progress status. Reloading
@@ -354,7 +360,7 @@ llm_nav.py                  # cheap LLM (Haiku) menu-link chooser + vision fallb
 pdf_menu.py                 # PDF menu extraction (pypdf local + Claude PDF fallback)
 enrich.py                   # Google food signals (vegetarian, editorial, rating, hours)
 classifier.py               # dish extraction + vegan verdicts (full + delta modes)
-classification_providers.py # provider chain: claude/codex subscriptions + API, failover
+classification_providers.py # DeepSeek classification transport (no fallback)
 classification_exchange.py  # manual export/import classification jobs
 classify.py                 # classification CLI: parallel, change-aware, history
 usage_limits.py             # subscription usage windows for the limits panel

@@ -65,7 +65,7 @@ def load_settings() -> Settings:
     return Settings(
         google_places_api_key=os.environ.get("GOOGLE_PLACES_API_KEY"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        classifier_provider=os.environ.get("CLASSIFIER_PROVIDER", "auto").lower(),
+        classifier_provider=os.environ.get("CLASSIFIER_PROVIDER", "deepseek").lower(),
         anthropic_classifier_model=os.environ.get(
             "ANTHROPIC_CLASSIFIER_MODEL",
             os.environ.get("CLASSIFIER_MODEL", "claude-sonnet-5"),
@@ -85,11 +85,8 @@ def load_settings() -> Settings:
         codex_classifier_timeout_seconds=_get_int(
             "CODEX_CLASSIFIER_TIMEOUT_SECONDS", 900
         ),
-        # DeepSeek: the cheap metered tier for bulk classification. Like the
-        # Anthropic API it NEVER runs unless explicitly selected — and its
-        # output passes guardrails + spot-check audits (see guardrails.py,
-        # audit_spotcheck.py) because cheap extraction is only a win if it
-        # stays trustworthy.
+        # DeepSeek is the sole default classifier. Other transports are kept
+        # as explicit manual overrides and are never automatic fallbacks.
         deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY"),
         deepseek_classifier_model=os.environ.get(
             "DEEPSEEK_CLASSIFIER_MODEL", "deepseek-chat"
@@ -100,11 +97,9 @@ def load_settings() -> Settings:
         deepseek_classifier_timeout_seconds=_get_int(
             "DEEPSEEK_CLASSIFIER_TIMEOUT_SECONDS", 900
         ),
-        # Set DEEPSEEK_GUARDRAILS=0 to store DeepSeek's raw verdicts without
-        # the guardrail screen (no downgrades, no flags). Spot-check auditing
-        # still works either way. Default: on.
+        # Automatic DeepSeek auditing and verdict downgrades are off by default.
         deepseek_guardrails=os.environ.get(
-            "DEEPSEEK_GUARDRAILS", "1"
+            "DEEPSEEK_GUARDRAILS", "0"
         ).strip().lower() not in ("0", "false", "no", "off"),
         # DeepSeek caps output per response: deepseek-chat allows up to 8192;
         # deepseek-reasoner allows much more — raise this if you switch.

@@ -106,6 +106,24 @@ def test_audit_flags_tiny_and_priceless_menus(test_db):
     assert "Healthy Menu" not in findings
 
 
+def test_audit_flags_unresolved_dynamic_menu_loader(test_db):
+    _add_restaurant(test_db, 1, "Dynamic Menu Cafe", "https://dynamic.example")
+    db.replace_menu_texts(
+        1,
+        [(
+            "https://dynamic.example/",
+            "View our menus\nLoading Menu\nHappy Hour $5.00\n"
+            + "Tacos, sliders, cocktails, brunch and desserts\n" * 40,
+        )],
+        fetched_at="2026-07-11T00:00:00+00:00",
+        db_path=test_db,
+    )
+
+    finding = next(item for item in audit_menus(test_db) if item["restaurant_id"] == 1)
+
+    assert any("unresolved dynamic menu loader" in flag for flag in finding["flags"])
+
+
 def test_quality_review_persists_but_reopens_when_menu_changes(test_db):
     _add_restaurant(test_db, 1, "Reviewed Cafe", "https://reviewed.example")
     db.replace_menu_texts(

@@ -1,4 +1,4 @@
-"""Phase 3: dish extraction + vegan classification via Claude.
+"""Phase 3: dish extraction + vegan classification via DeepSeek.
 
 Takes a restaurant's scraped menu text (plus Google's editorial summary and
 vegetarian flag as context) and returns a structured dish list where every
@@ -25,6 +25,7 @@ import re
 from alcohol import ALCOHOL_STATUSES, classify_alcohol
 from classification_providers import PRICES as _PRICES
 from classification_providers import (
+    CHUNKED_PROVIDERS,
     ProviderResponse,
     UNTRUSTED_PROVIDERS,
     run_provider,
@@ -848,7 +849,7 @@ def classify_menu(
     proactive_chunk = (
         not delta
         and len(menu) > _CHUNK_TARGET_CHARS
-        and any(name in chain for name in UNTRUSTED_PROVIDERS)
+        and any(name in chain for name in CHUNKED_PROVIDERS)
     )
 
     try:

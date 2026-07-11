@@ -32,6 +32,10 @@ MIN_PLAUSIBLE_CHARS = 1200
 WEAK_SCORE = 0.60
 
 _PRICE_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{2})?")
+_DYNAMIC_MENU_PLACEHOLDER_RE = re.compile(
+    r"\b(?:loading\s+(?:our\s+)?menus?|menus?\s+(?:are\s+)?loading)\b",
+    re.IGNORECASE,
+)
 
 # Mirrors scraper._SECTION_PATH_RE_WORDS without importing scraper (which
 # pulls in headless/playwright); keep the two lists aligned.
@@ -109,6 +113,10 @@ def audit_menus(db_path: str | None = None) -> list[dict]:
                     flags.append(
                         f"weak menu score ({score.score:.2f}) — may be "
                         "marketing copy, not a menu"
+                    )
+                if _DYNAMIC_MENU_PLACEHOLDER_RE.search(combined):
+                    flags.append(
+                        "unresolved dynamic menu loader — rendered/API menu missing"
                     )
                 if (
                     len(sources) == 1

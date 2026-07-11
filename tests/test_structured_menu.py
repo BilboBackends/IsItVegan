@@ -144,3 +144,46 @@ def test_rendered_client_state_rejects_configuration_noise():
         ]
     }
     assert extract_client_state_menu([json.dumps(payload)]) is None
+
+
+def test_client_state_extracts_restaurant_menu_section_item_shape():
+    payload = {
+        "restaurant_menu": {
+            "All Day Menu": [
+                {
+                    "name": "Small Plates",
+                    "items": [
+                        {
+                            "id": f"dish-{index}",
+                            "name": f"Dish {index}",
+                            "description": "vegetables and sauce",
+                            "cost": {"type": "PRICE", "price": f"{index}.50"},
+                        }
+                        for index in range(1, 6)
+                    ],
+                }
+            ],
+            "Brunch": [
+                {
+                    "name": "Brunch Plates",
+                    "items": [
+                        {
+                            "id": f"brunch-{index}",
+                            "name": f"Brunch Dish {index}",
+                            "description": "toast and potatoes",
+                            "cost": {"type": "PRICE", "price": f"{index + 10}.00"},
+                        }
+                        for index in range(1, 5)
+                    ],
+                }
+            ],
+        }
+    }
+
+    menu = extract_client_state_menu([json.dumps(payload)])
+
+    assert menu is not None
+    assert menu.item_count == 9
+    assert menu.category_count == 2
+    assert "== All Day Menu > Small Plates ==" in menu.text
+    assert "Dish 1 — vegetables and sauce ($1.50)" in menu.text

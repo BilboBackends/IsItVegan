@@ -690,3 +690,25 @@ def test_completeness_treats_structured_fragment_as_same_page():
     checked = _validate_completeness(result)
     assert not checked.ok
     assert "only one menu section captured" in (checked.completeness_error or "")
+
+
+def test_completeness_rejects_unresolved_dynamic_menu_loader():
+    text = (
+        "View our menus\nLoading Menu\n"
+        "Happy Hour $5.00\nBrunch $34.00\n" + "Tacos and cocktails\n" * 100
+    )
+    result = ScrapeResult(
+        url="https://restaurant.example/",
+        ok=True,
+        text=text,
+        char_count=len(text),
+        menu_score=0.9,
+        is_menu=True,
+        pages=[("https://restaurant.example/", text)],
+        crawl_method="http",
+    )
+
+    checked = _validate_completeness(result)
+
+    assert not checked.ok
+    assert checked.completeness_error == "dynamic menu loader never resolved"

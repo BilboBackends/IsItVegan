@@ -1,10 +1,8 @@
-"""Tests for the provider chain: ordering, failover, and limit cooldowns.
+"""Tests for DeepSeek-only provider selection and limit cooldowns.
 
 Transports are monkeypatched — no CLI, no network, no billing. What's pinned
-here is the chain CONTRACT: auto prefers subscriptions (claude, codex) before
-the metered API, any failure falls through to the next provider, and a
-usage-limit failure puts a provider into cooldown so the rest of a bulk run
-skips it instead of retrying a closed door per restaurant.
+here is the contract: auto is DeepSeek only and no alternative provider can be
+selected or used as fallback.
 """
 from __future__ import annotations
 
@@ -47,13 +45,11 @@ def _all_available(monkeypatch):
     monkeypatch.setattr(cp, "_provider_available", lambda name: True)
 
 
-def test_auto_chain_is_subscriptions_only(monkeypatch):
-    # The metered APIs must NEVER be reachable from auto — metered billing
-    # is opt-in, by explicit selection (which includes an explicitly
-    # configured CLASSIFIER_PROVIDER chain in .env).
-    assert cp._provider_chain("auto") == ["claude", "codex"]
-    assert "anthropic" not in cp._AUTO_CHAIN
-    assert "deepseek" not in cp._AUTO_CHAIN
+def test_auto_chain_is_deepseek_only(monkeypatch):
+    assert cp._provider_chain("auto") == ["deepseek"]
+    assert cp._AUTO_CHAIN == ("deepseek",)
+    assert cp.UNTRUSTED_PROVIDERS == frozenset()
+    assert cp.CHUNKED_PROVIDERS == frozenset({"deepseek"})
     # With nothing requested, the CONFIGURED default chain applies — pin it
     # here so the test doesn't depend on the developer's .env.
     import dataclasses
@@ -61,21 +57,15 @@ def test_auto_chain_is_subscriptions_only(monkeypatch):
     monkeypatch.setattr(
         cp, "settings", dataclasses.replace(cp.settings, classifier_provider="auto")
     )
-    assert cp._provider_chain(None) == ["claude", "codex"]
+    assert cp._provider_chain(None) == ["deepseek"]
 
 
-def test_auto_never_falls_back_to_api(monkeypatch):
-    # Both subscriptions exhausted -> the run FAILS rather than billing the
-    # API behind the user's back.
+def test_auto_never_falls_back_from_deepseek(monkeypatch):
     monkeypatch.setattr(cp, "_provider_available", lambda name: True)
     calls = []
     monkeypatch.setattr(
-        cp, "_run_claude",
-        lambda *a: calls.append("claude") or _fail("claude", "usage limit reached"),
-    )
-    monkeypatch.setattr(
-        cp, "_run_codex",
-        lambda *a: calls.append("codex") or _fail("codex", "rate limit exceeded"),
+        cp, "_run_deepseek",
+        lambda *a: calls.append("deepseek") or _fail("deepseek", "rate limit reached"),
     )
     monkeypatch.setattr(
         cp, "_run_anthropic",
@@ -85,22 +75,21 @@ def test_auto_never_falls_back_to_api(monkeypatch):
         requested="auto", system_prompt="s", user_prompt="u", schema={}
     )
     assert not response.ok
-    assert "anthropic" not in calls
+    assert calls == ["deepseek"]
 
 
-def test_custom_chain_and_validation():
-    assert cp._provider_chain("codex,claude") == ["codex", "claude"]
-    assert cp._provider_chain("anthropic") == ["anthropic"]
-    with pytest.raises(cp.ProviderUnavailable):
-        cp._provider_chain("gpt5")
+@pytest.mark.parametrize("provider", ["claude", "codex", "anthropic", "claude,codex"])
+def test_non_deepseek_provider_is_rejected(provider):
+    with pytest.raises(cp.ProviderUnavailable, match="only enabled"):
+        cp._provider_chain(provider)
 
 
-def test_failover_on_any_error(monkeypatch):
+def test_deepseek_failure_does_not_fall_back(monkeypatch):
     _all_available(monkeypatch)
     calls = []
     monkeypatch.setattr(
-        cp, "_run_claude",
-        lambda *a: calls.append("claude") or _fail("claude", "Malformed JSON"),
+        cp, "_run_deepseek",
+        lambda *a: calls.append("deepseek") or _fail("deepseek", "Malformed JSON"),
     )
     monkeypatch.setattr(
         cp, "_run_codex", lambda *a: calls.append("codex") or _ok("codex")
@@ -108,19 +97,19 @@ def test_failover_on_any_error(monkeypatch):
     response = cp.run_provider(
         requested="auto", system_prompt="s", user_prompt="u", schema={}
     )
-    assert response.ok and response.provider == "codex"
-    assert calls == ["claude", "codex"]
+    assert not response.ok
+    assert calls == ["deepseek"]
     # An ordinary (non-limit) error must NOT put the provider in cooldown.
-    assert not cp.provider_limited("claude")
+    assert not cp.provider_limited("deepseek")
 
 
 def test_limit_error_sets_cooldown_and_is_skipped(monkeypatch):
     _all_available(monkeypatch)
     calls = []
     monkeypatch.setattr(
-        cp, "_run_claude",
-        lambda *a: calls.append("claude")
-        or _fail("claude", "5-hour usage limit reached"),
+        cp, "_run_deepseek",
+        lambda *a: calls.append("deepseek")
+        or _fail("deepseek", "rate limit reached"),
     )
     monkeypatch.setattr(
         cp, "_run_codex", lambda *a: calls.append("codex") or _ok("codex")
@@ -128,44 +117,44 @@ def test_limit_error_sets_cooldown_and_is_skipped(monkeypatch):
     first = cp.run_provider(
         requested="auto", system_prompt="s", user_prompt="u", schema={}
     )
-    assert first.provider == "codex"
-    assert cp.provider_limited("claude")
+    assert first.provider == "deepseek"
+    assert cp.provider_limited("deepseek")
 
     # Next call in the same bulk run: claude is skipped without being tried.
     calls.clear()
     second = cp.run_provider(
         requested="auto", system_prompt="s", user_prompt="u", schema={}
     )
-    assert second.provider == "codex"
-    assert calls == ["codex"]
+    assert second.provider == "deepseek"
+    assert calls == ["deepseek"]
 
 
 def test_cooldown_expires(monkeypatch):
     real_monotonic = time.monotonic
-    cp._mark_limited("claude")
-    assert cp.provider_limited("claude")
+    cp._mark_limited("deepseek")
+    assert cp.provider_limited("deepseek")
     monkeypatch.setattr(
         cp.time, "monotonic",
         lambda: real_monotonic() + cp._LIMIT_COOLDOWN_SECONDS + 1,
     )
-    assert not cp.provider_limited("claude")
+    assert not cp.provider_limited("deepseek")
 
 
 def test_all_limited_still_tries_rather_than_failing(monkeypatch):
     # If every provider in the chain is cooling down, retry them anyway —
     # a stale cooldown must not make classification impossible.
     _all_available(monkeypatch)
-    cp._mark_limited("claude")
-    monkeypatch.setattr(cp, "_run_claude", lambda *a: _ok("claude"))
+    cp._mark_limited("deepseek")
+    monkeypatch.setattr(cp, "_run_deepseek", lambda *a: _ok("deepseek"))
     response = cp.run_provider(
-        requested="claude", system_prompt="s", user_prompt="u", schema={}
+        requested="deepseek", system_prompt="s", user_prompt="u", schema={}
     )
-    assert response.ok and response.provider == "claude"
+    assert response.ok and response.provider == "deepseek"
 
 
 def test_resolve_provider_reports_chain_when_nothing_available(monkeypatch):
     monkeypatch.setattr(cp, "_provider_available", lambda name: False)
-    with pytest.raises(cp.ProviderUnavailable, match="claude, codex"):
+    with pytest.raises(cp.ProviderUnavailable, match="deepseek"):
         cp.resolve_provider("auto")
 
 

@@ -186,6 +186,10 @@ _MAX_COMBINED_CHARS = 50_000
 _STRUCTURED_MENU_MARKER_RE = re.compile(
     r"\[structured-menu products=(\d+) categories=(\d+)\]"
 )
+_DYNAMIC_MENU_PLACEHOLDER_RE = re.compile(
+    r"\b(?:loading\s+(?:our\s+)?menus?|menus?\s+(?:are\s+)?loading)\b",
+    re.IGNORECASE,
+)
 
 # Hosts that are social profiles, not restaurant websites. Google sometimes
 # lists these as the "website"; there is no menu to scrape behind them.
@@ -1302,10 +1306,12 @@ def _validate_completeness(result: ScrapeResult) -> ScrapeResult:
     # the same capture, not evidence of a second menu section.
     kept_urls = list(dict.fromkeys(url.split("#")[0] for url, _ in result.pages))
     issue = None
-    if len(kept_urls) == 1 and _is_single_section_url(kept_urls[0]):
+    lowered = result.text.lower()
+    if _DYNAMIC_MENU_PLACEHOLDER_RE.search(result.text):
+        issue = "dynamic menu loader never resolved"
+    elif len(kept_urls) == 1 and _is_single_section_url(kept_urls[0]):
         issue = f"only one menu section captured ({kept_urls[0]})"
     else:
-        lowered = result.text.lower()
         order_markers = (
             "add to cart", "checkout", "view cart", "order online",
             "minimum order", "items in cart",

@@ -264,12 +264,15 @@ def _browser_storage_values(page) -> list[str]:
     return bounded
 
 
-def _append_client_state_menu(page, html: str) -> str:
-    """Attach validated menu records recovered from rendered browser state."""
+def _append_client_state_menu(
+    page, html: str, response_values: list[str] | None = None
+) -> str:
+    """Attach validated menu records recovered from browser state or JSON APIs."""
     try:
         from structured_menu import extract_client_state_menu
 
-        menu = extract_client_state_menu(_browser_storage_values(page))
+        values = list(response_values or []) + _browser_storage_values(page)
+        menu = extract_client_state_menu(values)
     except Exception:
         menu = None
     if menu is None:
@@ -289,6 +292,29 @@ def _render_page(
     tab_words: tuple[str, ...],
 ) -> tuple[str | None, str | None]:
     """Render one URL on an existing page, retaining its browser context."""
+    response_values: list[str] = []
+    response_chars = 0
+
+    def _capture_json(response) -> None:
+        """Bank bounded fetch/XHR JSON; only validated menu shapes survive."""
+        nonlocal response_chars
+        try:
+            if response.request.resource_type not in ("fetch", "xhr"):
+                return
+            content_type = (response.headers.get("content-type") or "").lower()
+            if "json" not in content_type:
+                return
+            raw = response.text()
+            if not raw or len(raw) < 100 or len(raw) > 1_500_000:
+                return
+            if response_chars + len(raw) > 2_000_000:
+                return
+            response_values.append(raw)
+            response_chars += len(raw)
+        except Exception:
+            return
+
+    page.on("response", _capture_json)
     try:
         # "domcontentloaded" then a settle wait is more reliable than
         # "networkidle", which some ad/analytics-heavy sites never reach.
@@ -357,7 +383,7 @@ def _render_page(
             html += _overflow_div(html, banked)
         # Do this last: category interaction/navigation can populate storage
         # even when no single DOM snapshot contains the complete menu.
-        html = _append_client_state_menu(page, html)
+        html = _append_client_state_menu(page, html, response_values)
         return html, None
     except PlaywrightTimeout:
         return None, f"Headless timeout after {timeout_ms} ms"
@@ -365,6 +391,11 @@ def _render_page(
         return None, f"Headless error: {exc}"
     except Exception as exc:
         return None, f"Headless unavailable: {exc}"
+    finally:
+        try:
+            page.remove_listener("response", _capture_json)
+        except Exception:
+            pass
 
 
 class RenderedSession:

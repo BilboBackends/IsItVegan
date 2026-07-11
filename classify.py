@@ -260,7 +260,7 @@ def run(
             )
             + (
                 f"  [~${result.cost_estimate:.2f}]"
-                if result.billing == "api"
+                if result.billing in {"api", "deepseek_api"}
                 else f"  [{result.provider} subscription]"
             )
         )
@@ -271,7 +271,7 @@ def run(
             "removed": len(result.removed_dish_names) if delta else None,
             "cost": (
                 round(result.cost_estimate, 3)
-                if result.billing == "api"
+                if result.billing in {"api", "deepseek_api"}
                 else None
             ),
             "provider": result.provider,
@@ -283,7 +283,9 @@ def run(
         classified_at = datetime.now(timezone.utc).isoformat()
         db.record_classify_cost(
             r["id"],
-            result.cost_estimate if result.billing == "api" else None,
+            result.cost_estimate
+            if result.billing in {"api", "deepseek_api"}
+            else None,
             provider=result.provider,
         )
 
@@ -315,20 +317,6 @@ def run(
                 db.record_dish_changes(r["id"], changes, observed_at=classified_at)
         if text_hash:
             db.set_last_classified_hash(r["id"], text_hash)
-
-        # Monitoring trail for the cheap tier: every guardrail flag or
-        # downgrade is persisted so Admin can watch the flag rate.
-        if getattr(result, "guardrail_flags", None):
-            db.record_audits(
-                result.guardrail_flags,
-                provider=result.provider,
-                model=result.model,
-                restaurant_id=r["id"],
-            )
-            print(
-                f"         guardrails: {len(result.guardrail_flags)} flag(s) "
-                f"recorded for audit"
-            )
 
     queue = list(targets)
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -391,8 +379,7 @@ def main() -> None:
                         help="Use a canned result instead of calling the API.")
     parser.add_argument(
         "--provider", default=None,
-        help="auto | claude | codex | anthropic, or a comma-separated "
-        "priority list (e.g. claude,codex). auto = claude, codex, anthropic.",
+        help="deepseek (default) | auto (an alias for DeepSeek).",
     )
     parser.add_argument(
         "--parallel", type=int, default=3,

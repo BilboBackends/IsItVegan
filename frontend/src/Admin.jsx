@@ -14,14 +14,13 @@ import {
 // (proxied /api/*), so no keys ever reach the browser. The consumer-facing
 // view lives in Explore.jsx.
 
-// Display names for the classification providers. "auto" walks claude then
-// codex (subscriptions only, failing over on usage limits); the metered
-// Anthropic API runs only when explicitly selected.
+// Historical labels remain so older classification records still render;
+// current classification is always performed by DeepSeek.
 const PROVIDER_LABELS = {
   claude: "Claude subscription",
   codex: "Codex subscription",
   anthropic: "Anthropic API",
-  deepseek: "DeepSeek (cheap, audited)",
+  deepseek: "DeepSeek",
 };
 
 // "resets_at" from the usage endpoints may be an ISO string or an epoch in
@@ -253,161 +252,6 @@ function ScrapeFailuresPanel() {
   );
 }
 
-// Trust dashboard for the cheap classification tier (DeepSeek): guardrail
-// flags, spot-check agreement vs a frontier reference, and the learned
-// corrections currently injected into the cheap model's prompt. Self-
-// contained — fetches /api/audit/summary and can trigger a spot check.
-function AuditPanel() {
-  const [summary, setSummary] = useState(null);
-  const [open, setOpen] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [lastRun, setLastRun] = useState(null);
-
-  const load = () =>
-    fetch("/api/audit/summary")
-      .then((res) => (res.ok ? res.json() : null))
-      .then(setSummary)
-      .catch(() => setSummary(null));
-
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function runSpotCheck() {
-    setChecking(true);
-    setLastRun(null);
-    try {
-      const res = await fetch("/api/audit/spot-check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sample: 10, reference: "claude" }),
-      });
-      const data = await res.json();
-      setLastRun(res.ok ? data : { error: data.error || "Spot check failed" });
-      load();
-    } catch (e) {
-      setLastRun({ error: e.message || "Spot check failed" });
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  const deepseek = summary?.providers?.deepseek;
-  const hasAnything =
-    deepseek || (summary?.active_corrections ?? 0) > 0;
-
-  return (
-    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="text-left"
-        >
-          <h2 className="text-sm font-bold text-slate-900">
-            Cheap-model audit
-            <span className="ml-2 text-xs font-medium text-slate-400">
-              guardrails · spot checks · learned corrections {open ? "▾" : "▸"}
-            </span>
-          </h2>
-        </button>
-        <div className="flex items-center gap-3">
-          {deepseek?.spot_check_agreement != null && (
-            <span
-              className={`rounded-full px-2 py-0.5 text-xs font-bold ${
-                deepseek.spot_check_agreement >= 0.9
-                  ? "bg-emerald-100 text-emerald-800"
-                  : "bg-amber-100 text-amber-800"
-              }`}
-              title="Verdict agreement with the frontier reference model on audited samples (adjacent verdicts count as agreement)"
-            >
-              {Math.round(deepseek.spot_check_agreement * 100)}% agreement
-            </span>
-          )}
-          <button
-            onClick={runSpotCheck}
-            disabled={checking}
-            className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-semibold text-violet-800 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
-            title="Re-verify 10 random DeepSeek-classified dishes with the Claude subscription; disagreements become learned corrections"
-          >
-            {checking ? "Checking…" : "Run spot check (10)"}
-          </button>
-        </div>
-      </div>
-      {lastRun && (
-        <div className="mt-2 text-xs font-medium text-slate-600">
-          {lastRun.error
-            ? `Spot check failed: ${lastRun.error}`
-            : lastRun.checked === 0
-              ? "Nothing to audit yet — no dishes classified by the cheap model."
-              : `Checked ${lastRun.checked}: ${lastRun.agree} agree, ${lastRun.disagree} disagree` +
-                (lastRun.disagree > 0
-                  ? " — corrections recorded for the next run."
-                  : ".")}
-        </div>
-      )}
-      {open && (
-        <div className="mt-3 space-y-3 text-xs">
-          {!hasAnything && (
-            <div className="text-slate-400">
-              No audits yet. Classify with the DeepSeek provider, then run a
-              spot check to start the trust loop.
-            </div>
-          )}
-          {deepseek && (
-            <div className="flex flex-wrap gap-4 font-semibold text-slate-700">
-              <span>Guardrail downgrades: {deepseek.guardrail_downgraded}</span>
-              <span>Run flags: {deepseek.guardrail_flagged}</span>
-              <span>Spot checks: {deepseek.spot_check_agree} agree / {deepseek.spot_check_disagree} disagree</span>
-              <span>Active corrections: {summary?.active_corrections ?? 0}</span>
-            </div>
-          )}
-          {(summary?.corrections?.length ?? 0) > 0 && (
-            <div>
-              <div className="mb-1 font-bold uppercase tracking-wide text-slate-400">
-                Learned corrections (injected into the cheap model's prompt)
-              </div>
-              <ul className="space-y-1">
-                {summary.corrections.map((c) => (
-                  <li key={c.id} className="text-slate-600">
-                    <span className="font-semibold">{c.dish_name}</span>: {c.wrong_verdict} → {c.correct_verdict}
-                    {c.note && <span className="text-slate-400"> — {c.note}</span>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {(summary?.recent?.length ?? 0) > 0 && (
-            <div>
-              <div className="mb-1 font-bold uppercase tracking-wide text-slate-400">
-                Recent audit events
-              </div>
-              <ul className="space-y-1">
-                {summary.recent.slice(0, 15).map((a) => (
-                  <li key={a.id} className="text-slate-600">
-                    <span
-                      className={`mr-1 rounded px-1 py-0.5 font-bold ${
-                        a.status === "agree"
-                          ? "bg-emerald-50 text-emerald-700"
-                          : a.status === "disagree" || a.status === "downgraded"
-                            ? "bg-rose-50 text-rose-700"
-                            : "bg-amber-50 text-amber-700"
-                      }`}
-                    >
-                      {a.status}
-                    </span>
-                    {a.dish_name || a.restaurant_name || a.rule}
-                    {a.detail && <span className="text-slate-400"> — {a.detail}</span>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  );
-}
-
 // Menu history per restaurant: distinct raw-menu versions (immutable, one
 // per actual content change) + the dish-change log (added/removed/price/
 // verdict transitions recorded at each reclassification).
@@ -609,7 +453,7 @@ function HistoryModal({ restaurant, onClose }) {
 // Ave Orlando"), see everything on a map + list — names only — and pull
 // selected places into the pipeline. Scraping/classification run later from
 // the Active table's bulk tools, so pulling 40 names in stays instant.
-function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
+function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   // Coverage-gap sweep: a battery of category searches over one area,
@@ -986,26 +830,12 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
               className="rounded-lg border border-violet-300 bg-white px-2 py-1.5 text-xs font-semibold text-violet-800 shadow-sm disabled:text-slate-400"
               aria-label="Classification provider for the one-go run"
             >
-              <optgroup label="Chains — fail over automatically">
-                <option
-                  value="deepseek,claude,codex"
-                  disabled={!config?.classifier?.providers?.deepseek?.available}
-                >
-                  DeepSeek → Claude → Codex (default)
-                </option>
-                <option value="auto">Claude → Codex (subscriptions only)</option>
-              </optgroup>
-              <optgroup label="Pin one provider">
-                {["claude", "codex", "deepseek", "anthropic"].map((name) => (
-                  <option
-                    key={name}
-                    value={name}
-                    disabled={!config?.classifier?.providers?.[name]?.available}
-                  >
-                    {PROVIDER_LABELS[name]}
-                  </option>
-                ))}
-              </optgroup>
+              <option
+                value="deepseek"
+                disabled={!config?.classifier?.providers?.deepseek?.available}
+              >
+                DeepSeek
+              </option>
             </select>
             <button
               onClick={addAndRunAll}
@@ -1502,11 +1332,7 @@ export default function Admin() {
   const [qualityBusy, setQualityBusy] = useState(null);
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [selectedIds, setSelectedIds] = useState([]);
-  // Default chain: DeepSeek (cheap, explicitly chosen) first, subscriptions
-  // as automatic fallback if it errors or runs out of balance.
-  const [classifierProvider, setClassifierProvider] = useState(
-    "deepseek,claude,codex"
-  );
+  const [classifierProvider, setClassifierProvider] = useState("deepseek");
 
   async function loadData() {
     setLoading(true);
@@ -2080,7 +1906,9 @@ export default function Admin() {
     classifierProvider === "auto"
       ? config?.classifier?.resolved
       : classifierProvider;
-  const classifierUsesApi = resolvedClassifierProvider === "anthropic";
+  const classifierUsesApi = ["anthropic", "deepseek"].includes(
+    resolvedClassifierProvider
+  );
   const classifierProviderLabel =
     PROVIDER_LABELS[resolvedClassifierProvider] || "No provider available";
 
@@ -2459,41 +2287,12 @@ export default function Admin() {
               aria-label="Classification provider"
               title="Choose how menu classifications are generated"
             >
-              <optgroup label="Chains — fail over automatically">
-                <option
-                  value="deepseek,claude,codex"
-                  disabled={!config?.classifier?.providers?.deepseek?.available}
-                >
-                  DeepSeek → Claude → Codex (default)
-                </option>
-                <option value="auto">Claude → Codex (subscriptions only)</option>
-              </optgroup>
-              <optgroup label="Pin one provider">
-                <option
-                  value="claude"
-                  disabled={!config?.classifier?.providers?.claude?.available}
-                >
-                  Claude subscription
-                </option>
-                <option
-                  value="codex"
-                  disabled={!config?.classifier?.providers?.codex?.available}
-                >
-                  Codex subscription
-                </option>
-                <option
-                  value="deepseek"
-                  disabled={!config?.classifier?.providers?.deepseek?.available}
-                >
-                  DeepSeek (metered, cheap)
-                </option>
-                <option
-                  value="anthropic"
-                  disabled={!config?.classifier?.providers?.anthropic?.available}
-                >
-                  Anthropic API (metered)
-                </option>
-              </optgroup>
+              <option
+                value="deepseek"
+                disabled={!config?.classifier?.providers?.deepseek?.available}
+              >
+                DeepSeek
+              </option>
             </select>
             <select
               value={classifyMode}
@@ -2686,8 +2485,6 @@ export default function Admin() {
         )}
 
         <ScrapeFailuresPanel />
-        <AuditPanel />
-
         {menuQuality.length > 0 && (
           <section className="mb-6 rounded-xl border border-orange-200 bg-orange-50 p-4">
             <button

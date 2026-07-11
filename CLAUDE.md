@@ -44,15 +44,11 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 
 - **Backend:** Python
 - **Frontend:** React + Vite, Tailwind
-- **LLM:** a provider chain (`classification_providers.py`) with four
-  transports: the local Claude Code CLI (subscription-billed), the Codex CLI
-  (ChatGPT subscription), the metered Anthropic API, and the DeepSeek API
-  (cheap metered tier, ~10x below Sonnet's price). `auto` = Claude then
-  Codex — subscriptions only; **metered APIs (anthropic, deepseek) run only
-  when explicitly selected, never as a silent fallback.** A provider that
-  hits its usage limit goes into a ~20-minute cooldown while the chain fails
-  over. DeepSeek output is UNTRUSTED and passes the trust loop described
-  below. Do NOT introduce LangChain/RAG scaffolding — this is a structured
+- **LLM:** DeepSeek is the sole menu-classification provider. Both the default
+  and `auto` resolve to DeepSeek, with no fallback to Claude, Codex, or
+  Anthropic. Automatic model audits and guardrail downgrades are disabled.
+  Large menus may be chunked across multiple DeepSeek calls to stay within
+  response limits. Do NOT introduce LangChain/RAG scaffolding — this is a structured
   extraction problem, not a retrieval problem, and direct calls with
   structured JSON output are simpler to debug and maintain.
 - **Restaurant discovery:** Google Places API
@@ -67,7 +63,7 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
    (name, address, website URL, photo references, place_id)
 2. **Ingestion** — scrape each restaurant's website for menu text; pull
    Google Maps dish/food photos via Places API photo references
-3. **Text classification** — send scraped menu text to Claude, extract
+3. **Text classification** — send scraped menu text to DeepSeek, extract
    structured dish list + per-dish vegan verdict + reasoning
 4. **Vision classification** — send dish photos to Claude's vision
    capability, produce a verdict; reconcile with text verdict (photo
@@ -77,30 +73,13 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 6. **Frontend** — restaurant list/map, dish-level filtering by verdict,
    evidence shown inline
 
-## Cheap-Tier Trust Loop (DeepSeek)
+## Classifier Policy
 
-Bulk classification can be handed to the cheap tier, but only inside a
-measured trust loop — cheap extraction is a win only if it stays honest:
-
-1. **Guardrails** (`guardrails.py`) — deterministic checks on every
-   untrusted result before storage. Hard rule: a vegan/likely_vegan verdict
-   on a dish plainly naming an animal ingredient (no mock/plant qualifier)
-   is downgraded to `unclear` and flagged. Soft rules (implausible vegan
-   rate, uniform confidence) flag the run without touching verdicts.
-2. **Audit trail** (`classification_audits` table) — every guardrail flag,
-   downgrade, and spot-check outcome is persisted; the Admin "Cheap-model
-   audit" panel shows flag counts and spot-check agreement.
-3. **Spot checks** (`audit_spotcheck.py`) — samples recent cheap-model
-   dishes and re-verifies them with a frontier reference (Claude
-   subscription by default). Adjacent verdicts (vegan/likely_vegan) count
-   as agreement; real disagreements are recorded.
-4. **Learning** (`learning.py` + `classifier_corrections` table) — each
-   spot-check disagreement becomes a correction ("X was wrongly V1; correct:
-   V2, because…"). Active corrections are injected into the CHEAP model's
-   system prompt on its next run — it literally sees its recent audited
-   mistakes. Frontier providers keep the unmodified baseline prompt so the
-   reference stays stable. Corrections are rows, not weights: inspectable,
-   and deactivated with `UPDATE classifier_corrections SET active=0`.
+DeepSeek always performs menu classification. There is no automatic provider
+fallback and no classifier trust-loop: guardrail downgrades, spot checks,
+learned-correction prompt injection, and classifier audit recording are off.
+The legacy audit tables and helper modules remain for historical data and
+migration compatibility, but they are not part of normal runs.
 
 ## Data Model
 
@@ -187,17 +166,15 @@ Consumer product: Restaurants + Food items + Saved tabs (list/map, compact
 expandable dish rows, address-search origin picker biased to Central
 Florida, favorites, thumbs with deduped vote counts, dish share/report).
 Admin: pipeline dashboard with live job progress, per-restaurant costs,
-subscription usage bars, menu version history, dish-change log, quality
-audit, Prospect area search, and the cheap-model audit panel.
+provider usage, menu version history, dish-change log, menu-quality audit,
+and Prospect area search.
 
 Change-aware recrawling is live: identical menu text skips classification
 entirely; changed menus run in DELTA mode (classify only new/changed dishes
 + removals) with a distrust guard that falls back to full extraction.
 
-Classification runs through the provider chain (Claude Code subscription →
-Codex subscription on `auto`; Anthropic API and DeepSeek only when
-explicitly selected). The DeepSeek cheap tier runs inside the trust loop
-above. Headline "vegan" counts are strict: `vegan` verdicts or
+Classification always runs through DeepSeek; `auto` is only a DeepSeek alias
+and no model-audit loop runs. Headline "vegan" counts are strict: `vegan` verdicts or
 high-confidence `likely_vegan` (≥ 0.75) only; `vegan_adaptable` never
 counts; drinks and desserts are excluded; meals and sides are counted
 separately.

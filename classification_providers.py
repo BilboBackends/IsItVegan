@@ -10,17 +10,11 @@ Four transports:
 - codex     — Codex CLI (`codex exec`), billed to the user's ChatGPT
               subscription
 - anthropic — the Anthropic API, billed per token to ANTHROPIC_API_KEY
-- deepseek  — the DeepSeek API (cheap metered tier, ~10x below Sonnet).
-              Its output is UNTRUSTED: guardrails.py screens every result and
-              audit_spotcheck.py re-checks samples against a frontier model.
+- deepseek  — the DeepSeek API (the default classification transport)
 
-The provider setting is a priority CHAIN, not a single choice: "auto" means
-claude then codex — subscriptions only; the metered API runs ONLY when
-explicitly selected — and a custom order like "codex,claude,anthropic" works
-too. When a provider fails (most importantly: hits its subscription usage
-limit), the next one in the chain is tried, and a limit-hit provider is
-skipped for a cooldown window so a 50-restaurant run doesn't knock on a
-closed door 50 times.
+The default and "auto" setting both pin DeepSeek. Other transport
+implementations remain in the module for historical compatibility, but the
+application classifier does not select or fall back to them.
 """
 from __future__ import annotations
 
@@ -48,10 +42,9 @@ PRICES = {
 }
 
 _PROVIDER_NAMES = ("claude", "codex", "anthropic", "deepseek")
-# "auto" is SUBSCRIPTIONS ONLY. The metered Anthropic API never runs unless
-# the user explicitly selects it (alone or in a custom chain) — hitting both
-# subscription limits should stop the run, not silently start billing.
-_AUTO_CHAIN = ("claude", "codex")
+# "auto" is intentionally a single-provider alias. A DeepSeek failure stops
+# the run instead of silently changing classifier behavior or billing source.
+_AUTO_CHAIN = ("deepseek",)
 
 _BILLING = {
     "claude": "claude_subscription",
@@ -60,10 +53,14 @@ _BILLING = {
     "deepseek": "deepseek_api",
 }
 
-# Providers whose output gets the full guardrail + audit treatment before it
-# is trusted (see guardrails.py). The frontier subscriptions earn a pass;
-# the cheap tier is audited.
-UNTRUSTED_PROVIDERS = frozenset({"deepseek"})
+# Automatic classifier audits are disabled. Keep the name for compatibility
+# with the classification path, where an empty set means no prompt correction,
+# guardrail downgrade, or audit record is produced.
+UNTRUSTED_PROVIDERS = frozenset()
+
+# DeepSeek's response-size limit still benefits from proactive menu chunking.
+# Chunking is transport handling, not an audit or a second classifier.
+CHUNKED_PROVIDERS = frozenset({"deepseek"})
 
 # Subscription usage-limit / rate-limit signatures across providers. A match
 # puts the provider in cooldown so the chain stops retrying it every dish.
@@ -188,24 +185,14 @@ def _is_limit_error(text: str | None) -> bool:
 
 
 def _provider_chain(requested: str | None) -> list[str]:
-    """Parse a provider request into a priority chain.
-
-    "auto" -> claude, codex, anthropic (subscriptions before metered API).
-    A single name pins that provider; a comma list is a custom priority order.
-    """
-    raw = (requested or settings.classifier_provider or "auto").strip().lower()
-    names = list(_AUTO_CHAIN) if raw == "auto" else [
-        part.strip() for part in raw.split(",") if part.strip()
-    ]
-    for name in names:
-        if name not in _PROVIDER_NAMES:
-            raise ProviderUnavailable(
-                "Classifier provider must be auto, claude, codex, anthropic, "
-                "deepseek, or a comma-separated priority list of those."
-            )
-    if not names:
-        raise ProviderUnavailable("Classifier provider must not be empty.")
-    return names
+    """Resolve the application classifier, which is always DeepSeek."""
+    raw = (requested or settings.classifier_provider or "deepseek").strip().lower()
+    if raw not in {"auto", "deepseek"}:
+        raise ProviderUnavailable(
+            "DeepSeek is the only enabled classifier provider. "
+            "Use --provider deepseek (or auto)."
+        )
+    return list(_AUTO_CHAIN)
 
 
 def provider_status() -> dict:
@@ -243,15 +230,14 @@ def provider_status() -> dict:
                 "limited": provider_limited("deepseek"),
                 "billing": _BILLING["deepseek"],
                 "model": settings.deepseek_classifier_model,
-                "audited": True,
+                "audited": False,
             },
         },
     }
 
 
 def resolve_provider(requested: str | None = None) -> str:
-    """First available provider in the requested chain (cooldowns ignored —
-    this answers "can a run start?", not "who serves the next request?")."""
+    """Return DeepSeek when its API key is configured."""
     names = _provider_chain(requested)
     for name in names:
         if _provider_available(name):
@@ -259,8 +245,7 @@ def resolve_provider(requested: str | None = None) -> str:
     raise ProviderUnavailable(
         "No classifier provider is available (tried: "
         + ", ".join(names)
-        + "). Log in to Claude Code or Codex — or explicitly select "
-        "anthropic to bill the API."
+        + "). Configure DEEPSEEK_API_KEY."
     )
 
 
@@ -271,13 +256,7 @@ def run_provider(
     user_prompt: str,
     schema: dict,
 ) -> ProviderResponse:
-    """Get schema-shaped JSON from the first provider in the chain that can.
-
-    Walks the chain in priority order; any failure falls through to the next
-    provider, and a usage-limit failure puts that provider in cooldown so the
-    rest of a bulk run skips it. If every non-limited provider fails, limited
-    ones are retried once rather than failing the run outright.
-    """
+    """Get schema-shaped JSON from DeepSeek, with no provider fallback."""
     names = _provider_chain(requested)
     transports = {
         "claude": _run_claude,
@@ -307,8 +286,7 @@ def run_provider(
     raise ProviderUnavailable(
         "No classifier provider is available (tried: "
         + ", ".join(names)
-        + "). Log in to Claude Code or Codex — or explicitly select "
-        "anthropic to bill the API."
+        + "). Configure DEEPSEEK_API_KEY."
     )
 
 
@@ -318,11 +296,10 @@ def _run_deepseek(
     """Classify via the DeepSeek API (OpenAI-compatible chat completions).
 
     DeepSeek enforces json_object mode but not a full JSON schema, so the
-    schema rides in the system prompt and result_from_data + guardrails.py
-    carry the validation weight downstream. Output is capped at 8k tokens by
-    the API — very large menus should go to a frontier provider or run in
-    delta mode; a truncated response fails loudly here rather than storing a
-    partial menu.
+    schema rides in the system prompt and result_from_data performs structural
+    validation downstream. Output is capped per response by the API, so large
+    menus are classified in bounded DeepSeek chunks. A truncated response
+    fails loudly here rather than storing a partial menu.
     """
     import httpx
 

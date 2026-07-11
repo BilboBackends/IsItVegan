@@ -220,6 +220,11 @@ def _client_price(node: dict) -> str | int | float | None:
         return price.get("formattedPrice") or price.get("value")
     if price not in (None, ""):
         return price
+    cost = node.get("cost")
+    if isinstance(cost, dict):
+        value = cost.get("formattedPrice") or cost.get("price") or cost.get("value")
+        if value not in (None, ""):
+            return value
     for key in ("menuItemPrice", "defaultUnitPrice", "unitPrice", "basePrice"):
         if node.get(key) not in (None, ""):
             return node[key]
@@ -276,8 +281,15 @@ def extract_client_state_menu(values: Iterable[str]) -> ClientStateMenu | None:
         if not isinstance(node, dict):
             return
 
-        has_children = any(isinstance(node.get(key), list) for key in ("categories", "subCategories"))
+        has_children = any(
+            isinstance(node.get(key), list)
+            for key in ("categories", "subCategories", "items")
+        )
         products = node.get("products")
+        if not isinstance(products, list):
+            # Restaurant-owned APIs commonly call category members `items`
+            # instead of `products`.
+            products = node.get("items")
         label = _first_text(node, ("displayName", "name")) if (has_children or isinstance(products, list)) else None
         next_path = path + ((label,) if label else ())
         category = " > ".join(next_path)
@@ -288,7 +300,14 @@ def extract_client_state_menu(values: Iterable[str]) -> ClientStateMenu | None:
                     add_product(product, category)
 
         for key, value in node.items():
-            if key == "products":
+            if key in ("products", "items"):
+                continue
+            if key in ("restaurant_menu", "restaurantMenu", "menus") and isinstance(value, dict):
+                # Preserve dayparts whose labels are dictionary keys:
+                # {"restaurant_menu": {"Brunch": [...]}}.
+                for menu_name, menu_value in value.items():
+                    if isinstance(menu_value, (dict, list)):
+                        walk(menu_value, path + (str(menu_name),))
                 continue
             # Walk both known category containers and wrapper objects such as
             # response/data; the product-shape gate prevents config noise.

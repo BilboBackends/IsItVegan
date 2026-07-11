@@ -821,34 +821,6 @@ def publish_site_endpoint() -> object:
     return jsonify(summary)
 
 
-@app.get("/api/audit/summary")
-def audit_summary_endpoint() -> object:
-    """Monitoring rollup for the cheap classification tier: guardrail flag
-    counts, spot-check agreement, recent flags, and active corrections."""
-    db.init_db()
-    summary = db.audit_summary()
-    summary["recent"] = db.list_audits(limit=30)
-    summary["corrections"] = db.list_corrections(active_only=True, limit=30)
-    return jsonify(summary)
-
-
-@app.post("/api/audit/spot-check")
-def audit_spot_check_endpoint() -> object:
-    """Run a spot-check audit now (synchronous — one reference-model call).
-    Body: {"sample": 10, "reference": "claude"}."""
-    import audit_spotcheck
-
-    payload = request.get_json(silent=True) or {}
-    sample = payload.get("sample", 10)
-    reference = payload.get("reference", "claude")
-    if not isinstance(sample, int) or not 1 <= sample <= 50:
-        return jsonify({"error": "sample must be an integer 1-50."}), 400
-    if not isinstance(reference, str) or not reference.strip():
-        return jsonify({"error": "reference must be a provider name."}), 400
-    summary = audit_spotcheck.run(sample=sample, reference=reference.strip())
-    return jsonify(summary)
-
-
 @app.post("/api/restaurant-votes")
 def restaurant_vote_endpoint() -> object:
     """Thumbs up/down on a restaurant — same contract as /api/dish-votes."""
