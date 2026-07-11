@@ -2324,7 +2324,7 @@ export default function Admin() {
               className="rounded-lg border border-violet-400 px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
               title={
                 classifierUsesApi
-                  ? `Classify new menus with Anthropic — est ~$${classifyCostNew.toFixed(2)} API cost`
+                  ? `Classify new menus with ${classifierProviderLabel} — est ~$${classifyCostNew.toFixed(2)} API cost`
                   : `Classify new menus with your ${classifierProviderLabel}`
               }
             >
@@ -3012,7 +3012,7 @@ export default function Admin() {
                               </div>
                               <div className="text-[11px] font-semibold text-violet-600">
                                 {classifierUsesApi
-                                  ? `Anthropic est ~$${(r.classify_estimate ?? 0).toFixed(2)}`
+                                  ? `${classifierProviderLabel} est ~$${(r.classify_estimate ?? 0).toFixed(2)}`
                                   : classifierProviderLabel}
                               </div>
                             </div>
@@ -3155,7 +3155,7 @@ export default function Admin() {
                             title={
                               r.has_menu_text
                                 ? (classifierUsesApi
-                                    ? `Re-run classification with Anthropic (est ~$${(
+                                    ? `Re-run classification with ${classifierProviderLabel} (est ~$${(
                                         r.classify_estimate ?? 0.1
                                       ).toFixed(2)} for ${r.menu_chars?.toLocaleString() ?? "?"} chars)`
                                     : `Re-run classification with your ${classifierProviderLabel}`) +
@@ -3509,7 +3509,7 @@ export default function Admin() {
                         <span className="text-slate-400">roughly {workload.runtime}</span>
                         <span className="font-semibold text-violet-600">
                           {classifierUsesApi
-                            ? `Anthropic est ~$${(menuFor.classify_estimate ?? 0).toFixed(2)}`
+                            ? `${classifierProviderLabel} est ~$${(menuFor.classify_estimate ?? 0).toFixed(2)}`
                             : classifierProviderLabel}
                         </span>
                       </>

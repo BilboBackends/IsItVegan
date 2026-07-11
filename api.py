@@ -1016,7 +1016,7 @@ def _start_classify_job(
 @app.post("/api/classify")
 def run_classify() -> object:
     """Classify dishes via the provider chain: Claude Code subscription,
-    Codex/ChatGPT subscription, or the Anthropic API.
+    DeepSeek API.
 
     Every run starts a background job, including {"restaurant_id": N}, so the
     browser can poll GET /api/classify/status and reconnect after a refresh.
