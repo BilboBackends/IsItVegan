@@ -724,8 +724,10 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   // Add the selected places (names only), then chain the existing background
   // jobs against exactly those ids: scrape, then classify. Progress is shown
   // inline by polling the job status endpoints the dashboards already use.
-  async function addAndRunAll() {
-    const chosen = (places || []).filter((p) => selected.has(p.place_id));
+  async function addAndRunAll(explicitPlaces = null) {
+    const chosen = Array.isArray(explicitPlaces)
+      ? explicitPlaces
+      : (places || []).filter((p) => selected.has(p.place_id));
     if (chosen.length === 0 || pipeline) return;
     if (chosen.length > 1000) {
       setError("One-go runs support up to 1,000 places. Narrow the selection.");
@@ -1062,21 +1064,30 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                 : `Add ${selected.size} to pipeline (names only)`}
             </button>
             {keepers.length > 0 && (
-              <button
-                onClick={addAllKeepers}
-                disabled={adding || Boolean(pipeline)}
-                className="rounded-lg bg-emerald-700 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-                title={
-                  `Adds all ${keepers.length} food-venue result(s) not yet in the ` +
-                  `pipeline, in batches of ${ADD_BATCH_SIZE}. Names only — ` +
-                  `enrichment runs now; scrape & classify from the Active table.` +
-                  (droppedCount ? ` Skips ${droppedCount} non-food venue(s).` : "")
-                }
-              >
-                {adding
-                  ? "Adding…"
-                  : `Add all ${keepers.length} food venues`}
-              </button>
+              <>
+                <button
+                  onClick={addAllKeepers}
+                  disabled={adding || Boolean(pipeline)}
+                  className="rounded-lg border border-emerald-300 bg-white px-4 py-1.5 text-xs font-bold text-emerald-800 shadow-sm hover:bg-emerald-50 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  title={
+                    `Adds all ${keepers.length} food venues in batches, but does ` +
+                    `not scrape or classify them.` +
+                    (droppedCount ? ` Skips ${droppedCount} non-food venue(s).` : "")
+                  }
+                >
+                  {adding ? "Adding…" : `Add all only (${keepers.length})`}
+                </button>
+                <button
+                  onClick={() => addAndRunAll(keepers)}
+                  disabled={adding || Boolean(pipeline)}
+                  className="rounded-lg bg-violet-700 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-violet-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  title={`Add all ${keepers.length} food venues, scrape their menus, then classify every successful menu with DeepSeek`}
+                >
+                  {pipeline
+                    ? `${pipeline.stage}…`
+                    : `Add all + scrape + classify (${keepers.length})`}
+                </button>
+              </>
             )}
             <span className="mx-1 text-xs text-slate-300">|</span>
             <select
@@ -1094,7 +1105,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
               </option>
             </select>
             <button
-              onClick={addAndRunAll}
+              onClick={() => addAndRunAll()}
               disabled={Boolean(pipeline) || adding || selected.size === 0}
               className="rounded-lg bg-violet-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               title="Add the selected places, then scrape their menus and classify the dishes as chained background jobs"
