@@ -327,6 +327,41 @@ def filter_location_urls(urls: list[str], address: str | None) -> list[str]:
     ]
 
 
+# Metro rollup for the Admin coverage view: cities grouped into the greater
+# area a human thinks of ("Maitland is Orlando"). Cities not listed stand
+# alone as their own metro — safe default for new expansion areas.
+_METRO_AREAS = {
+    "Greater Orlando": {
+        "orlando", "winter park", "maitland", "altamonte springs",
+        "longwood", "casselberry", "winter springs", "lake mary", "sanford",
+        "apopka", "oviedo", "ocoee", "winter garden", "windermere",
+        "kissimmee", "eatonville", "fern park", "goldenrod", "lockhart",
+        "pine hills", "belle isle", "edgewood", "doctor phillips",
+        "lake buena vista", "bay lake", "celebration", "clermont",
+        "saint cloud", "st. cloud", "st cloud",
+    },
+    "Cape Coral / Fort Myers": {
+        "cape coral", "fort myers", "north fort myers", "fort myers beach",
+        "lehigh acres", "estero", "bonita springs", "sanibel",
+    },
+}
+
+
+def metro_from_area(area: str | None) -> str:
+    """Greater-area name for a city ('Maitland' -> 'Greater Orlando').
+
+    Unmapped cities are their own metro so nothing ever disappears from a
+    metro-grouped view.
+    """
+    if not area or area == "Unknown":
+        return "Unknown"
+    lowered = area.strip().lower()
+    for metro, cities in _METRO_AREAS.items():
+        if lowered in cities:
+            return metro
+    return area
+
+
 def area_from_address(address: str | None) -> str:
     """City segment of a Places formatted address, for area-level grouping.
 

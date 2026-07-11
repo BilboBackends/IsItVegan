@@ -29,7 +29,7 @@ import ingest
 import menu_audit
 from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
-from location_filter import area_from_address
+from location_filter import area_from_address, metro_from_area
 from menu_score import score_menu_text
 from vegan_score import compute_vegan_score, menu_offers_plant_protein
 from venue_filter import is_consumer_food_venue
@@ -110,6 +110,7 @@ def get_restaurants() -> object:
         # City parsed from the Places address — the Admin coverage view
         # tracks the pipeline per area as coverage expands beyond Maitland.
         restaurant["area"] = area_from_address(restaurant.get("address"))
+        restaurant["metro"] = metro_from_area(restaurant["area"])
     if not include_excluded:
         restaurants = [r for r in restaurants if r["is_consumer_venue"]]
     counts = db.verdict_counts_by_restaurant()
@@ -533,6 +534,85 @@ def prospect_endpoint() -> object:
         place["already_added_id"] = known["id"] if known else None
         place["archived"] = bool(known and known.get("archived"))
     return jsonify({"count": len(places), "places": places})
+
+
+# Category battery for the area sweep. Text Search tops out around 60
+# results per query, so one "restaurants in Orlando" can never show the
+# whole city — a spread of cuisine/venue queries pulls distinct slices and
+# the union is deduped by place_id.
+_SWEEP_QUERIES = (
+    "restaurants",
+    "vegan restaurants",
+    "vegetarian restaurants",
+    "breakfast and brunch restaurants",
+    "pizza restaurants",
+    "mexican restaurants",
+    "chinese restaurants",
+    "thai restaurants",
+    "vietnamese restaurants",
+    "indian restaurants",
+    "sushi restaurants",
+    "mediterranean restaurants",
+    "cafes",
+    "bakeries",
+)
+
+
+@app.post("/api/prospect/sweep")
+def prospect_sweep_endpoint() -> object:
+    """Coverage-gap sweep of one area — NO writes.
+
+    Body: {"area": "Orlando, FL"}. Runs the _SWEEP_QUERIES battery through
+    Text Search ("<category> in <area>"), merges unique places, and flags
+    each with already_added_id like /api/prospect — "what am I missing in
+    Orlando" becomes one click instead of a dozen manual searches. A broad
+    pass, not a completeness guarantee (Google caps each query at ~60).
+    """
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    payload = request.get_json(silent=True) or {}
+    area = (payload.get("area") or "").strip()
+    if not area or len(area) > 120:
+        return jsonify({"error": "Provide an area (max 120 chars)."}), 400
+    from places_client import prospect_places
+
+    db.init_db()
+    merged: dict[str, dict] = {}
+    queries_run = 0
+    errors: list[str] = []
+    for category in _SWEEP_QUERIES:
+        try:
+            places = prospect_places(
+                f"{category} in {area}",
+                api_key=settings.google_places_api_key,
+                bias_lat=settings.discovery_lat,
+                bias_lng=settings.discovery_lng,
+            )
+            queries_run += 1
+        except Exception as exc:  # one failing category must not kill the sweep
+            errors.append(f"{category}: {exc}")
+            continue
+        for place in places:
+            merged.setdefault(place["place_id"], place)
+    if not merged and errors:
+        return jsonify({"error": "; ".join(errors[:3])}), 502
+
+    existing = {r["place_id"]: r for r in db.list_restaurants()}
+    out = sorted(merged.values(), key=lambda p: (p.get("name") or "").lower())
+    for place in out:
+        known = existing.get(place["place_id"])
+        place["already_added_id"] = known["id"] if known else None
+        place["archived"] = bool(known and known.get("archived"))
+    new_count = sum(1 for p in out if not p["already_added_id"])
+    return jsonify(
+        {
+            "count": len(out),
+            "new_count": new_count,
+            "queries_run": queries_run,
+            "errors": errors,
+            "places": out,
+        }
+    )
 
 
 @app.post("/api/restaurants/resolve")

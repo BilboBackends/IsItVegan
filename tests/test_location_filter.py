@@ -274,3 +274,17 @@ def test_area_from_address_handles_junk():
     assert area_from_address(None) == "Unknown"
     assert area_from_address("") == "Unknown"
     assert area_from_address("somewhere with no commas") == "Unknown"
+
+
+def test_metro_from_area_rollup():
+    from location_filter import metro_from_area
+
+    assert metro_from_area("Maitland") == "Greater Orlando"
+    assert metro_from_area("Altamonte Springs") == "Greater Orlando"
+    assert metro_from_area("Winter Park") == "Greater Orlando"
+    assert metro_from_area("Orlando") == "Greater Orlando"
+    assert metro_from_area("Cape Coral") == "Cape Coral / Fort Myers"
+    # Unmapped cities stand alone — nothing disappears from a metro view.
+    assert metro_from_area("Daytona Beach") == "Daytona Beach"
+    assert metro_from_area(None) == "Unknown"
+    assert metro_from_area("Unknown") == "Unknown"

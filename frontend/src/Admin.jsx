@@ -612,6 +612,11 @@ function HistoryModal({ restaurant, onClose }) {
 function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
+  // Coverage-gap sweep: a battery of category searches over one area,
+  // merged — surfaces the restaurants NOT in the pipeline yet.
+  const [sweepArea, setSweepArea] = useState("Orlando, FL");
+  const [sweeping, setSweeping] = useState(false);
+  const [onlyNew, setOnlyNew] = useState(false);
   const [places, setPlaces] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
   const [adding, setAdding] = useState(false);
@@ -647,6 +652,37 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
     }
   }
 
+  async function runSweep(event) {
+    event?.preventDefault();
+    if (!sweepArea.trim() || sweeping) return;
+    setSweeping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/prospect/sweep", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ area: sweepArea.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Sweep failed (${res.status})`);
+      setPlaces(data.places);
+      setSelected(new Set());
+      // The whole point of a sweep is the gap list — jump straight to it.
+      setOnlyNew(data.new_count > 0);
+      setNotice(
+        `Sweep of ${sweepArea.trim()}: ${data.count} places across ` +
+          `${data.queries_run} searches — ${data.new_count} not in the ` +
+          `pipeline yet.` +
+          (data.errors?.length ? ` (${data.errors.length} searches failed)` : "")
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSweeping(false);
+    }
+  }
+
   function toggle(place) {
     if (place.already_added_id) return;
     setSelected((current) => {
@@ -658,6 +694,11 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
   }
 
   const newPlaces = (places || []).filter((p) => !p.already_added_id);
+  // What the list and map actually show — optionally just the gaps.
+  const displayed = useMemo(
+    () => (onlyNew ? (places || []).filter((p) => !p.already_added_id) : places),
+    [places, onlyNew]
+  );
 
   async function addSelected() {
     const chosen = (places || []).filter((p) => selected.has(p.place_id));
@@ -799,15 +840,15 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
     }
   }
 
-  // (Re)draw the map whenever results or selection change — trivial at <=60
-  // pins, and far simpler than incremental marker sync.
+  // (Re)draw the map whenever the shown results or selection change —
+  // trivial at a few hundred pins, and far simpler than incremental sync.
   useEffect(() => {
-    if (!mapEl.current || !places || places.length === 0) return;
+    if (!mapEl.current || !displayed || displayed.length === 0) return;
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
     }
-    const located = places.filter((p) => p.lat != null && p.lng != null);
+    const located = displayed.filter((p) => p.lat != null && p.lng != null);
     if (located.length === 0) return;
     const map = L.map(mapEl.current, { scrollWheelZoom: true });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -844,7 +885,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [places, selected]);
+  }, [displayed, selected]);
 
   return (
     <div className="space-y-3">
@@ -868,6 +909,28 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
             {places.length} found · {newPlaces.length} new
           </span>
         )}
+      </form>
+
+      <form onSubmit={runSweep} className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={sweepArea}
+          onChange={(e) => setSweepArea(e.target.value)}
+          placeholder='Area to sweep, e.g. "Orlando, FL"'
+          className="w-full max-w-xs rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+        />
+        <button
+          type="submit"
+          disabled={sweeping || searching || !sweepArea.trim()}
+          className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          title="Runs ~14 category searches (restaurants, vegan, pizza, thai, cafes, …) over this area and merges the results — surfaces places a single search misses"
+        >
+          {sweeping ? "Sweeping… (~1 min)" : "Sweep area for gaps"}
+        </button>
+        <span className="text-xs text-slate-400">
+          Battery of category searches, merged — shows what's not in the
+          pipeline yet.
+        </span>
       </form>
 
       {error && (
@@ -898,6 +961,14 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
             >
               Clear
             </button>
+            <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50">
+              <input
+                type="checkbox"
+                checked={onlyNew}
+                onChange={(e) => setOnlyNew(e.target.checked)}
+              />
+              Only new ({newPlaces.length})
+            </label>
             <button
               onClick={addSelected}
               disabled={adding || Boolean(pipeline) || selected.size === 0}
@@ -964,8 +1035,13 @@ function ProspectPanel({ onAdded, config, defaultProvider = "auto" }) {
               className="z-0 h-[420px] overflow-hidden rounded-xl border border-slate-200"
             />
             <div className="max-h-[420px] overflow-y-auto rounded-xl border border-slate-200 bg-white">
+              {displayed.length === 0 && (
+                <div className="p-8 text-center text-sm text-slate-400">
+                  Everything found here is already in the pipeline. 🎉
+                </div>
+              )}
               <ul className="divide-y divide-slate-100">
-                {places.map((p) => (
+                {displayed.map((p) => (
                   <li key={p.place_id}>
                     <label
                       className={`flex cursor-pointer items-start gap-2 px-3 py-2 text-sm ${
@@ -1191,90 +1267,105 @@ const COVERAGE_STAGES = [
   ["no_website", "No website", "no_website", "text-slate-500"],
 ];
 
-// Area-by-area pipeline funnel — the "classify every restaurant in Orlando"
-// progress view. Every count drills into the restaurant table below.
+// Metro/area pipeline funnel — the "classify every restaurant in Orlando"
+// progress view. Cities roll up into their metro (Maitland is Orlando);
+// every count drills into the restaurant table below.
 function AreaCoverage({ restaurants, onDrill }) {
   const [open, setOpen] = useState(true);
 
-  const rows = useMemo(() => {
-    const byArea = new Map();
+  const emptyRow = (label) => ({
+    label,
+    total: 0,
+    classified: 0,
+    ready: 0,
+    needs_scrape: 0,
+    scrape_failing: 0,
+    no_website: 0,
+  });
+
+  const metros = useMemo(() => {
+    const byMetro = new Map();
     for (const restaurant of restaurants) {
       // The funnel tracks real work: active, consumer-facing venues only.
       if (restaurant.archived || !restaurant.is_consumer_venue) continue;
       const area = restaurant.area || "Unknown";
-      if (!byArea.has(area)) {
-        byArea.set(area, {
-          area,
-          total: 0,
-          classified: 0,
-          ready: 0,
-          needs_scrape: 0,
-          scrape_failing: 0,
-          no_website: 0,
-        });
+      const metro = restaurant.metro || area;
+      if (!byMetro.has(metro)) {
+        byMetro.set(metro, { row: emptyRow(metro), cities: new Map() });
       }
-      const row = byArea.get(area);
-      row.total += 1;
-      row[pipelineStage(restaurant)] += 1;
+      const entry = byMetro.get(metro);
+      if (!entry.cities.has(area)) entry.cities.set(area, emptyRow(area));
+      const stage = pipelineStage(restaurant);
+      for (const row of [entry.row, entry.cities.get(area)]) {
+        row.total += 1;
+        row[stage] += 1;
+      }
     }
-    return [...byArea.values()].sort(
-      (a, b) => b.total - a.total || a.area.localeCompare(b.area)
-    );
+    return [...byMetro.values()]
+      .map((entry) => ({
+        row: entry.row,
+        cities: [...entry.cities.values()].sort(
+          (a, b) => b.total - a.total || a.label.localeCompare(b.label)
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          b.row.total - a.row.total || a.row.label.localeCompare(b.row.label)
+      );
   }, [restaurants]);
 
   const totals = useMemo(() => {
-    const sum = {
-      area: "All areas",
-      total: 0,
-      classified: 0,
-      ready: 0,
-      needs_scrape: 0,
-      scrape_failing: 0,
-      no_website: 0,
-    };
-    for (const row of rows) {
-      sum.total += row.total;
-      sum.classified += row.classified;
-      sum.ready += row.ready;
-      sum.needs_scrape += row.needs_scrape;
-      sum.scrape_failing += row.scrape_failing;
-      sum.no_website += row.no_website;
+    const sum = emptyRow("Everywhere");
+    for (const { row } of metros) {
+      for (const key of Object.keys(sum)) {
+        if (key !== "label") sum[key] += row[key];
+      }
     }
     return sum;
-  }, [rows]);
+  }, [metros]);
 
-  if (rows.length === 0) return null;
+  if (metros.length === 0) return null;
 
   const pct = (row) =>
     row.total > 0 ? Math.round((row.classified / row.total) * 100) : 0;
 
-  const countCell = (row, stage, filterValue, tint) => {
+  const countCell = (row, drillValue, stage, filterValue, tint) => {
     const value = row[stage];
-    const areaValue = row.area === "All areas" ? "all" : row.area;
     if (!value) {
       return <span className="text-slate-300">—</span>;
     }
     return (
       <button
-        onClick={() => onDrill(areaValue, filterValue)}
+        onClick={() => onDrill(drillValue, filterValue)}
         className={`font-semibold tabular-nums hover:underline ${tint}`}
-        title={`Show these restaurants in the table below`}
+        title="Show these restaurants in the table below"
       >
         {value}
       </button>
     );
   };
 
-  const renderRow = (row, isTotals = false) => (
+  // kind: "metro" (rollup header), "city" (indented child), "totals".
+  const renderRow = (row, drillValue, kind) => (
     <tr
-      key={row.area}
+      key={`${kind}:${row.label}`}
       className={
-        isTotals
+        kind === "totals"
           ? "border-t-2 border-slate-300 bg-slate-50 font-semibold"
-          : "border-t border-slate-100"
+          : kind === "metro"
+            ? "border-t border-slate-200 bg-slate-50/60"
+            : "border-t border-slate-100"
       }
     >
-      <td className="py-2 pr-3 font-semibold text-slate-800">{row.area}</td>
+      <td
+        className={`py-2 pr-3 ${
+          kind === "city"
+            ? "pl-5 text-slate-600"
+            : "font-semibold text-slate-800"
+        }`}
+      >
+        {row.label}
+      </td>
       <td className="py-2 pr-3">
         <div className="flex items-center gap-2">
           <div className="h-2 w-28 overflow-hidden rounded-full bg-slate-100">
@@ -1290,9 +1381,7 @@ function AreaCoverage({ restaurants, onDrill }) {
       </td>
       <td className="py-2 pr-3 text-right">
         <button
-          onClick={() =>
-            onDrill(row.area === "All areas" ? "all" : row.area, "all")
-          }
+          onClick={() => onDrill(drillValue, "all")}
           className="font-semibold tabular-nums text-slate-700 hover:underline"
         >
           {row.total}
@@ -1300,7 +1389,7 @@ function AreaCoverage({ restaurants, onDrill }) {
       </td>
       {COVERAGE_STAGES.map(([stage, , filterValue, tint]) => (
         <td key={stage} className="py-2 pr-3 text-right">
-          {countCell(row, stage, filterValue, tint)}
+          {countCell(row, drillValue, stage, filterValue, tint)}
         </td>
       ))}
     </tr>
@@ -1314,15 +1403,15 @@ function AreaCoverage({ restaurants, onDrill }) {
             Coverage by area
           </h2>
           <p className="text-xs text-slate-500">
-            Pipeline progress per city — click any count to drill into the
-            table below. Active consumer venues only.
+            Pipeline progress per metro area and city — click any count to
+            drill into the table below. Active consumer venues only.
           </p>
         </div>
         <button
           onClick={() => setOpen((v) => !v)}
           className="text-xs font-semibold text-slate-500 hover:text-slate-800"
         >
-          {open ? "Hide" : `Show (${rows.length} areas)`}
+          {open ? "Hide" : `Show (${metros.length} metro areas)`}
         </button>
       </div>
       {open && (
@@ -1330,7 +1419,7 @@ function AreaCoverage({ restaurants, onDrill }) {
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="text-left text-xs font-bold uppercase tracking-wide text-slate-400">
-                <th className="py-1 pr-3">Area</th>
+                <th className="py-1 pr-3">Metro / city</th>
                 <th className="py-1 pr-3">Progress</th>
                 <th className="py-1 pr-3 text-right">Total</th>
                 {COVERAGE_STAGES.map(([stage, label]) => (
@@ -1341,8 +1430,20 @@ function AreaCoverage({ restaurants, onDrill }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => renderRow(row))}
-              {rows.length > 1 && renderRow(totals, true)}
+              {metros.map(({ row, cities }) => {
+                const standalone =
+                  cities.length === 1 && cities[0].label === row.label;
+                return (
+                  <Fragment key={row.label}>
+                    {renderRow(row, `metro:${row.label}`, "metro")}
+                    {!standalone &&
+                      cities.map((city) =>
+                        renderRow(city, city.label, "city")
+                      )}
+                  </Fragment>
+                );
+              })}
+              {metros.length > 1 && renderRow(totals, "all", "totals")}
             </tbody>
           </table>
         </div>
@@ -2007,8 +2108,14 @@ export default function Admin() {
     const list = restaurants.filter((restaurant) => {
       // Archived rows live on their own page; everything else never sees them.
       if (Boolean(restaurant.archived) !== (tableView === "archived")) return false;
-      if (areaFilter !== "all" && (restaurant.area || "Unknown") !== areaFilter) {
-        return false;
+      if (areaFilter !== "all") {
+        const area = restaurant.area || "Unknown";
+        const metro = restaurant.metro || area;
+        if (areaFilter.startsWith("metro:")) {
+          if (metro !== areaFilter.slice(6)) return false;
+        } else if (area !== areaFilter) {
+          return false;
+        }
       }
       if (
         q &&
@@ -2080,6 +2187,9 @@ export default function Admin() {
       if (groupBy === "area") {
         return restaurant.area || "Unknown";
       }
+      if (groupBy === "metro") {
+        return restaurant.metro || restaurant.area || "Unknown";
+      }
       if (groupBy === "refresh") {
         return restaurant.refresh_enabled ? "Refresh enabled" : "Refresh paused";
       }
@@ -2131,7 +2241,7 @@ export default function Admin() {
       const order = ["Refresh enabled", "Refresh paused"];
       result.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
     }
-    if (groupBy === "area") {
+    if (groupBy === "area" || groupBy === "metro") {
       result.sort(
         (a, b) =>
           b.items.length - a.items.length || a.label.localeCompare(b.label)
@@ -2140,17 +2250,27 @@ export default function Admin() {
     return result;
   }, [filtered, groupBy, sortBy]);
 
-  // Distinct areas (active rows), biggest first — drives the area dropdown.
+  // Distinct areas (active rows) nested under their metro, biggest first —
+  // drives the area dropdown's optgroups.
   const areaOptions = useMemo(() => {
-    const counts = new Map();
+    const metros = new Map();
     for (const restaurant of restaurants) {
       if (restaurant.archived) continue;
       const area = restaurant.area || "Unknown";
-      counts.set(area, (counts.get(area) || 0) + 1);
+      const metro = restaurant.metro || area;
+      if (!metros.has(metro)) metros.set(metro, new Map());
+      const cities = metros.get(metro);
+      cities.set(area, (cities.get(area) || 0) + 1);
     }
-    return [...counts.entries()].sort(
-      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
-    );
+    return [...metros.entries()]
+      .map(([metro, cities]) => ({
+        metro,
+        count: [...cities.values()].reduce((a, b) => a + b, 0),
+        cities: [...cities.entries()].sort(
+          (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+        ),
+      }))
+      .sort((a, b) => b.count - a.count || a.metro.localeCompare(b.metro));
   }, [restaurants]);
 
   // Coverage-panel drill-down: point every table control at one bucket.
@@ -2759,11 +2879,24 @@ export default function Admin() {
             aria-label="Filter restaurants by area"
           >
             <option value="all">Area: All</option>
-            {areaOptions.map(([area, count]) => (
-              <option key={area} value={area}>
-                {area} ({count})
-              </option>
-            ))}
+            {areaOptions.map(({ metro, count, cities }) =>
+              cities.length === 1 && cities[0][0] === metro ? (
+                <option key={metro} value={cities[0][0]}>
+                  {metro} ({count})
+                </option>
+              ) : (
+                <optgroup key={metro} label={metro}>
+                  <option value={`metro:${metro}`}>
+                    All of {metro} ({count})
+                  </option>
+                  {cities.map(([city, cityCount]) => (
+                    <option key={city} value={city}>
+                      {city} ({cityCount})
+                    </option>
+                  ))}
+                </optgroup>
+              )
+            )}
           </select>
           <select
             value={operationalFilter}
@@ -2790,7 +2923,8 @@ export default function Admin() {
             aria-label="Group restaurants"
           >
             <option value="none">Group: None</option>
-            <option value="area">Group by area</option>
+            <option value="metro">Group by metro area</option>
+            <option value="area">Group by city</option>
             <option value="refresh">Group by refresh status</option>
             <option value="pipeline">Group by pipeline stage</option>
             <option value="freshness">Group by menu freshness</option>
