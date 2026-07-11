@@ -36,9 +36,14 @@ PRICES = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
-    # DeepSeek is the cheap bulk tier — roughly 10x cheaper than Sonnet.
-    "deepseek-chat": (0.27, 1.10),
-    "deepseek-reasoner": (0.55, 2.19),
+    # DeepSeek is the cheap bulk tier. V4 pricing (per 1M tokens, cache-miss
+    # input / output). The deprecated deepseek-chat / deepseek-reasoner
+    # aliases both map to V4-Flash until 2026-07-24 and share its rates —
+    # kept here so cost tracking stays right through the transition.
+    "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-v4-pro": (0.435, 0.87),
+    "deepseek-chat": (0.14, 0.28),
+    "deepseek-reasoner": (0.14, 0.28),
 }
 
 _PROVIDER_NAMES = ("claude", "codex", "anthropic", "deepseek")
@@ -290,6 +295,24 @@ def run_provider(
     )
 
 
+def _deepseek_thinking(model: str) -> bool:
+    """Whether to run DeepSeek in thinking mode for this model.
+
+    Thinking mode (the old deepseek-reasoner) gives better structured-
+    extraction quality and, on V4, costs the same as non-thinking — so it's
+    the default for V4 and the reasoner alias. The chat alias is non-thinking.
+    DEEPSEEK_THINKING=0/1 overrides for any model.
+    """
+    override = os.environ.get("DEEPSEEK_THINKING")
+    if override is not None:
+        return override.strip() not in ("0", "false", "no", "")
+    if "reasoner" in model:
+        return True
+    if model == "deepseek-chat":
+        return False
+    return True  # V4 (flash/pro) defaults to thinking
+
+
 def _run_deepseek(
     system_prompt: str, user_prompt: str, schema: dict
 ) -> ProviderResponse:
@@ -332,10 +355,17 @@ def _run_deepseek(
         "max_tokens": settings.deepseek_max_output_tokens,
         "stream": False,
     }
-    # deepseek-reasoner thinks before answering and rejects/ignores sampling
-    # and json-mode controls; the schema instruction in the system prompt is
-    # what constrains it. deepseek-chat gets strict json_object mode.
-    if "reasoner" not in model:
+    # Thinking mode (the old deepseek-reasoner, now V4-Flash thinking) reasons
+    # before answering and REJECTS temperature/top_p and json_object mode; the
+    # schema instruction in the system prompt is what constrains it. On V4 the
+    # mode is a request parameter, not a model name, so we set it explicitly
+    # and gate the sampling controls on it. Non-thinking mode gets strict
+    # json_object mode + a low temperature.
+    thinking = _deepseek_thinking(model)
+    if model.startswith("deepseek-v4"):
+        # V4 selects mode by parameter; the legacy aliases pick it by name.
+        payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+    if not thinking:
         payload["response_format"] = {"type": "json_object"}
         payload["temperature"] = 0.2
     try:
@@ -364,7 +394,7 @@ def _run_deepseek(
     usage = envelope.get("usage") or {}
     input_tokens = int(usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("completion_tokens") or 0)
-    input_price, output_price = PRICES.get(model, (0.27, 1.10))
+    input_price, output_price = PRICES.get(model, (0.14, 0.28))
     cost = (
         input_tokens * input_price + output_tokens * output_price
     ) / 1_000_000
