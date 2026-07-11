@@ -79,7 +79,12 @@ Two top-level views:
   enrichment / ingestion, refresh stale menus and Google opening data, review
   correction reports, add restaurants (two-step: pick the exact Google Places
   match, then choose whether to scrape/classify immediately), and inspect
-  scraped menu text and scores. Bulk scrape and classify run as background
+  scraped menu text and scores. Prospect includes a map-centered radius sweep:
+  place/drag a marker, choose a radius, review the tiled Places API call and
+  list-price estimate, then confirm. Results cover restaurants plus breweries,
+  cafes, bakeries, dessert/ice-cream shops, and other food venues; large result
+  sets are added in batches and can flow directly into scrape + DeepSeek
+  classification. Bulk scrape and classify run as background
   jobs with live progress bars that survive page reloads; classification has
   a DeepSeek classifier control, a mode
   toggle (changes-only vs full re-extraction), and a concurrency select
@@ -347,7 +352,7 @@ receive them.
 ```
 config.py                   # env / settings loader (single source of config)
 db.py                       # SQLite schema + read/upsert helpers + history tables
-places_client.py            # Google Places API (New) client (search + candidates)
+places_client.py            # Places API search, radius tiling/estimates, candidates
 discover.py                 # discovery CLI: pull + persist area restaurants
 add_restaurants.py          # add-by-name CLI (+ resolve/confirm used by Admin)
 scraper.py                  # HTTP scrape + link following + structured menus + headless fallback

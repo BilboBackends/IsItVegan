@@ -167,7 +167,10 @@ expandable dish rows, address-search origin picker biased to Central
 Florida, favorites, thumbs with deduped vote counts, dish share/report).
 Admin: pipeline dashboard with live job progress, per-restaurant costs,
 provider usage, menu version history, dish-change log, menu-quality audit,
-and Prospect area search.
+and Prospect map/radius sweeps. Radius sweeps tile the chosen circle into
+overlapping Google Nearby Search cells, search both restaurants and other
+food venues, require a call/cost estimate confirmation, dedupe by place ID,
+and filter results back to the exact selected radius.
 
 Change-aware recrawling is live: identical menu text skips classification
 entirely; changed menus run in DELTA mode (classify only new/changed dishes

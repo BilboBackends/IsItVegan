@@ -477,9 +477,13 @@ function HistoryModal({ restaurant, onClose }) {
 function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  // Coverage-gap sweep: a battery of category searches over one area,
-  // merged — surfaces the restaurants NOT in the pipeline yet.
-  const [sweepArea, setSweepArea] = useState("Orlando, FL");
+  const [sweepCenter, setSweepCenter] = useState({
+    lat: config?.lat ?? 28.5383,
+    lng: config?.lng ?? -81.3792,
+  });
+  const [radiusMiles, setRadiusMiles] = useState(5);
+  const [sweepEstimate, setSweepEstimate] = useState(null);
+  const [estimating, setEstimating] = useState(false);
   const [sweeping, setSweeping] = useState(false);
   const [onlyNew, setOnlyNew] = useState(false);
   const [places, setPlaces] = useState(null);
@@ -517,29 +521,67 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     }
   }
 
-  async function runSweep(event) {
+  const radiusMeters = radiusMiles * 1609.344;
+
+  function moveSweepCenter(lat, lng) {
+    setSweepCenter({ lat, lng });
+    setSweepEstimate(null);
+  }
+
+  async function estimateSweep(event) {
     event?.preventDefault();
-    if (!sweepArea.trim() || sweeping) return;
+    if (estimating || sweeping) return;
+    setEstimating(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/prospect/radius/estimate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: sweepCenter.lat,
+          lng: sweepCenter.lng,
+          radius_meters: radiusMeters,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Estimate failed (${res.status})`);
+      setSweepEstimate(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setEstimating(false);
+    }
+  }
+
+  async function runSweep() {
+    if (!sweepEstimate || sweeping) return;
     setSweeping(true);
     setError(null);
     setNotice(null);
     try {
-      const res = await fetch("/api/prospect/sweep", {
+      const res = await fetch("/api/prospect/radius", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ area: sweepArea.trim() }),
+        body: JSON.stringify({
+          lat: sweepCenter.lat,
+          lng: sweepCenter.lng,
+          radius_meters: radiusMeters,
+          confirmed_call_budget: sweepEstimate.call_budget,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Sweep failed (${res.status})`);
       setPlaces(data.places);
       setSelected(new Set());
-      // The whole point of a sweep is the gap list — jump straight to it.
       setOnlyNew(data.new_count > 0);
       setNotice(
-        `Sweep of ${sweepArea.trim()}: ${data.count} places across ` +
-          `${data.queries_run} searches — ${data.new_count} not in the ` +
-          `pipeline yet.` +
-          (data.errors?.length ? ` (${data.errors.length} searches failed)` : "")
+        `Radius sweep found ${data.count} food venues in ${data.calls_run} ` +
+          `Google searches — ${data.new_count} not in the pipeline yet.` +
+          (data.saturated_calls
+            ? ` ${data.saturated_calls} dense cells hit Google's 20-result cap.`
+            : "") +
+          (data.errors?.length ? ` ${data.errors.length} searches failed.` : "")
       );
     } catch (e) {
       setError(e.message);
@@ -639,18 +681,26 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     setAdding(true);
     setError(null);
     try {
-      const res = await fetch("/api/restaurants/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // Names only: enrichment runs (cheap Google details), scraping and
-        // classification are launched later from the Active table.
-        body: JSON.stringify({ places: chosen, ingest: false, classify: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
-      const byPlaceId = new Map(
-        chosen.map((p, i) => [p.place_id, data.added?.[i]?.id ?? true])
-      );
+      const byPlaceId = new Map();
+      let added = 0;
+      for (let i = 0; i < chosen.length; i += ADD_BATCH_SIZE) {
+        const batch = chosen.slice(i, i + ADD_BATCH_SIZE);
+        setNotice(
+          `Adding ${added + 1}–${Math.min(added + batch.length, chosen.length)} ` +
+            `of ${chosen.length}…`
+        );
+        const res = await fetch("/api/restaurants/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ places: batch, ingest: false, classify: false }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
+        batch.forEach((p, index) =>
+          byPlaceId.set(p.place_id, data.added?.[index]?.id ?? true)
+        );
+        added += batch.length;
+      }
       setPlaces((current) =>
         (current || []).map((p) =>
           byPlaceId.has(p.place_id)
@@ -677,8 +727,8 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   async function addAndRunAll() {
     const chosen = (places || []).filter((p) => selected.has(p.place_id));
     if (chosen.length === 0 || pipeline) return;
-    if (chosen.length > 60) {
-      setError("Max 60 places per one-go run — narrow the selection.");
+    if (chosen.length > 1000) {
+      setError("One-go runs support up to 1,000 places. Narrow the selection.");
       return;
     }
     setError(null);
@@ -706,17 +756,30 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
 
     try {
       setPipeline({ stage: "Adding", done: 0, total: chosen.length });
-      const addRes = await fetch("/api/restaurants/add", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ places: chosen, ingest: false, classify: false }),
-      });
-      const addData = await addRes.json();
-      if (!addRes.ok) throw new Error(addData.error || "Add failed");
-      const ids = (addData.added || []).map((entry) => entry.id).filter(Boolean);
-      const byPlaceId = new Map(
-        chosen.map((p, i) => [p.place_id, addData.added?.[i]?.id ?? true])
-      );
+      const ids = [];
+      const byPlaceId = new Map();
+      for (let i = 0; i < chosen.length; i += ADD_BATCH_SIZE) {
+        const batch = chosen.slice(i, i + ADD_BATCH_SIZE);
+        setPipeline({
+          stage: "Adding",
+          done: i,
+          total: chosen.length,
+          current: `${i + 1}–${Math.min(i + batch.length, chosen.length)}`,
+        });
+        const addRes = await fetch("/api/restaurants/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ places: batch, ingest: false, classify: false }),
+        });
+        const addData = await addRes.json();
+        if (!addRes.ok) throw new Error(addData.error || "Add failed");
+        (addData.added || []).forEach((entry) => {
+          if (entry.id) ids.push(entry.id);
+        });
+        batch.forEach((p, index) =>
+          byPlaceId.set(p.place_id, addData.added?.[index]?.id ?? true)
+        );
+      }
       setPlaces((current) =>
         (current || []).map((p) =>
           byPlaceId.has(p.place_id)
@@ -776,19 +839,43 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   // (Re)draw the map whenever the shown results or selection change —
   // trivial at a few hundred pins, and far simpler than incremental sync.
   useEffect(() => {
-    if (!mapEl.current || !displayed || displayed.length === 0) return;
+    if (!mapEl.current) return;
     if (mapRef.current) {
       mapRef.current.remove();
       mapRef.current = null;
     }
-    const located = displayed.filter((p) => p.lat != null && p.lng != null);
-    if (located.length === 0) return;
+    const located = (displayed || []).filter(
+      (p) => p.lat != null && p.lng != null
+    );
+    const center = [sweepCenter.lat, sweepCenter.lng];
     const map = L.map(mapEl.current, { scrollWheelZoom: true });
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
     }).addTo(map);
-    map.fitBounds(located.map((p) => [p.lat, p.lng]), { padding: [30, 30] });
+    const sweepCircle = L.circle(center, {
+      radius: radiusMeters,
+      color: "#0284c7",
+      weight: 2,
+      opacity: 0.8,
+      fillColor: "#38bdf8",
+      fillOpacity: 0.08,
+    }).addTo(map);
+    const centerMarker = L.marker(center, { draggable: true }).addTo(map);
+    centerMarker.bindTooltip("Sweep center — drag or click the map to move", {
+      direction: "top",
+    });
+    centerMarker.on("dragend", (event) => {
+      const point = event.target.getLatLng();
+      moveSweepCenter(point.lat, point.lng);
+    });
+    centerMarker.on("click", (event) => {
+      if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+    });
+    map.on("click", (event) => moveSweepCenter(event.latlng.lat, event.latlng.lng));
+
+    const bounds = sweepCircle.getBounds();
     for (const p of located) {
+      bounds.extend([p.lat, p.lng]);
       const color = p.already_added_id
         ? "#a8a29e"
         : selected.has(p.place_id)
@@ -808,8 +895,12 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         `${p.name}${p.already_added_id ? " (already added)" : ""}`,
         { direction: "top", offset: [0, -6] }
       );
-      marker.on("click", () => toggle(p));
+      marker.on("click", (event) => {
+        if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+        toggle(p);
+      });
     }
+    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
     mapRef.current = map;
     return () => {
       if (mapRef.current) {
@@ -818,7 +909,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayed, selected]);
+  }, [displayed, selected, sweepCenter, radiusMeters]);
 
   return (
     <div className="space-y-3">
@@ -844,26 +935,74 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         )}
       </form>
 
-      <form onSubmit={runSweep} className="flex flex-wrap items-center gap-2">
-        <input
-          type="text"
-          value={sweepArea}
-          onChange={(e) => setSweepArea(e.target.value)}
-          placeholder='Area to sweep, e.g. "Orlando, FL"'
-          className="w-full max-w-xs rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
-        />
-        <button
-          type="submit"
-          disabled={sweeping || searching || !sweepArea.trim()}
-          className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-          title="Runs ~14 category searches (restaurants, vegan, pizza, thai, cafes, …) over this area and merges the results — surfaces places a single search misses"
-        >
-          {sweeping ? "Sweeping… (~1 min)" : "Sweep area for gaps"}
-        </button>
-        <span className="text-xs text-slate-400">
-          Battery of category searches, merged — shows what's not in the
-          pipeline yet.
-        </span>
+      <form
+        onSubmit={estimateSweep}
+        className="rounded-xl border border-sky-200 bg-sky-50 p-3"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-sky-950">Radius sweep</span>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            Radius
+            <input
+              type="number"
+              min="0.25"
+              max="31"
+              step="0.25"
+              value={radiusMiles}
+              onChange={(event) => {
+                setRadiusMiles(Number(event.target.value));
+                setSweepEstimate(null);
+              }}
+              className="w-20 rounded-lg border border-sky-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-sky-500"
+            />
+            miles
+          </label>
+          <span className="text-xs tabular-nums text-slate-500">
+            {sweepCenter.lat.toFixed(5)}, {sweepCenter.lng.toFixed(5)}
+          </span>
+          <button
+            type="submit"
+            disabled={estimating || sweeping || radiusMiles < 0.25}
+            className="rounded-lg border border-sky-400 bg-white px-3 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {estimating ? "Estimating…" : "Estimate sweep"}
+          </button>
+        </div>
+        <div className="mt-1 text-xs text-sky-800">
+          Click the map or drag its marker, choose a radius, then estimate and
+          confirm. Searches restaurants plus breweries, cafes, bakeries,
+          dessert and ice-cream shops, and other food venues.
+        </div>
+        {sweepEstimate && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700">
+            <span>
+              <strong>{sweepEstimate.cells}</strong> overlapping cells ×{" "}
+              <strong>{sweepEstimate.type_groups}</strong> food groups
+            </span>
+            <span>
+              <strong>{sweepEstimate.base_calls}</strong> Google calls
+            </span>
+            <span>
+              list-price estimate <strong>~${sweepEstimate.estimated_list_cost.toFixed(2)}</strong>
+            </span>
+            {!sweepEstimate.within_call_limit ? (
+              <span className="font-semibold text-red-700">
+                Too large for the {sweepEstimate.call_budget}-call safety limit.
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={runSweep}
+                disabled={sweeping}
+                className="ml-auto rounded-lg bg-sky-700 px-3 py-1.5 font-bold text-white hover:bg-sky-800 disabled:bg-slate-300"
+              >
+                {sweeping
+                  ? `Sweeping… (${sweepEstimate.base_calls} calls)`
+                  : `Confirm & run ${sweepEstimate.base_calls} calls`}
+              </button>
+            )}
+          </div>
+        )}
       </form>
 
       {error && (
@@ -875,6 +1014,13 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         <div className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
           {notice}
         </div>
+      )}
+
+      {(!places || places.length === 0) && (
+        <div
+          ref={mapEl}
+          className="z-0 h-[420px] overflow-hidden rounded-xl border border-slate-200"
+        />
       )}
 
       {places && places.length > 0 && (
@@ -1013,6 +1159,15 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                         <span className="block text-xs text-slate-500">
                           {p.address}
                         </span>
+                        {p.distance_meters != null && (
+                          <span className="block text-[11px] text-sky-700">
+                            {(p.distance_meters / 1609.344).toFixed(1)} mi from
+                            marker
+                            {p.primary_type
+                              ? ` · ${p.primary_type.replaceAll("_", " ")}`
+                              : ""}
+                          </span>
+                        )}
                       </span>
                     </label>
                   </li>

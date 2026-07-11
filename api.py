@@ -617,6 +617,73 @@ def prospect_endpoint() -> object:
     return jsonify({"count": len(places), "places": places})
 
 
+def _mark_existing_prospects(places: list[dict]) -> int:
+    """Attach pipeline state to Places results; return the not-yet-added count."""
+    existing = {r["place_id"]: r for r in db.list_restaurants()}
+    new_count = 0
+    for place in places:
+        known = existing.get(place["place_id"])
+        place["already_added_id"] = known["id"] if known else None
+        place["archived"] = bool(known and known.get("archived"))
+        if not known:
+            new_count += 1
+    return new_count
+
+
+def _radius_sweep_inputs(payload: dict) -> tuple[float, float, float]:
+    values = (payload.get("lat"), payload.get("lng"), payload.get("radius_meters"))
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float))
+        for value in values
+    ):
+        raise ValueError("lat, lng, and radius_meters must be numbers.")
+    return float(values[0]), float(values[1]), float(values[2])
+
+
+@app.post("/api/prospect/radius/estimate")
+def prospect_radius_estimate_endpoint() -> object:
+    """Estimate tiled Nearby Search calls without contacting Google."""
+    from places_client import estimate_radius_food_sweep
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        lat, lng, radius_meters = _radius_sweep_inputs(payload)
+        estimate = estimate_radius_food_sweep(lat, lng, radius_meters)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(estimate)
+
+
+@app.post("/api/prospect/radius")
+def prospect_radius_endpoint() -> object:
+    """Run a confirmed, tiled food-venue sweep inside an exact radius."""
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    from places_client import radius_food_sweep
+
+    payload = request.get_json(silent=True) or {}
+    budget = payload.get("confirmed_call_budget")
+    if isinstance(budget, bool) or not isinstance(budget, int):
+        return jsonify({"error": "Estimate and confirm the call budget first."}), 400
+    try:
+        lat, lng, radius_meters = _radius_sweep_inputs(payload)
+        result = radius_food_sweep(
+            api_key=settings.google_places_api_key,
+            lat=lat,
+            lng=lng,
+            radius_meters=radius_meters,
+            confirmed_call_budget=budget,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    db.init_db()
+    result["new_count"] = _mark_existing_prospects(result["places"])
+    return jsonify(result)
+
+
 # Category battery for the area sweep. Text Search tops out around 60
 # results per query, so one "restaurants in Orlando" can never show the
 # whole city — a spread of cuisine/venue queries pulls distinct slices and

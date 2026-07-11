@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import httpx
@@ -28,6 +29,34 @@ _PER_CALL_CAP = 20
 # Rough meters-per-degree conversions for building the search grid. Latitude
 # is ~constant; longitude shrinks toward the poles, so scale by cos(lat).
 _METERS_PER_DEG_LAT = 111_320.0
+
+# A broad restaurant search catches cuisine-specific restaurant types because
+# Google tags those places with the general ``restaurant`` type as well. The
+# second request catches food businesses that are commonly missing from a
+# restaurant-only sweep: breweries, cafes, bakeries, dessert/ice-cream shops,
+# and food-oriented pubs. Keeping these separate prevents a dense restaurant
+# result set from crowding every non-restaurant venue out of the 20-place cap.
+RADIUS_FOOD_TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("restaurants", ("restaurant",)),
+    (
+        "other_food",
+        (
+            "acai_shop", "bagel_shop", "bakery", "bar_and_grill",
+            "beer_garden", "brewery", "brewpub", "cafe", "cafeteria",
+            "cake_shop", "coffee_roastery", "coffee_shop", "coffee_stand",
+            "deli", "dessert_shop", "donut_shop", "food_court", "gastropub",
+            "ice_cream_shop", "juice_shop", "meal_takeaway", "pastry_shop",
+            "pub", "sandwich_shop", "snack_bar", "sports_bar", "tea_house",
+            "winery",
+        ),
+    ),
+)
+
+RADIUS_SWEEP_CELL_METERS = 1_000.0
+RADIUS_SWEEP_MAX_CALLS = 1_500
+# FIELD_MASK includes websiteUri so candidates can enter the scraper without a
+# second details lookup. Google prices that as Nearby Search Enterprise.
+RADIUS_SWEEP_PRICE_PER_CALL = 0.035  # Current list price: $35/1k calls.
 
 
 def _meters_per_deg_lng(lat: float) -> float:
@@ -263,6 +292,7 @@ def _search_circle(
     lat: float,
     lng: float,
     radius_meters: float,
+    included_types: tuple[str, ...] = ("restaurant",),
 ) -> list[dict]:
     """One Nearby Search call. Returns raw (un-normalized) place objects."""
     headers = {
@@ -271,7 +301,7 @@ def _search_circle(
         "X-Goog-FieldMask": FIELD_MASK,
     }
     body = {
-        "includedTypes": ["restaurant"],
+        "includedTypes": list(included_types),
         "maxResultCount": _PER_CALL_CAP,
         "locationRestriction": {
             "circle": {
@@ -305,6 +335,172 @@ def _grid_centers(
         for j in range(-n, n + 1):
             centers.append((lat + i * dlat, lng + j * dlng))
     return centers
+
+
+def distance_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance between two WGS84 points."""
+    earth_radius = 6_371_008.8
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlat = p2 - p1
+    dlng = math.radians(lng2 - lng1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(p1) * math.cos(p2) * math.sin(dlng / 2) ** 2
+    )
+    return earth_radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def radius_grid_centers(
+    lat: float,
+    lng: float,
+    radius_meters: float,
+    cell_radius_meters: float = RADIUS_SWEEP_CELL_METERS,
+) -> list[tuple[float, float]]:
+    """Overlapping Nearby Search cells that cover one exact outer circle."""
+    if radius_meters <= cell_radius_meters:
+        return [(lat, lng)]
+    centers = _grid_centers(lat, lng, radius_meters, cell_radius_meters)
+    # Keep cells that touch the selected outer circle. Results are filtered
+    # back to the exact outer radius after Google returns them.
+    return [
+        center
+        for center in centers
+        if distance_meters(lat, lng, center[0], center[1])
+        <= radius_meters + cell_radius_meters
+    ]
+
+
+def estimate_radius_food_sweep(
+    lat: float,
+    lng: float,
+    radius_meters: float,
+    *,
+    cell_radius_meters: float = RADIUS_SWEEP_CELL_METERS,
+) -> dict:
+    """Pure preflight estimate; performs no Google API requests."""
+    if not -90 <= lat <= 90 or not -180 <= lng <= 180:
+        raise ValueError("Sweep center is outside valid latitude/longitude bounds.")
+    if not 250 <= radius_meters <= 50_000:
+        raise ValueError("Sweep radius must be between 250 m and 50 km.")
+    centers = radius_grid_centers(lat, lng, radius_meters, cell_radius_meters)
+    base_calls = len(centers) * len(RADIUS_FOOD_TYPE_GROUPS)
+    return {
+        "lat": lat,
+        "lng": lng,
+        "radius_meters": radius_meters,
+        "cell_radius_meters": cell_radius_meters,
+        "cells": len(centers),
+        "type_groups": len(RADIUS_FOOD_TYPE_GROUPS),
+        "base_calls": base_calls,
+        "call_budget": min(RADIUS_SWEEP_MAX_CALLS, base_calls),
+        "estimated_list_cost": round(base_calls * RADIUS_SWEEP_PRICE_PER_CALL, 2),
+        "max_list_cost": round(
+            min(RADIUS_SWEEP_MAX_CALLS, base_calls)
+            * RADIUS_SWEEP_PRICE_PER_CALL,
+            2,
+        ),
+        "within_call_limit": base_calls <= RADIUS_SWEEP_MAX_CALLS,
+        "result_cap_per_call": _PER_CALL_CAP,
+        "type_group_names": [group[0] for group in RADIUS_FOOD_TYPE_GROUPS],
+    }
+
+
+def radius_food_sweep(
+    *,
+    api_key: str,
+    lat: float,
+    lng: float,
+    radius_meters: float,
+    confirmed_call_budget: int,
+    cell_radius_meters: float = RADIUS_SWEEP_CELL_METERS,
+    timeout: float = 30.0,
+    workers: int = 6,
+) -> dict:
+    """Find food venues within a user-selected circle, beyond one-call caps.
+
+    The area is tiled into overlapping Nearby Search circles. Each cell runs
+    a general restaurant query and a second query for non-restaurant food
+    venues, then results are deduplicated and filtered to the exact requested
+    radius. The explicit confirmed budget prevents accidental billing.
+    """
+    estimate = estimate_radius_food_sweep(
+        lat, lng, radius_meters, cell_radius_meters=cell_radius_meters
+    )
+    if not estimate["within_call_limit"]:
+        raise ValueError(
+            f"This radius needs {estimate['base_calls']} base calls; the safety "
+            f"limit is {RADIUS_SWEEP_MAX_CALLS}. Choose a smaller radius."
+        )
+    if confirmed_call_budget != estimate["call_budget"]:
+        raise ValueError("Sweep estimate changed. Estimate again before running.")
+
+    centers = radius_grid_centers(lat, lng, radius_meters, cell_radius_meters)
+    tasks = [
+        (c_lat, c_lng, group_name, included_types)
+        for c_lat, c_lng in centers
+        for group_name, included_types in RADIUS_FOOD_TYPE_GROUPS
+    ]
+    merged: dict[str, dict] = {}
+    errors: list[str] = []
+    saturated_calls = 0
+
+    def search(
+        client: httpx.Client,
+        task: tuple[float, float, str, tuple[str, ...]],
+    ):
+        c_lat, c_lng, group_name, included_types = task
+        places = _search_circle(
+            client,
+            api_key=api_key,
+            lat=c_lat,
+            lng=c_lng,
+            radius_meters=cell_radius_meters,
+            included_types=included_types,
+        )
+        return group_name, places
+
+    # httpx.Client connection pools are thread-safe; sharing one avoids a new
+    # TLS handshake for every grid cell.
+    with httpx.Client(timeout=timeout) as client:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, 10))) as pool:
+            futures = {pool.submit(search, client, task): task for task in tasks}
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    group_name, raw_places = future.result()
+                except Exception as exc:
+                    errors.append(
+                        f"{task[2]} at {task[0]:.5f},{task[1]:.5f}: {exc}"
+                    )
+                    continue
+                if len(raw_places) >= _PER_CALL_CAP:
+                    saturated_calls += 1
+                for raw_place in raw_places:
+                    place = _normalize_place(raw_place)
+                    if place.get("lat") is None or place.get("lng") is None:
+                        continue
+                    distance = distance_meters(
+                        lat, lng, place["lat"], place["lng"]
+                    )
+                    if distance > radius_meters or not is_consumer_food_venue(place):
+                        continue
+                    place["distance_meters"] = round(distance)
+                    place["matched_group"] = group_name
+                    merged.setdefault(place["place_id"], place)
+
+    places = sorted(
+        merged.values(),
+        key=lambda place: (place.get("distance_meters", math.inf), place["name"].lower()),
+    )
+    return {
+        "places": places,
+        "count": len(places),
+        "calls_run": len(tasks),
+        "cells": len(centers),
+        "saturated_calls": saturated_calls,
+        "errors": errors,
+        "estimate": estimate,
+    }
 
 
 def _in_city(restaurant: dict, city: str) -> bool:
