@@ -488,6 +488,83 @@ def reopen_menu_quality(restaurant_id: int) -> object:
     return jsonify({"restaurant_id": restaurant_id, "status": "active"})
 
 
+@app.get("/api/dish-audit")
+def dish_audit_findings() -> object:
+    """Tier-0 dish audits: price/calorie/consistency sanity over stored data.
+
+    Pure reads, zero LLM tokens — a full-DB sweep on demand. Returns active
+    findings (dismissed ones filtered out unless include_dismissed=true).
+    """
+    import dish_audit
+
+    db.init_db()
+    include_dismissed = request.args.get("include_dismissed") == "true"
+    findings = dish_audit.findings_as_dicts(
+        dish_audit.audit_all(), include_dismissed=include_dismissed
+    )
+    from collections import Counter
+
+    by_code = Counter(f["code"] for f in findings if not f["dismissed"])
+    by_severity = Counter(f["severity"] for f in findings if not f["dismissed"])
+    return jsonify(
+        {
+            "count": sum(not f["dismissed"] for f in findings),
+            "by_code": dict(by_code),
+            "by_severity": dict(by_severity),
+            "findings": findings,
+        }
+    )
+
+
+@app.post("/api/dish-audit/<int:dish_id>/dismiss")
+def dismiss_dish_audit(dish_id: int) -> object:
+    """Acknowledge one finding as reviewed-and-fine at its current value."""
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    code = str(payload.get("code") or "")
+    fingerprint = str(payload.get("fingerprint") or "")
+    if not code or not fingerprint:
+        return jsonify({"error": "code and fingerprint are required."}), 400
+    db.dismiss_dish_audit_finding(
+        dish_id, code=code, fingerprint=fingerprint, note=payload.get("note")
+    )
+    return jsonify({"dish_id": dish_id, "code": code, "status": "dismissed"})
+
+
+@app.post("/api/dish-audit/<int:dish_id>/apply")
+def apply_dish_audit_fix(dish_id: int) -> object:
+    """Apply an audit's one-click field correction (e.g. lost-decimal price).
+
+    Body: {"field": "price"|"calories", "value": "<new value>"}. Verified
+    against a fresh sweep so a stale UI can't write a value the audit no
+    longer recommends.
+    """
+    import dish_audit
+
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    field = payload.get("field")
+    value = payload.get("value")
+    if field not in ("price", "calories") or not isinstance(value, str):
+        return jsonify({"error": "field must be price/calories with a string value."}), 400
+    # Confirm the audit currently suggests exactly this correction for this dish.
+    match = next(
+        (
+            f
+            for f in dish_audit.findings_as_dicts(dish_audit.audit_all())
+            if f["dish_id"] == dish_id
+            and f["field"] == field
+            and f["suggested"] == value
+        ),
+        None,
+    )
+    if match is None:
+        return jsonify({"error": "This correction is no longer suggested; reload."}), 409
+    if not db.update_dish_field(dish_id, field=field, value=value):
+        return jsonify({"error": "Dish not found."}), 404
+    return jsonify({"dish_id": dish_id, "field": field, "value": value, "status": "applied"})
+
+
 @app.post("/api/enrich")
 def run_enrich() -> object:
     """Trigger Google food-signal enrichment (servesVegetarianFood, etc.)."""

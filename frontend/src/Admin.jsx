@@ -1282,6 +1282,193 @@ function AreaCoverage({ restaurants, onDrill }) {
   );
 }
 
+// Tier-0 dish audit: deterministic sanity checks over stored classifications
+// (implausible calories, self-contradicting verdicts, lost-decimal prices).
+// Zero LLM tokens, swept on demand. Self-contained: fetches, dismisses, and
+// applies one-click fixes against /api/dish-audit.
+const AUDIT_SEVERITY_STYLE = {
+  high: "bg-rose-100 text-rose-800",
+  medium: "bg-amber-100 text-amber-800",
+  low: "bg-slate-100 text-slate-600",
+};
+
+function DishAuditPanel({ onDataChanged }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState(null); // last sweep result
+  const [busy, setBusy] = useState(null); // `${dish_id}:${code}` while acting
+  const [error, setError] = useState(null);
+
+  async function sweep() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/dish-audit");
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `Audit failed (${res.status})`);
+      setData(body);
+      setOpen(true);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function dismiss(f) {
+    setBusy(`${f.dish_id}:${f.code}`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/dish-audit/${f.dish_id}/dismiss`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: f.code, fingerprint: f.fingerprint }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Dismiss failed");
+      setData((d) => ({
+        ...d,
+        findings: d.findings.filter(
+          (x) => !(x.dish_id === f.dish_id && x.code === f.code)
+        ),
+        count: d.count - 1,
+      }));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function applyFix(f) {
+    setBusy(`${f.dish_id}:${f.code}`);
+    setError(null);
+    try {
+      const res = await fetch(`/api/dish-audit/${f.dish_id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field: f.field, value: f.suggested }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || "Apply failed");
+      setData((d) => ({
+        ...d,
+        findings: d.findings.filter(
+          (x) => !(x.dish_id === f.dish_id && x.code === f.code)
+        ),
+        count: d.count - 1,
+      }));
+      onDataChanged?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const findings = data?.findings || [];
+
+  return (
+    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">
+            Dish data audit
+          </h2>
+          <p className="text-xs text-slate-500">
+            Deterministic sanity checks over stored dishes — implausible
+            calories, self-contradicting verdicts, mis-parsed prices. No
+            tokens.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {data && (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-700">
+              {data.count} finding{data.count === 1 ? "" : "s"}
+            </span>
+          )}
+          <button
+            onClick={sweep}
+            disabled={loading}
+            className="rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            {loading ? "Sweeping…" : data ? "Re-run audit" : "Run audit"}
+          </button>
+          {data && (
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800"
+            >
+              {open ? "Hide" : "Show"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {open && data && (
+        <div className="mt-3 space-y-2">
+          {findings.length === 0 && (
+            <div className="rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+              No dish data problems found. 🎉
+            </div>
+          )}
+          {findings.map((f) => (
+            <div
+              key={`${f.dish_id}:${f.code}`}
+              className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-sm"
+            >
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                      AUDIT_SEVERITY_STYLE[f.severity] || AUDIT_SEVERITY_STYLE.low
+                    }`}
+                  >
+                    {f.severity}
+                  </span>
+                  <span className="font-semibold text-slate-800">
+                    {f.restaurant_name}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-slate-700">{f.message}</div>
+                {f.evidence && (
+                  <div className="mt-0.5 text-xs text-slate-400">{f.evidence}</div>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-2">
+                {f.suggested && f.field && (
+                  <button
+                    onClick={() => applyFix(f)}
+                    disabled={busy !== null}
+                    className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    title={`Set ${f.field} to ${f.suggested}`}
+                  >
+                    {busy === `${f.dish_id}:${f.code}`
+                      ? "…"
+                      : `Fix → ${f.suggested}`}
+                  </button>
+                )}
+                <button
+                  onClick={() => dismiss(f)}
+                  disabled={busy !== null}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  title="Reviewed and fine — hide until this value changes"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [restaurants, setRestaurants] = useState([]);
   const [config, setConfig] = useState(null);
@@ -2485,6 +2672,8 @@ export default function Admin() {
         )}
 
         <ScrapeFailuresPanel />
+        <DishAuditPanel onDataChanged={loadData} />
+
         {menuQuality.length > 0 && (
           <section className="mb-6 rounded-xl border border-orange-200 bg-orange-50 p-4">
             <button

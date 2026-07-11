@@ -234,6 +234,19 @@ CREATE TABLE IF NOT EXISTS menu_quality_reviews (
     reviewed_at   TEXT NOT NULL
 );
 
+-- Dismissed Tier-0 dish audit findings (dish_audit.py). Keyed by the dish
+-- and the finding code, with a fingerprint of the flagged value: dismissing
+-- "this 1980-cal side is fine" sticks, but if the value later changes the
+-- fingerprint differs and the finding resurfaces for a fresh look.
+CREATE TABLE IF NOT EXISTS dish_audit_reviews (
+    dish_id      INTEGER NOT NULL REFERENCES dishes(id) ON DELETE CASCADE,
+    code         TEXT NOT NULL,
+    fingerprint  TEXT NOT NULL,
+    note         TEXT,
+    reviewed_at  TEXT NOT NULL,
+    PRIMARY KEY (dish_id, code)
+);
+
 -- The read models (dish/restaurant lists) run correlated subqueries per row
 -- (latest classification, vote counts, menu freshness). Without these
 -- indexes each one is a full table scan and the API visibly drags once the
@@ -1708,6 +1721,66 @@ def clear_menu_quality_review(
         cursor = conn.execute(
             "DELETE FROM menu_quality_reviews WHERE restaurant_id = ?",
             (restaurant_id,),
+        )
+    return cursor.rowcount > 0
+
+
+def list_dish_audit_reviews(db_path: str | None = None) -> dict[tuple[int, str], dict]:
+    """Dismissed dish-audit findings, keyed by (dish_id, code)."""
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM dish_audit_reviews").fetchall()
+    return {(row["dish_id"], row["code"]): dict(row) for row in rows}
+
+
+def dismiss_dish_audit_finding(
+    dish_id: int,
+    *,
+    code: str,
+    fingerprint: str,
+    note: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    """Mark one (dish, finding-code) as reviewed-and-fine at this value."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO dish_audit_reviews
+                (dish_id, code, fingerprint, note, reviewed_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (dish_id, code) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                note = excluded.note,
+                reviewed_at = excluded.reviewed_at
+            """,
+            (
+                dish_id,
+                code,
+                fingerprint,
+                (note or "").strip()[:500] or None,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def update_dish_field(
+    dish_id: int,
+    *,
+    field: str,
+    value: str | None,
+    db_path: str | None = None,
+) -> bool:
+    """Correct one scalar column on a dish (price or calories only).
+
+    Used by the audit's one-click fixes (a lost-decimal price). Restricted to
+    the two free-text fields an audit ever repairs — never touches verdicts
+    or the classification, which stay the model's to own.
+    """
+    if field not in ("price", "calories"):
+        raise ValueError("update_dish_field only edits price or calories")
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE dishes SET {field} = ? WHERE id = ?",  # noqa: S608 (field allowlisted)
+            (value, dish_id),
         )
     return cursor.rowcount > 0
 
