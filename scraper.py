@@ -271,6 +271,9 @@ class _Fetched:
     status_code: int | None = None
     # Where redirects landed; None when the request never resolved.
     final_url: str | None = None
+    # HTTP Last-Modified header, used with a PDF's embedded date to skip
+    # abandoned/event menu PDFs (see pdf_menu.is_pdf_stale).
+    last_modified: str | None = None
 
 
 _CERT_VERIFY_ERROR_RE = re.compile(
@@ -344,7 +347,10 @@ def _fetch(client: httpx.Client, url: str) -> _Fetched:
     if "pdf" in content_type:
         # Menus are often PDFs — keep the bytes so a follower can extract them.
         return _Fetched(
-            pdf_bytes=resp.content, status_code=resp.status_code, final_url=final_url
+            pdf_bytes=resp.content,
+            status_code=resp.status_code,
+            final_url=final_url,
+            last_modified=resp.headers.get("last-modified"),
         )
     if "html" not in content_type:
         return _Fetched(
@@ -356,13 +362,24 @@ def _fetch(client: httpx.Client, url: str) -> _Fetched:
 
 
 def _fetched_to_text(page: "_Fetched") -> str:
-    """Turn a fetched page into text — HTML via BeautifulSoup, PDF via pdf_menu."""
+    """Turn a fetched page into text — HTML via BeautifulSoup, PDF via pdf_menu.
+
+    A menu PDF the restaurant hasn't re-exported in ~18 months yields no text:
+    it's almost always an abandoned event/archive file, not the current menu
+    (Pepe's Cantina served a Cinco de Mayo 2023 PDF here). This is the single
+    chokepoint where any PDF bytes become menu text — landing-page PDFs,
+    followed PDFs, and learned-route PDF URLs all pass through it.
+    """
     if page.html is not None:
         return _extract_text(page.html)
     if page.pdf_bytes is not None:
         try:
-            from pdf_menu import extract_pdf_menu_text
+            from pdf_menu import extract_pdf_menu_text, is_pdf_stale
         except Exception:
+            return ""
+        if is_pdf_stale(
+            page.pdf_bytes, http_last_modified=page.last_modified
+        )[0]:
             return ""
         return extract_pdf_menu_text(page.pdf_bytes)
     return ""
@@ -651,11 +668,16 @@ def _collect_viguest_http_pages(
 
 
 def _fetch_pdf_pages(pdf_urls: list[str]) -> list[tuple[str, str]]:
-    """Download referenced menu PDFs and extract text as page candidates."""
+    """Download referenced menu PDFs and extract text as page candidates.
+
+    A menu PDF the restaurant hasn't re-exported in ~18 months is skipped: it
+    is almost always an abandoned event/archive file, not the current menu
+    (Pepe's Cantina served a Cinco de Mayo 2023 PDF as its live menu).
+    """
     pages: list[tuple[str, str]] = []
     if not pdf_urls:
         return pages
-    from pdf_menu import extract_pdf_menu_text
+    from pdf_menu import extract_pdf_menu_text, is_pdf_stale
 
     with httpx.Client(
         timeout=25, follow_redirects=True, headers=_HTTP_HEADERS
@@ -676,6 +698,12 @@ def _fetch_pdf_pages(pdf_urls: list[str]) -> list[tuple[str, str]]:
                 or not resp.content[:5].startswith(b"%PDF")
             ):
                 continue
+            headers = getattr(resp, "headers", {}) or {}
+            if is_pdf_stale(
+                resp.content,
+                http_last_modified=headers.get("last-modified"),
+            )[0]:
+                continue  # abandoned/event PDF — not the current menu
             text = extract_pdf_menu_text(resp.content)
             if text.strip():
                 pages.append((pdf_url, text))

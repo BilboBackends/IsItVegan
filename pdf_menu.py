@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import base64
 import io
+import re
+from datetime import datetime, timezone
 
 from config import settings
 
@@ -24,6 +26,95 @@ from config import settings
 _MIN_LOCAL_CHARS = 200
 
 _MODEL = "claude-haiku-4-5"
+
+# A menu PDF the restaurant hasn't re-exported in this long is almost never
+# their current menu — it's an abandoned event/archive file (Pepe's Cantina
+# served a Cinco de Mayo 2023 PDF, untouched for 3 years, as its live menu).
+# Real menu PDFs get re-published as prices/items change; a couple of years
+# of silence is the reliable stale signal. Generous so a merely-slow
+# restaurant isn't punished.
+_STALE_PDF_DAYS = 550  # ~18 months
+
+
+def pdf_modified_at(pdf_bytes: bytes) -> datetime | None:
+    """Best-known last-modified time embedded in the PDF, if any.
+
+    Reads /ModDate (falling back to /CreationDate) from the PDF trailer.
+    Both are 'D:YYYYMMDDHHmmSS±HH'mm'' strings. Returns an aware UTC datetime,
+    or None when the PDF carries no parseable date. Never raises.
+    """
+    if not pdf_bytes:
+        return None
+    for key in (b"/ModDate", b"/CreationDate"):
+        idx = pdf_bytes.find(key)
+        if idx < 0:
+            continue
+        # The value follows as (D:20230505085313-04'00') within ~40 bytes.
+        chunk = pdf_bytes[idx : idx + 48]
+        match = re.search(rb"D:(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?", chunk)
+        if not match:
+            continue
+        try:
+            year, month, day = (int(match.group(i)) for i in (1, 2, 3))
+            hour = int(match.group(4) or 0)
+            minute = int(match.group(5) or 0)
+            second = int(match.group(6) or 0)
+            return datetime(
+                year, month, day, hour, minute, second, tzinfo=timezone.utc
+            )
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def is_pdf_stale(
+    pdf_bytes: bytes,
+    *,
+    http_last_modified: str | None = None,
+    now: datetime | None = None,
+    max_age_days: int = _STALE_PDF_DAYS,
+) -> tuple[bool, str | None]:
+    """Whether a menu PDF is too old to trust as a current menu.
+
+    Uses the newest of the embedded ModDate and the HTTP Last-Modified header
+    (a re-upload bumps Last-Modified even if the embedded date is old). Returns
+    (stale, reason). Unknown date -> NOT stale: we only reject on positive
+    evidence of age, never on the absence of a date.
+    """
+    now = now or datetime.now(timezone.utc)
+    dates: list[datetime] = []
+    embedded = pdf_modified_at(pdf_bytes)
+    if embedded is not None:
+        dates.append(embedded)
+    header_dt = _parse_http_date(http_last_modified)
+    if header_dt is not None:
+        dates.append(header_dt)
+    if not dates:
+        return False, None
+    newest = max(dates)
+    age_days = (now - newest).days
+    if age_days > max_age_days:
+        return True, (
+            f"PDF last modified {newest.date().isoformat()} "
+            f"({age_days} days ago) — older than the {max_age_days}-day "
+            "freshness limit; likely a stale/event menu"
+        )
+    return False, None
+
+
+def _parse_http_date(value: str | None) -> datetime | None:
+    """Parse an HTTP Last-Modified header ('Fri, 05 May 2023 12:56:05 GMT')."""
+    if not value:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def _fix_letter_spacing(text: str) -> str:
