@@ -124,6 +124,90 @@ def test_provider_output_uses_shared_validation(monkeypatch):
     assert result.dishes[0].key_ingredients == ["tofu", "mushroom"]
 
 
+def test_deepseek_full_classification_proactively_chunks_long_menus(monkeypatch):
+    calls = []
+
+    def payload(name):
+        return {
+            "name": name,
+            "description": "tofu and mushrooms",
+            "price": "$12",
+            "calories": None,
+            "category": "food",
+            "verdict": "vegan",
+            "confidence": 0.9,
+            "reasoning": "Listed ingredients are plant-based.",
+            "evidence": "tofu and mushrooms",
+            "dairy_status": "free",
+            "gluten_status": "free",
+            "nut_status": "free",
+            "protein_level": "moderate",
+            "serving_role": "meal",
+            "alcohol_status": "unclear",
+            "meal_types": ["lunch"],
+            "key_ingredients": ["tofu", "mushroom"],
+        }
+
+    def fake_run_provider(**kwargs):
+        calls.append(kwargs["user_prompt"])
+        assert "ONE SECTION of a larger menu" in kwargs["user_prompt"]
+        return ProviderResponse(
+            ok=True,
+            provider="deepseek",
+            model="deepseek-test",
+            billing="deepseek_api",
+            data={"dishes": [payload(f"Tofu Plate {len(calls)}")]},
+        )
+
+    monkeypatch.setattr(classifier, "run_provider", fake_run_provider)
+    long_menu = "\n".join(
+        f"Tofu Plate {i}\ntofu and mushrooms\n${i}.00"
+        for i in range(1, 500)
+    )
+
+    result = classifier.classify_menu(
+        long_menu, restaurant_name="Cafe", provider="deepseek"
+    )
+
+    assert result.ok
+    assert len(calls) > 1
+    assert len(result.dishes) == len(calls)
+
+
+def test_add_on_items_are_forced_to_side_not_meal():
+    result = classifier.result_from_data(
+        {
+            "dishes": [
+                {
+                    "name": "Add Grilled Chicken",
+                    "description": "Add to your salad",
+                    "price": "$8",
+                    "calories": None,
+                    "category": "food",
+                    "verdict": "not_vegan",
+                    "confidence": 0.97,
+                    "reasoning": "Chicken is animal protein.",
+                    "evidence": "Grilled Chicken",
+                    "dairy_status": "free",
+                    "gluten_status": "free",
+                    "nut_status": "free",
+                    "protein_level": "high",
+                    "serving_role": "meal",
+                    "alcohol_status": "unclear",
+                    "meal_types": ["lunch", "dinner"],
+                    "key_ingredients": ["chicken"],
+                }
+            ]
+        },
+        provider="codex",
+        model="codex-test",
+        billing="chatgpt_subscription",
+    )
+
+    assert result.ok
+    assert result.dishes[0].serving_role == "side"
+
+
 def test_restaurant_counts_split_meals_and_sides_and_exclude_other_categories(tmp_path):
     path = str(tmp_path / "serving_roles.db")
     db.init_db(path)

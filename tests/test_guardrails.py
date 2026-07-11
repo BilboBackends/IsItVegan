@@ -318,8 +318,9 @@ def test_dense_chunks_split_adaptively_until_they_fit(monkeypatch):
     )
     assert result.ok
     assert len(result.dishes) == 4  # one per line, nothing lost
-    # 1 full-menu overflow + 2 two-line overflows + 4 single-line successes.
-    assert len(calls) == 7
+    # Long DeepSeek menus now chunk proactively, so there is no initial
+    # full-menu overflow call: 2 two-line overflows + 4 single-line successes.
+    assert len(calls) == 6
 
 
 @pytest.fixture()

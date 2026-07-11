@@ -43,6 +43,14 @@ from guardrails import (
 # text evidence there is. Word-boundary match only; Ⓥ/"V" symbols are NOT
 # matched here because many menus use them for vegetarian.
 _VEGAN_NAME_RE = re.compile(r"\bvegan\b", re.IGNORECASE)
+_ADD_ON_NAME_RE = re.compile(
+    r"^\s*(?:add|add[- ]?on|extra|side of)\b", re.IGNORECASE
+)
+_ADD_ON_CONTEXT_RE = re.compile(
+    r"\b(?:add\s+to\s+your|add\s+to\s+any|add\s+on|add[- ]?on|"
+    r"protein\s+add|make\s+it\s+with|top\s+with)\b",
+    re.IGNORECASE,
+)
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). This is the METERED
@@ -77,6 +85,12 @@ def estimate_cost(menu_chars: int) -> float:
     return round(
         (input_tokens * in_price + output_tokens * out_price) / 1_000_000, 3
     )
+
+
+def _looks_like_add_on(name: str, description: str | None) -> bool:
+    """True for protein/topping add-ons that should not count as meals."""
+    text = f"{name} {description or ''}"
+    return bool(_ADD_ON_NAME_RE.search(name) or _ADD_ON_CONTEXT_RE.search(text))
 
 VERDICTS = ("vegan", "likely_vegan", "vegan_adaptable", "not_vegan", "unclear")
 
@@ -274,11 +288,18 @@ unambiguous vegan markings).
     serve as a main counts as meal, and an order of sushi rolls (a whole
     maki roll, 6-8 pieces) is a meal — people order rolls AS lunch or
     dinner. Menu section headings ("Sides", "Starters") are strong evidence.
+    Items named like "Add Grilled Chicken", "Add Salmon", "Extra Tofu", or
+    described as "add to your salad/bowl" are add-ons/toppings: classify them
+    as side, never meal.
     Drinks and desserts: use unclear unless obviously side-like. When
     genuinely torn, prefer side over meal — an understated count is better
     than an inflated one.
   - meal_types contains every plausible context from breakfast, brunch, lunch,
     dinner, and snack. Use menu section headings and ordinary dish usage.
+    The menu text may contain [page: URL] markers naming the page each block
+    was scraped from; when that URL names a daypart (.../dinner, .../brunch),
+    every dish under the marker is served then — include that daypart. A dish
+    appearing under several daypart pages gets all of them.
   - alcohol_status separates the bar list from soft drinks: alcoholic for
     beer, wine, cocktails, spirits, sake, hard seltzer/cider; non_alcoholic
     for soda, juice, coffee, tea, smoothies, milkshakes, mocktails/virgin
@@ -516,6 +537,17 @@ def result_from_data(
             for value in raw_ingredients[:8]
             if str(value).strip()
         ]
+        serving_role = (
+            dish.get("serving_role")
+            if dish.get("serving_role") in ("meal", "side", "unclear")
+            else "unclear"
+        )
+        if _looks_like_add_on(name, dish.get("description")):
+            serving_role = "side"
+            reasoning = (
+                (reasoning + " " if reasoning else "")
+                + "[add-on item; not a standalone meal]"
+            )
         dishes.append(
             ClassifiedDish(
                 name=name[:200],
@@ -549,11 +581,7 @@ def result_from_data(
                     if dish.get("protein_level") in protein_values
                     else "unclear"
                 ),
-                serving_role=(
-                    dish.get("serving_role")
-                    if dish.get("serving_role") in ("meal", "side", "unclear")
-                    else "unclear"
-                ),
+                serving_role=serving_role,
                 alcohol_status=alcohol_status,
                 meal_types=list(dict.fromkeys(meal_types)),
                 key_ingredients=list(dict.fromkeys(key_ingredients)),
@@ -814,13 +842,28 @@ def classify_menu(
             + inventory
         )
 
+    proactive_chunk = (
+        not delta
+        and len(menu) > _CHUNK_TARGET_CHARS
+        and any(name in chain for name in UNTRUSTED_PROVIDERS)
+    )
+
     try:
-        response = run_provider(
-            requested=provider,
-            system_prompt=system_prompt,
-            user_prompt=prompt,
-            schema=schema,
-        )
+        response = None
+        if proactive_chunk:
+            response = _classify_in_chunks(
+                menu,
+                context=context,
+                provider=provider,
+                system_prompt=base_system,
+            )
+        if response is None:
+            response = run_provider(
+                requested=provider,
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                schema=schema,
+            )
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
     if not response.ok and _hit_output_cap(response):

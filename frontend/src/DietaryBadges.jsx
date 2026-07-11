@@ -4,6 +4,8 @@ const BADGES = [
   ["nut_status", "Nut-free", "bg-orange-50 text-orange-800"],
 ];
 
+const DAYPARTS = ["breakfast", "brunch", "lunch", "dinner"];
+
 export default function DietaryBadges({ dish, maxBadges = Infinity }) {
   const badges = [];
   // A side/accompaniment is not a meal — surface that up front so a bag of
@@ -21,6 +23,17 @@ export default function DietaryBadges({ dish, maxBadges = Infinity }) {
       label: "Side / small plate",
       style: "bg-stone-200 text-stone-700",
       title: "Classified as an accompaniment, snack, or small plate rather than a full meal",
+    });
+  }
+  // Time-of-day availability: a dish tied to exactly one daypart (it only
+  // appears on the dinner menu page) isn't available all day — say so.
+  if (dish.meal_types?.length === 1 && DAYPARTS.includes(dish.meal_types[0])) {
+    const meal = dish.meal_types[0];
+    badges.push({
+      key: "daypart",
+      label: `${meal.charAt(0).toUpperCase()}${meal.slice(1)} only`,
+      style: "bg-indigo-50 text-indigo-800",
+      title: `Found only on the ${meal} menu — likely not served at other times of day`,
     });
   }
   if (dish.protein_level === "high") {
