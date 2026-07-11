@@ -438,8 +438,11 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                    (SELECT COUNT(*) FROM restaurant_votes v
                      WHERE v.restaurant_id = r.id AND v.vote = 'up') AS up_votes,
                    (SELECT COUNT(*) FROM restaurant_votes v
-                     WHERE v.restaurant_id = r.id AND v.vote = 'down') AS down_votes
+                     WHERE v.restaurant_id = r.id AND v.vote = 'down') AS down_votes,
+                   cp.consecutive_failures AS crawl_failures,
+                   cp.last_error AS crawl_last_error
             FROM restaurants r
+            LEFT JOIN crawl_profiles cp ON cp.restaurant_id = r.id
             ORDER BY r.last_scraped_at DESC, r.name ASC
             """
         ).fetchall()

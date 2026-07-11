@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from location_filter import (
     LocationUrlFilter,
     address_tokens,
+    area_from_address,
     filter_location_urls,
     looks_location_specific,
     matches_location,
@@ -253,3 +254,23 @@ def test_sibling_variant_generic_page_not_dropped():
     assert filter_location_urls(
         urls, "100 W Fairbanks Ave, Winter Park, FL 32789, USA"
     ) == urls
+
+
+# ---- area_from_address (Admin coverage-by-area grouping) --------------------
+
+def test_area_from_address_extracts_city():
+    assert area_from_address("617 E Central Blvd, Orlando, FL 32801, USA") == "Orlando"
+    assert area_from_address(MAITLAND_ADDR) == "Maitland"
+    # Suite/unit segments in the street part must not shift the city.
+    assert (
+        area_from_address("433 W New England Ave A, Winter Park, FL 32789, USA")
+        == "Winter Park"
+    )
+    # State without ZIP still anchors.
+    assert area_from_address("12 Main St, Longwood, FL, USA") == "Longwood"
+
+
+def test_area_from_address_handles_junk():
+    assert area_from_address(None) == "Unknown"
+    assert area_from_address("") == "Unknown"
+    assert area_from_address("somewhere with no commas") == "Unknown"

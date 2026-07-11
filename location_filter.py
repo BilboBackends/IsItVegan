@@ -325,3 +325,20 @@ def filter_location_urls(urls: list[str], address: str | None) -> list[str]:
         u for u in urls
         if matches_location(u, tokens) or not looks_location_specific(u)
     ]
+
+
+def area_from_address(address: str | None) -> str:
+    """City segment of a Places formatted address, for area-level grouping.
+
+    '617 E Central Blvd, Orlando, FL 32801, USA' -> 'Orlando'. Walks the
+    comma segments and returns the one before the state (+ optional ZIP)
+    segment, so suite/floor segments in the street part don't confuse it.
+    Returns 'Unknown' when the shape doesn't match — never raises.
+    """
+    if not address:
+        return "Unknown"
+    parts = [part.strip() for part in address.split(",") if part.strip()]
+    for i, part in enumerate(parts):
+        if i > 0 and re.fullmatch(r"[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?", part):
+            return parts[i - 1]
+    return "Unknown"

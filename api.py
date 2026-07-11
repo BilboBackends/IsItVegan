@@ -29,6 +29,7 @@ import ingest
 import menu_audit
 from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
+from location_filter import area_from_address
 from menu_score import score_menu_text
 from vegan_score import compute_vegan_score, menu_offers_plant_protein
 from venue_filter import is_consumer_food_venue
@@ -106,6 +107,9 @@ def get_restaurants() -> object:
     include_excluded = request.args.get("include_excluded") == "true"
     for restaurant in restaurants:
         restaurant["is_consumer_venue"] = is_consumer_food_venue(restaurant)
+        # City parsed from the Places address — the Admin coverage view
+        # tracks the pipeline per area as coverage expands beyond Maitland.
+        restaurant["area"] = area_from_address(restaurant.get("address"))
     if not include_excluded:
         restaurants = [r for r in restaurants if r["is_consumer_venue"]]
     counts = db.verdict_counts_by_restaurant()

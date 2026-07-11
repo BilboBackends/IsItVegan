@@ -1171,6 +1171,186 @@ function JobProgressPanel({ job, title, onStop }) {
   );
 }
 
+// Pipeline stage of one restaurant, in funnel order. Mutually exclusive —
+// every active consumer venue lands in exactly one bucket, so the coverage
+// counts always sum to the area total.
+function pipelineStage(restaurant) {
+  if ((restaurant.dish_count || 0) > 0) return "classified";
+  if (restaurant.has_menu_text) return "ready";
+  if (!restaurant.website_url) return "no_website";
+  if ((restaurant.crawl_failures || 0) > 0) return "scrape_failing";
+  return "needs_scrape";
+}
+
+// [stage key, column label, operationalFilter value for drill-down, cell tint]
+const COVERAGE_STAGES = [
+  ["classified", "Classified", "classified", "text-emerald-700"],
+  ["ready", "Ready to classify", "ready_to_classify", "text-violet-700"],
+  ["needs_scrape", "Needs scrape", "needs_menu", "text-amber-700"],
+  ["scrape_failing", "Scrape failing", "scrape_failing", "text-rose-700"],
+  ["no_website", "No website", "no_website", "text-slate-500"],
+];
+
+// Area-by-area pipeline funnel — the "classify every restaurant in Orlando"
+// progress view. Every count drills into the restaurant table below.
+function AreaCoverage({ restaurants, onDrill }) {
+  const [open, setOpen] = useState(true);
+
+  const rows = useMemo(() => {
+    const byArea = new Map();
+    for (const restaurant of restaurants) {
+      // The funnel tracks real work: active, consumer-facing venues only.
+      if (restaurant.archived || !restaurant.is_consumer_venue) continue;
+      const area = restaurant.area || "Unknown";
+      if (!byArea.has(area)) {
+        byArea.set(area, {
+          area,
+          total: 0,
+          classified: 0,
+          ready: 0,
+          needs_scrape: 0,
+          scrape_failing: 0,
+          no_website: 0,
+        });
+      }
+      const row = byArea.get(area);
+      row.total += 1;
+      row[pipelineStage(restaurant)] += 1;
+    }
+    return [...byArea.values()].sort(
+      (a, b) => b.total - a.total || a.area.localeCompare(b.area)
+    );
+  }, [restaurants]);
+
+  const totals = useMemo(() => {
+    const sum = {
+      area: "All areas",
+      total: 0,
+      classified: 0,
+      ready: 0,
+      needs_scrape: 0,
+      scrape_failing: 0,
+      no_website: 0,
+    };
+    for (const row of rows) {
+      sum.total += row.total;
+      sum.classified += row.classified;
+      sum.ready += row.ready;
+      sum.needs_scrape += row.needs_scrape;
+      sum.scrape_failing += row.scrape_failing;
+      sum.no_website += row.no_website;
+    }
+    return sum;
+  }, [rows]);
+
+  if (rows.length === 0) return null;
+
+  const pct = (row) =>
+    row.total > 0 ? Math.round((row.classified / row.total) * 100) : 0;
+
+  const countCell = (row, stage, filterValue, tint) => {
+    const value = row[stage];
+    const areaValue = row.area === "All areas" ? "all" : row.area;
+    if (!value) {
+      return <span className="text-slate-300">—</span>;
+    }
+    return (
+      <button
+        onClick={() => onDrill(areaValue, filterValue)}
+        className={`font-semibold tabular-nums hover:underline ${tint}`}
+        title={`Show these restaurants in the table below`}
+      >
+        {value}
+      </button>
+    );
+  };
+
+  const renderRow = (row, isTotals = false) => (
+    <tr
+      key={row.area}
+      className={
+        isTotals
+          ? "border-t-2 border-slate-300 bg-slate-50 font-semibold"
+          : "border-t border-slate-100"
+      }
+    >
+      <td className="py-2 pr-3 font-semibold text-slate-800">{row.area}</td>
+      <td className="py-2 pr-3">
+        <div className="flex items-center gap-2">
+          <div className="h-2 w-28 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-emerald-500"
+              style={{ width: `${pct(row)}%` }}
+            />
+          </div>
+          <span className="w-9 text-right text-xs tabular-nums text-slate-500">
+            {pct(row)}%
+          </span>
+        </div>
+      </td>
+      <td className="py-2 pr-3 text-right">
+        <button
+          onClick={() =>
+            onDrill(row.area === "All areas" ? "all" : row.area, "all")
+          }
+          className="font-semibold tabular-nums text-slate-700 hover:underline"
+        >
+          {row.total}
+        </button>
+      </td>
+      {COVERAGE_STAGES.map(([stage, , filterValue, tint]) => (
+        <td key={stage} className="py-2 pr-3 text-right">
+          {countCell(row, stage, filterValue, tint)}
+        </td>
+      ))}
+    </tr>
+  );
+
+  return (
+    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-bold text-slate-900">
+            Coverage by area
+          </h2>
+          <p className="text-xs text-slate-500">
+            Pipeline progress per city — click any count to drill into the
+            table below. Active consumer venues only.
+          </p>
+        </div>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="text-xs font-semibold text-slate-500 hover:text-slate-800"
+        >
+          {open ? "Hide" : `Show (${rows.length} areas)`}
+        </button>
+      </div>
+      {open && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr className="text-left text-xs font-bold uppercase tracking-wide text-slate-400">
+                <th className="py-1 pr-3">Area</th>
+                <th className="py-1 pr-3">Progress</th>
+                <th className="py-1 pr-3 text-right">Total</th>
+                {COVERAGE_STAGES.map(([stage, label]) => (
+                  <th key={stage} className="py-1 pr-3 text-right">
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => renderRow(row))}
+              {rows.length > 1 && renderRow(totals, true)}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Admin() {
   const [restaurants, setRestaurants] = useState([]);
   const [config, setConfig] = useState(null);
@@ -1183,6 +1363,7 @@ export default function Admin() {
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
   const [operationalFilter, setOperationalFilter] = useState("all");
+  const [areaFilter, setAreaFilter] = useState("all");
   const [groupBy, setGroupBy] = useState("none");
   const [sortBy, setSortBy] = useState("recent");
   const [tableView, setTableView] = useState("active"); // active | archived
@@ -1826,6 +2007,9 @@ export default function Admin() {
     const list = restaurants.filter((restaurant) => {
       // Archived rows live on their own page; everything else never sees them.
       if (Boolean(restaurant.archived) !== (tableView === "archived")) return false;
+      if (areaFilter !== "all" && (restaurant.area || "Unknown") !== areaFilter) {
+        return false;
+      }
       if (
         q &&
         !restaurant.name?.toLowerCase().includes(q) &&
@@ -1837,6 +2021,14 @@ export default function Admin() {
       if (operationalFilter === "refresh_paused") return !restaurant.refresh_enabled;
       if (operationalFilter === "needs_menu") {
         return restaurant.is_consumer_venue && restaurant.website_url && !restaurant.has_menu_text;
+      }
+      if (operationalFilter === "scrape_failing") {
+        return (
+          restaurant.is_consumer_venue &&
+          restaurant.website_url &&
+          !restaurant.has_menu_text &&
+          (restaurant.crawl_failures || 0) > 0
+        );
       }
       if (operationalFilter === "ready_to_classify") {
         return restaurant.has_menu_text && (restaurant.dish_count || 0) === 0;
@@ -1879,12 +2071,15 @@ export default function Admin() {
       return [...list].sort(byNullable((r) => r.vegan_options ?? 0, -1));
     }
     return list; // "recent" — the API's last_scraped_at order
-  }, [restaurants, query, operationalFilter, activeMenuQuality, tableView, sortBy]);
+  }, [restaurants, query, operationalFilter, areaFilter, activeMenuQuality, tableView, sortBy]);
 
   const groupedFiltered = useMemo(() => {
     if (groupBy === "none") return [{ label: "All restaurants", items: filtered }];
 
     const labelFor = (restaurant) => {
+      if (groupBy === "area") {
+        return restaurant.area || "Unknown";
+      }
       if (groupBy === "refresh") {
         return restaurant.refresh_enabled ? "Refresh enabled" : "Refresh paused";
       }
@@ -1936,8 +2131,36 @@ export default function Admin() {
       const order = ["Refresh enabled", "Refresh paused"];
       result.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
     }
+    if (groupBy === "area") {
+      result.sort(
+        (a, b) =>
+          b.items.length - a.items.length || a.label.localeCompare(b.label)
+      );
+    }
     return result;
   }, [filtered, groupBy, sortBy]);
+
+  // Distinct areas (active rows), biggest first — drives the area dropdown.
+  const areaOptions = useMemo(() => {
+    const counts = new Map();
+    for (const restaurant of restaurants) {
+      if (restaurant.archived) continue;
+      const area = restaurant.area || "Unknown";
+      counts.set(area, (counts.get(area) || 0) + 1);
+    }
+    return [...counts.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+    );
+  }, [restaurants]);
+
+  // Coverage-panel drill-down: point every table control at one bucket.
+  const drillCoverage = (area, opFilter) => {
+    setTableView("active");
+    setAreaFilter(area);
+    setOperationalFilter(opFilter);
+    setGroupBy("none");
+    setQuery("");
+  };
 
   const selectableFiltered = useMemo(
     () =>
@@ -2491,6 +2714,8 @@ export default function Admin() {
           </section>
         )}
 
+        <AreaCoverage restaurants={restaurants} onDrill={drillCoverage} />
+
         <div className="mb-3 flex items-center gap-2 max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <div className="flex overflow-hidden rounded-lg border border-slate-300">
             {[
@@ -2528,6 +2753,19 @@ export default function Admin() {
             className="w-full max-w-sm rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
           <select
+            value={areaFilter}
+            onChange={(event) => setAreaFilter(event.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+            aria-label="Filter restaurants by area"
+          >
+            <option value="all">Area: All</option>
+            {areaOptions.map(([area, count]) => (
+              <option key={area} value={area}>
+                {area} ({count})
+              </option>
+            ))}
+          </select>
+          <select
             value={operationalFilter}
             onChange={(event) => setOperationalFilter(event.target.value)}
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
@@ -2537,6 +2775,7 @@ export default function Admin() {
             <option value="refresh_on">Refresh enabled</option>
             <option value="refresh_paused">Refresh paused</option>
             <option value="needs_menu">Needs menu scrape</option>
+            <option value="scrape_failing">Scrape failing</option>
             <option value="ready_to_classify">Ready to classify</option>
             <option value="classified">Classified</option>
             <option value="stale">Stale menu</option>
@@ -2551,6 +2790,7 @@ export default function Admin() {
             aria-label="Group restaurants"
           >
             <option value="none">Group: None</option>
+            <option value="area">Group by area</option>
             <option value="refresh">Group by refresh status</option>
             <option value="pipeline">Group by pipeline stage</option>
             <option value="freshness">Group by menu freshness</option>
@@ -2570,11 +2810,12 @@ export default function Admin() {
             <option value="menu_size">Sort: Menu size</option>
             <option value="vegan_meals">Sort: Vegan meals</option>
           </select>
-          {(query || operationalFilter !== "all" || groupBy !== "none" || sortBy !== "recent") && (
+          {(query || operationalFilter !== "all" || areaFilter !== "all" || groupBy !== "none" || sortBy !== "recent") && (
             <button
               onClick={() => {
                 setQuery("");
                 setOperationalFilter("all");
+                setAreaFilter("all");
                 setGroupBy("none");
                 setSortBy("recent");
               }}
