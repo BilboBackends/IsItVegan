@@ -125,6 +125,19 @@ _SECTION_PATH_RE_WORDS = (
     "pasta", "kids", "family-style-meals",
 )
 
+# Daypart path segments probed around a captured menu page (siblings of a
+# /brunch page, children of a bare menu page). Some sites (Sixty Vines)
+# serve ONE daypart's content at the generic menu URL — via 302 or, for
+# bot-ish user agents, directly with no redirect — and build the other
+# daypart tabs client-side, so no HTML link ever reveals /dinner. Ordered
+# by likelihood so the probe cap trims the rare ones first.
+_DAYPART_SEGMENTS = (
+    "dinner", "lunch", "brunch", "breakfast", "happy-hour", "wine",
+    "dessert", "desserts", "drinks",
+)
+# Bounds the extra daypart requests per crawl.
+_MAX_DAYPART_PROBES = 12
+
 # Links we never follow even if they look menu-ish (socials / maps / forms).
 # "gift" covers gift-card shops: squareup.com/gift/... ends in /order, which
 # matched the order hint and got a GIFT CARD page stored as Sampaguita's menu
@@ -252,6 +265,8 @@ class _Fetched:
     pdf_bytes: bytes | None = None  # set when the response is a PDF
     error: str | None = None
     status_code: int | None = None
+    # Where redirects landed; None when the request never resolved.
+    final_url: str | None = None
 
 
 _CERT_VERIFY_ERROR_RE = re.compile(
@@ -298,7 +313,13 @@ def _structured_counts(text: str) -> tuple[int, int]:
 
 
 def _fetch(client: httpx.Client, url: str) -> _Fetched:
-    """Fetch one URL: HTML, PDF bytes, or a classified error (never raises)."""
+    """Fetch one URL: HTML, PDF bytes, or a classified error (never raises).
+
+    final_url records where redirects landed. Sites silently 302 a menu URL
+    to one section (Sixty Vines: /menu/<loc> -> /menu/<loc>/brunch); pages
+    recorded under the REQUESTED url hid that from the single-section guards
+    and from location filtering.
+    """
     try:
         resp = client.get(url)
     except httpx.HTTPError as exc:
@@ -308,18 +329,26 @@ def _fetch(client: httpx.Client, url: str) -> _Fetched:
             resp = _fetch_without_cert_verification(url)
         except httpx.HTTPError as retry_exc:
             return _Fetched(error=f"{type(retry_exc).__name__}: {retry_exc}")
+    final_url = str(getattr(resp, "url", "") or "") or None
     if resp.status_code >= 400:
-        return _Fetched(status_code=resp.status_code, error=f"HTTP {resp.status_code}")
+        return _Fetched(
+            status_code=resp.status_code,
+            error=f"HTTP {resp.status_code}",
+            final_url=final_url,
+        )
     content_type = resp.headers.get("content-type", "").lower()
     if "pdf" in content_type:
         # Menus are often PDFs — keep the bytes so a follower can extract them.
-        return _Fetched(pdf_bytes=resp.content, status_code=resp.status_code)
+        return _Fetched(
+            pdf_bytes=resp.content, status_code=resp.status_code, final_url=final_url
+        )
     if "html" not in content_type:
         return _Fetched(
             status_code=resp.status_code,
             error=f"Non-HTML content-type: {content_type or 'unknown'}",
+            final_url=final_url,
         )
-    return _Fetched(html=resp.text, status_code=resp.status_code)
+    return _Fetched(html=resp.text, status_code=resp.status_code, final_url=final_url)
 
 
 def _fetched_to_text(page: "_Fetched") -> str:
@@ -673,6 +702,93 @@ def _is_single_section_url(url: str) -> bool:
     )
 
 
+def _norm_url(u: str) -> str:
+    """Dedup key for fetched URLs: fragmentless, no trailing slash, and
+    www-insensitive — a redirect from sixtyvines.com to www.sixtyvines.com is
+    the same page."""
+    base = u.split("#")[0].rstrip("/")
+    return re.sub(r"^(https?)://www\.", r"\1://", base, flags=re.I)
+
+
+def _daypart_segment(url: str) -> str | None:
+    """The trailing path segment when it names a daypart (/menu/x/brunch)."""
+    segments = [s for s in urlparse(url).path.split("/") if s]
+    if segments and segments[-1].lower() in _DAYPART_SEGMENTS:
+        return segments[-1].lower()
+    return None
+
+
+def _probe_daypart_pages(
+    client: httpx.Client,
+    pages: list[tuple[str, str]],
+    seen: set[str],
+    only_ours=None,
+) -> list[tuple[str, str]]:
+    """Fetch unlinked daypart pages around already-captured menu pages.
+
+    Sites with client-side daypart tabs expose NOTHING crawlable: Sixty
+    Vines serves the brunch menu at /menu/<loc> (302 for browsers, no
+    redirect at all for bot-ish user agents) and dinner/lunch exist only at
+    URLs no HTML links to. Two probe directions:
+
+    - siblings: a captured page ends in a daypart (/brunch) -> try the other
+      dayparts at the same path level;
+    - children: no daypart page held at all, but a captured page's path
+      looks like a menu -> try /dinner, /lunch, ... beneath it.
+
+    Junk probes are harmless: soft-404 shells and duplicate content are
+    dropped by _finish's scoring and containment dedup. `seen` is shared
+    with the caller so nothing is fetched twice.
+    """
+    daypart_bases: list[str] = []
+    menuish_bases: list[str] = []
+    for page_url, _ in pages:
+        base = page_url.split("#")[0].rstrip("/")
+        if _daypart_segment(base):
+            if base not in daypart_bases:
+                daypart_bases.append(base)
+        elif "menu" in urlparse(base).path.lower() and base not in menuish_bases:
+            menuish_bases.append(base)
+
+    candidates: list[str] = []
+    for base in daypart_bases:
+        parent = base.rsplit("/", 1)[0]
+        for word in _DAYPART_SEGMENTS:
+            sibling = f"{parent}/{word}"
+            if sibling != base and sibling not in candidates:
+                candidates.append(sibling)
+    if not daypart_bases:
+        for base in menuish_bases:
+            for word in _DAYPART_SEGMENTS:
+                child = f"{base}/{word}"
+                if child not in candidates:
+                    candidates.append(child)
+    if only_ours is not None:
+        candidates = only_ours(candidates)
+
+    found: list[tuple[str, str]] = []
+    probes = 0
+    for candidate in candidates:
+        if probes >= _MAX_DAYPART_PROBES:
+            break
+        if _norm_url(candidate) in seen:
+            continue
+        seen.add(_norm_url(candidate))
+        probes += 1
+        page = _fetch(client, candidate)
+        if page.html is None:
+            continue
+        final = page.final_url or candidate
+        if _norm_url(final) != _norm_url(candidate):
+            # Redirected away — a soft-404 bouncing back to a page we
+            # already hold (or its home) is not a new daypart.
+            if _norm_url(final) in seen:
+                continue
+            seen.add(_norm_url(final))
+        found.extend(_pages_from_html(final, page.html))
+    return found
+
+
 def _find_menu_links(
     html: str, base_url: str
 ) -> tuple[list[str], list[str], list[str]]:
@@ -811,62 +927,75 @@ def _collect_http(
         landing = _fetch(client, url)
         if landing.html is None:
             return None, [], [], landing
+        # Resolve relative links against where redirects LANDED, and record
+        # pages under that URL — the requested URL can hide a section-page
+        # redirect from the single-section guards and location filtering.
+        landing_url = landing.final_url or url
 
-        menu_links, third_party, tp_urls = _find_menu_links(landing.html, url)
+        menu_links, third_party, tp_urls = _find_menu_links(landing.html, landing_url)
         menu_links = only_ours(menu_links)
         tp_urls = only_ours(tp_urls)
         # If keyword matching found no menu link, let the cheap LLM pick one
         # from all page links (catches non-obvious labels).
         if not menu_links:
-            llm_link = _llm_menu_link(landing.html, url)
+            llm_link = _llm_menu_link(landing.html, landing_url)
             if llm_link:
                 menu_links = [llm_link]
 
-        def _norm(u: str) -> str:
-            return u.split("#")[0].rstrip("/")
-
-        pages: list[tuple[str, str]] = _pages_from_html(url, landing.html)
-        pdf_urls = _find_pdf_urls(landing.html, url)
+        pages: list[tuple[str, str]] = _pages_from_html(landing_url, landing.html)
+        pdf_urls = _find_pdf_urls(landing.html, landing_url)
         queue: list[tuple[str, int]] = [(lk, 1) for lk in menu_links]
-        seen = {_norm(url)} | {_norm(lk) for lk in menu_links}
+        seen = {_norm_url(url), _norm_url(landing_url)}
+        seen |= {_norm_url(lk) for lk in menu_links}
         # "/menu" is a near-universal convention — probe it even when the
         # landing never links to it. JS-built navs hide links from static
         # HTML entirely (F&D Cantina's Popmenu site: the landing shows only
         # order/catering links, while /menu carries the FULL menu as
         # JSON-LD). Costs one request; a 404 is simply skipped.
-        conventional = urljoin(url, "/menu")
-        if _norm(conventional) not in seen:
-            seen.add(_norm(conventional))
+        conventional = urljoin(landing_url, "/menu")
+        if _norm_url(conventional) not in seen:
+            seen.add(_norm_url(conventional))
             queue.append((conventional, 1))
         fetches = 0
         while queue and fetches < _MAX_HTTP_FETCHES:
             link, hop = queue.pop(0)
             page = _fetch(client, link)
             fetches += 1
+            page_url = page.final_url or link
+            if _norm_url(page_url) != _norm_url(link):
+                if _norm_url(page_url) in seen:
+                    continue  # redirect landed on a page we already hold
+                seen.add(_norm_url(page_url))
             if page.html is not None:
-                pages.extend(_pages_from_html(link, page.html))
+                pages.extend(_pages_from_html(page_url, page.html))
             else:
                 text = _fetched_to_text(page)  # PDFs
                 if text:
-                    pages.append((link, text))
+                    pages.append((page_url, text))
             if page.html is not None:
-                for pdf_url in _find_pdf_urls(page.html, link):
+                for pdf_url in _find_pdf_urls(page.html, page_url):
                     if pdf_url not in pdf_urls:
                         pdf_urls.append(pdf_url)
             if hop == 1 and page.html is not None:
-                more_links, more_tp, more_tp_urls = _find_menu_links(page.html, link)
+                more_links, more_tp, more_tp_urls = _find_menu_links(
+                    page.html, page_url
+                )
                 more_links = only_ours(more_links)
                 more_tp_urls = only_ours(more_tp_urls)
                 for host in more_tp:
                     if host not in third_party:
                         third_party.append(host)
                 for tp_url in more_tp_urls:
-                    if _norm(tp_url) not in {_norm(u) for u in tp_urls}:
+                    if _norm_url(tp_url) not in {_norm_url(u) for u in tp_urls}:
                         tp_urls.append(tp_url)
                 for nxt in more_links:
-                    if _norm(nxt) not in seen:
-                        seen.add(_norm(nxt))
+                    if _norm_url(nxt) not in seen:
+                        seen.add(_norm_url(nxt))
                         queue.append((nxt, 2))
+
+        # JS-only daypart tabs: probe unlinked daypart URLs around the
+        # captured menu pages (Sixty Vines' dinner/lunch menus).
+        pages.extend(_probe_daypart_pages(client, pages, seen, only_ours))
     # Ordering platforms like Viguest/OnePOS can expose a full structured menu
     # after one cookie-setting landing request. If that succeeds, don't wait
     # on slow off-domain PDFs for the same restaurant.
@@ -997,11 +1126,12 @@ def _profile_urls(crawl_context: dict | None) -> list[str]:
 
 
 def _collect_known_http(
-    urls: list[str], timeout: float
+    urls: list[str], timeout: float, address: str | None = None
 ) -> list[tuple[str, str]]:
     """Fetch previously validated menu pages directly, skipping discovery."""
     pages: list[tuple[str, str]] = []
     seen: set[str] = set()
+    only_ours = LocationUrlFilter(address)
     with httpx.Client(
         timeout=timeout,
         follow_redirects=True,
@@ -1012,17 +1142,25 @@ def _collect_known_http(
             # server route. Fetching its base recreates both DOM and embedded
             # structured candidates.
             fetch_url = saved_url.removesuffix("#structured-menu")
-            normalized = fetch_url.rstrip("/")
-            if normalized in seen:
+            if _norm_url(fetch_url) in seen:
                 continue
-            seen.add(normalized)
+            seen.add(_norm_url(fetch_url))
             page = _fetch(client, fetch_url)
+            page_url = page.final_url or fetch_url
+            if _norm_url(page_url) != _norm_url(fetch_url):
+                if _norm_url(page_url) in seen:
+                    continue
+                seen.add(_norm_url(page_url))
             if page.html is not None:
-                pages.extend(_pages_from_html(fetch_url, page.html))
+                pages.extend(_pages_from_html(page_url, page.html))
             else:
                 text = _fetched_to_text(page)
                 if text:
-                    pages.append((fetch_url, text))
+                    pages.append((page_url, text))
+        # Learned routes from before daypart probing can be a lone daypart
+        # page (hidden behind a redirect or a bot-UA default) — probing here
+        # self-heals the profile without waiting for full rediscovery.
+        pages.extend(_probe_daypart_pages(client, pages, seen, only_ours))
     return pages
 
 
@@ -1118,7 +1256,7 @@ def _try_learned_context(
             return None
         pages = _collect_known_headless(home_url, urls)
     else:
-        pages = _collect_known_http(urls, timeout)
+        pages = _collect_known_http(urls, timeout, address)
     if not pages:
         return None
     result = _finish(
@@ -1160,7 +1298,9 @@ def _validate_completeness(result: ScrapeResult) -> ScrapeResult:
     if result.structured_item_count >= 8 and result.structured_category_count >= 2:
         return result
 
-    kept_urls = list(dict.fromkeys(url for url, _ in result.pages))
+    # Fragment-insensitive: a page and its #structured-menu pseudo-page are
+    # the same capture, not evidence of a second menu section.
+    kept_urls = list(dict.fromkeys(url.split("#")[0] for url, _ in result.pages))
     issue = None
     if len(kept_urls) == 1 and _is_single_section_url(kept_urls[0]):
         issue = f"only one menu section captured ({kept_urls[0]})"
@@ -1295,11 +1435,13 @@ def scrape_menu_text(
         )
         # A single kept page whose URL names one menu section (/breakfast) is
         # probably a partial menu with the other sections behind JS-rendered
-        # nav — escalate to headless to find them.
+        # nav — escalate to headless to find them. Fragment-insensitive: the
+        # #structured-menu pseudo-page doesn't make a section page two pages.
+        kept_page_urls = {p_url.split("#")[0] for p_url, _ in http_result.pages}
         if (
             confident
-            and len(http_result.pages) == 1
-            and _is_single_section_url(http_result.pages[0][0])
+            and len(kept_page_urls) == 1
+            and _is_single_section_url(next(iter(kept_page_urls)))
         ):
             confident = False
         if confident or not use_headless or not is_available():

@@ -62,7 +62,7 @@ def test_scraper_uses_valid_learned_route_before_discovery(monkeypatch):
     monkeypatch.setattr(
         scraper,
         "_collect_known_http",
-        lambda urls, timeout: [(urls[0], MENU_TEXT)],
+        lambda urls, timeout, address=None: [(urls[0], MENU_TEXT)],
     )
 
     def unexpected_discovery(*args, **kwargs):
@@ -85,7 +85,9 @@ def test_scraper_uses_valid_learned_route_before_discovery(monkeypatch):
 
 
 def test_stale_learned_route_falls_back_to_discovery(monkeypatch):
-    monkeypatch.setattr(scraper, "_collect_known_http", lambda urls, timeout: [])
+    monkeypatch.setattr(
+        scraper, "_collect_known_http", lambda urls, timeout, address=None: []
+    )
     monkeypatch.setattr(
         scraper,
         "_collect_http",

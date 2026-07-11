@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -21,10 +22,14 @@ import scraper  # noqa: E402
 from scraper import (  # noqa: E402
     ScrapeResult,
     _collect_headless,
+    _extract_viguest_items,
     _find_menu_links,
+    _find_viguest_category_urls,
     _finish,
     _is_single_section_url,
     _looks_menu_like,
+    _score_viguest_site_match,
+    _try_learned_context,
     _validate_completeness,
     scrape_menu_text,
 )
@@ -90,6 +95,27 @@ def test_find_menu_links_separates_third_party():
     assert "activemenus.com" in hosts
     assert any("activemenus.com" in u for u in tp_urls)
     assert not any("instagram" in u for u in tp_urls)
+
+
+def test_find_menu_links_reads_hostinger_serialized_buttons():
+    # Clase Azul's Hostinger page stores "OUR MENU" / "ORDER ONLINE" buttons
+    # inside escaped builder JSON, not normal anchors.
+    pdf = (
+        "https://claseazul.restaurant/wp-content/uploads/2025/08/"
+        "Clase-Azul-Mexican-Cuisine-MM-R5495307-LR-ol-1.pdf"
+    )
+    html = f"""
+    &quot;href&quot;:[0,&quot;{pdf}&quot;],
+    &quot;content&quot;:[0,&quot;OUR MENU&quot;],
+    &quot;href&quot;:[0,&quot;https://oo.viguest.com/?siteName=claseazulcape&quot;],
+    &quot;content&quot;:[0,&quot;ORDER ONLINE&quot;]
+    """
+    follow, hosts, tp_urls = _find_menu_links(html, "https://classazulcapecoral.com/")
+    assert follow == []
+    assert "viguest.com" in hosts
+    assert "https://oo.viguest.com/?siteName=claseazulcape" in tp_urls
+    # PDF links are extracted by the PDF scraper, not sent to headless.
+    assert not any(url.endswith(".pdf") for url in tp_urls)
 
 
 def test_single_section_url_detection():
@@ -226,6 +252,95 @@ def test_headless_stops_after_complete_structured_landing_payload(monkeypatch):
     assert instances[0].calls == ["https://x.com/location/1"]
 
 
+def test_viguest_categories_are_found_from_ordering_landing():
+    html = """
+    <script>
+    location.href =  '/Home/Merchandise?selected=164&name=Ceviches&siteName=claseazulcape&specialInstructions=True';
+    location.href =  '/Home/Merchandise?selected=159&name=Appetizer&siteName=claseazulcape&specialInstructions=True';
+    </script>
+    """
+    urls = _find_viguest_category_urls(
+        html, "https://oo.viguest.com/?siteName=claseazulcape"
+    )
+    assert urls == [
+        "https://oo.viguest.com/Home/Merchandise?selected=164&name=Ceviches&siteName=claseazulcape&specialInstructions=True",
+        "https://oo.viguest.com/Home/Merchandise?selected=159&name=Appetizer&siteName=claseazulcape&specialInstructions=True",
+    ]
+
+
+def test_viguest_render_merchandise_calls_become_menu_items():
+    html = """
+    <script>
+    renderMerchandise(0,"54","Aguachile", 17.5, "Lime-infused shrimp, onions, peppers, cucumber, jalape\\u00f1os, avocado, and lime juice.", "https://images.onepos.com/16065/item54.png", "", "#f5e85e", "#000000", "False");
+    renderMerchandise(1,"199","Cabos Ceviche", 16.5, "Catch of the day shrimp, red onion, and cilantro.", "https://images.onepos.com/16065/item199.png", "", "#f5e85e", "#000000", "False");
+    </script>
+    """
+    assert _extract_viguest_items(html) == [
+        (
+            "Aguachile",
+            "Lime-infused shrimp, onions, peppers, cucumber, jalapeños, avocado, and lime juice.",
+            "$17.50",
+        ),
+        (
+            "Cabos Ceviche",
+            "Catch of the day shrimp, red onion, and cilantro.",
+            "$16.50",
+        ),
+    ]
+
+
+def test_viguest_site_match_prefers_location_slug():
+    home = "https://classazulcapecoral.com/"
+    cape = "https://oo.viguest.com/?siteName=claseazulcape"
+    fort_myers = "https://oo.viguest.com/?siteName=Claseazulfortmyers"
+    assert _score_viguest_site_match(cape, home) > _score_viguest_site_match(
+        fort_myers, home
+    )
+
+
+def test_headless_walks_seeded_viguest_categories_in_one_session(monkeypatch):
+    instances = []
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+            instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def fetch(self, url, **kwargs):
+            self.calls.append(url)
+            if url == "https://classazulcapecoral.com/":
+                return "<html><body>Clase Azul homepage</body></html>", None
+            if url == "https://oo.viguest.com/?siteName=claseazulcape":
+                return """
+                <html><body>Menu Selections
+                <script>
+                location.href = '/Home/Merchandise?selected=164&name=Ceviches&siteName=claseazulcape&specialInstructions=True';
+                </script>
+                </body></html>
+                """, None
+            return f"<html><body><pre>{MENU_TEXT_A}</pre></body></html>", None
+
+    monkeypatch.setattr(scraper, "RenderedSession", FakeSession)
+    pages, _hosts = _collect_headless(
+        "https://classazulcapecoral.com/",
+        seed_urls=["https://oo.viguest.com/?siteName=claseazulcape"],
+    )
+
+    assert len(instances) == 1
+    assert instances[0].calls == [
+        "https://classazulcapecoral.com/",
+        "https://oo.viguest.com/?siteName=claseazulcape",
+        "https://oo.viguest.com/Home/Merchandise?selected=164&name=Ceviches&siteName=claseazulcape&specialInstructions=True",
+    ]
+    assert any("Dish number 3" in text for _url, text in pages)
+
+
 # ---- menu scoring: the Sampaguita failure pair ------------------------------
 
 GIFT_CARD_TEXT = """
@@ -298,14 +413,80 @@ def test_find_pdf_urls_sees_viewer_scripts_and_relative_hrefs():
     <html><body>
     <a href="/wp-content/uploads/2025/03/Dinner.pdf">Dinner</a>
     <script>var viewer = {file: "https://thechapman.com/uploads/Lunch26.pdf"};</script>
+    <script>onclick="linkVersion('https://hillstone.com/menus/hillstone/Hillstone%20Winter%20Park%20Lunch.pdf')"</script>
     <a href="https://x.com/giftcard-menu.pdf">Gift</a>
     </body></html>
     """
     urls = _find_pdf_urls(html, "https://thechapman.com/lunch/")
     assert "https://thechapman.com/wp-content/uploads/2025/03/Dinner.pdf" in urls
     assert "https://thechapman.com/uploads/Lunch26.pdf" in urls
+    assert "https://hillstone.com/menus/hillstone/Hillstone%20Winter%20Park%20Lunch.pdf" in urls
     # gift-card PDFs are junk, same as gift-card links
     assert not any("gift" in u for u in urls)
+
+
+def test_fetch_retries_certificate_errors_without_verification(monkeypatch):
+    class BadCertClient:
+        def get(self, _url):
+            raise scraper.httpx.ConnectError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+            )
+
+    def fallback(url, timeout=25.0):
+        return SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "text/html"},
+            text=f"<html><body>Menu from {url}</body></html>",
+        )
+
+    monkeypatch.setattr(scraper, "_fetch_without_cert_verification", fallback)
+
+    result = scraper._fetch(BadCertClient(), "https://badcert.example/menu")
+
+    assert result.error is None
+    assert "Menu from https://badcert.example/menu" in result.html
+
+
+def test_fetch_pdf_pages_retries_certificate_errors(monkeypatch):
+    import pdf_menu
+
+    class BadCertClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _url):
+            raise scraper.httpx.ConnectError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+            )
+
+    monkeypatch.setattr(
+        scraper.httpx, "Client", lambda *args, **kwargs: BadCertClient()
+    )
+    monkeypatch.setattr(
+        scraper,
+        "_fetch_without_cert_verification",
+        lambda url, timeout=25.0: SimpleNamespace(
+            status_code=200,
+            content=b"%PDF-1.4 fake menu",
+        ),
+    )
+    monkeypatch.setattr(
+        pdf_menu,
+        "extract_pdf_menu_text",
+        lambda _content: "Dinner Menu\nVeggie Burger $17\nFrench Fries $7",
+    )
+
+    pages = scraper._fetch_pdf_pages(["https://hillstone.com/menu.pdf"])
+
+    assert pages == [
+        (
+            "https://hillstone.com/menu.pdf",
+            "Dinner Menu\nVeggie Burger $17\nFrench Fries $7",
+        )
+    ]
 
 
 def test_letter_spaced_pdf_text_is_collapsed():
@@ -342,6 +523,30 @@ def test_mediocre_learned_route_triggers_rediscovery():
     assert result is None
 
 
+def test_mediocre_pdf_learned_route_is_reused(monkeypatch):
+    # The Strand's known-good PDF route scored below 0.75 because it has no
+    # prices. That should still be retried before expensive rediscovery.
+    calls = []
+
+    def fake_collect(urls, timeout, address=None):
+        calls.append((urls, timeout))
+        return [("https://x.com/menu.pdf", MENU_TEXT_A * 3)]
+
+    monkeypatch.setattr(scraper, "_collect_known_http", fake_collect)
+    result = _try_learned_context(
+        "https://x.com/",
+        {"menu_urls": ["https://x.com/menu.pdf"], "crawl_method": "http",
+         "menu_score": 0.67, "char_count": 1986},
+        timeout=5.0,
+        use_headless=False,
+    )
+
+    assert calls
+    assert result is not None
+    assert result.ok
+    assert result.used_learned_context
+
+
 # ---- scrape_menu_text entry points (no network) ----------------------------
 
 def test_social_profile_website_fails_fast():
@@ -357,3 +562,131 @@ def test_mock_html_path_extracts_menu():
     result = scrape_menu_text("https://x.com/", mock_html=html)
     assert result.ok
     assert result.menu_score > 0.45
+
+
+# ---- redirect-aware page recording + daypart sibling probing ---------------
+#
+# Sixty Vines: /menu/winter-park silently 302s to /menu/winter-park/brunch,
+# and the dinner/lunch tabs are client-side routes nothing links to. Pages
+# recorded under the REQUESTED url hid the redirect from every single-section
+# guard, so only the brunch menu was ever captured.
+
+def _page(text: str) -> str:
+    return "<html><body>" + text.replace("\n", "<br>") + "</body></html>"
+
+
+class _FakeResponse(SimpleNamespace):
+    pass
+
+
+class _FakeClient:
+    """Stands in for httpx.Client: routes -> (final_url, html) or 404."""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.requested: list[str] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def get(self, url):
+        self.requested.append(url)
+        hit = self.routes.get(url)
+        if hit is None:
+            return _FakeResponse(
+                status_code=404, headers={"content-type": "text/html"},
+                text="not found", url=url,
+            )
+        final_url, html = hit
+        return _FakeResponse(
+            status_code=200, headers={"content-type": "text/html"},
+            text=html, url=final_url,
+        )
+
+
+def test_fetch_records_final_redirected_url():
+    client = _FakeClient({
+        "https://sv.example/menu/winter-park": (
+            "https://www.sv.example/menu/winter-park/brunch", _page(MENU_TEXT_A)
+        ),
+    })
+    fetched = scraper._fetch(client, "https://sv.example/menu/winter-park")
+    assert fetched.final_url == "https://www.sv.example/menu/winter-park/brunch"
+
+
+def test_collect_http_probes_daypart_siblings_behind_redirect(monkeypatch):
+    home = "https://sv.example/"
+    routes = {
+        home: (home, '<html><body><a href="/menu/winter-park">Menu</a></body></html>'),
+        # The generic menu URL silently redirects to the brunch daypart page.
+        "https://sv.example/menu/winter-park": (
+            "https://www.sv.example/menu/winter-park/brunch", _page(MENU_TEXT_A)
+        ),
+        # Nothing links to /dinner — only a sibling probe can find it.
+        "https://www.sv.example/menu/winter-park/dinner": (
+            "https://www.sv.example/menu/winter-park/dinner", _page(MENU_TEXT_B)
+        ),
+    }
+    client = _FakeClient(routes)
+    monkeypatch.setattr(scraper.httpx, "Client", lambda *a, **k: client)
+
+    pages, _tp, _tp_urls, _landing = scraper._collect_http(home, timeout=5.0)
+
+    urls = [u for u, _ in pages]
+    # The brunch capture is filed under where the redirect LANDED.
+    assert "https://www.sv.example/menu/winter-park/brunch" in urls
+    assert not any(u.rstrip("/") == "https://sv.example/menu/winter-park" for u in urls)
+    # The unlinked dinner sibling was probed and captured.
+    assert any("Evening plate 3" in text for _, text in pages)
+    # Soft-404 siblings (lunch, breakfast, ...) were probed but not recorded.
+    assert not any("not found" in text for _, text in pages)
+
+
+def test_learned_route_self_heals_brunch_only_profile(monkeypatch):
+    # The live Sixty Vines behavior for bot-ish user agents: the generic menu
+    # URL serves ONE daypart's content directly — no redirect, no daypart in
+    # any URL — and dinner exists only at an unlinked CHILD path. A stale
+    # brunch-only learned profile must still discover it on refetch.
+    routes = {
+        "https://sv.example/menu/winter-park": (
+            "https://www.sv.example/menu/winter-park", _page(MENU_TEXT_A)
+        ),
+        "https://www.sv.example/menu/winter-park/dinner": (
+            "https://www.sv.example/menu/winter-park/dinner", _page(MENU_TEXT_B)
+        ),
+    }
+    client = _FakeClient(routes)
+    monkeypatch.setattr(scraper.httpx, "Client", lambda *a, **k: client)
+
+    pages = scraper._collect_known_http(
+        [
+            "https://sv.example/menu/winter-park#structured-menu",
+            "https://sv.example/menu/winter-park",
+        ],
+        timeout=5.0,
+    )
+
+    assert any("Evening plate 3" in text for _, text in pages)
+    # Dead child probes (breakfast, wine, ...) were tried but not recorded.
+    assert not any("not found" in text for _, text in pages)
+
+
+def test_completeness_treats_structured_fragment_as_same_page():
+    # A daypart page plus its #structured-menu pseudo-page is ONE capture —
+    # it must still be rejected as a single-section menu.
+    brunch = "https://www.sv.example/menu/winter-park/brunch"
+    result = ScrapeResult(
+        url=brunch,
+        ok=True,
+        is_menu=True,
+        text=MENU_TEXT_A,
+        char_count=len(MENU_TEXT_A),
+        menu_score=0.8,
+        pages=[(brunch, MENU_TEXT_A), (brunch + "#structured-menu", MENU_TEXT_A)],
+    )
+    checked = _validate_completeness(result)
+    assert not checked.ok
+    assert "only one menu section captured" in (checked.completeness_error or "")
