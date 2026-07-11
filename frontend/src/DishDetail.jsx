@@ -137,7 +137,19 @@ export default function DishDetail({
 
           {(details.reasoning || details.evidence) && (
             <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-              <h3 className="text-xs font-bold uppercase tracking-wide text-emerald-800">Why this verdict</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wide text-emerald-800">Why this verdict</h3>
+                {dish.menu_url?.startsWith("http") && (
+                  <a
+                    href={dish.menu_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-bold text-emerald-800 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-950"
+                  >
+                    Source menu ↗
+                  </a>
+                )}
+              </div>
               {details.reasoning && <p className="mt-1 text-sm text-emerald-950">{details.reasoning}</p>}
               {details.evidence && (
                 <blockquote className="mt-2 border-l-2 border-emerald-400 pl-3 text-sm italic text-emerald-900">

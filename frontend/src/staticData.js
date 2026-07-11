@@ -12,6 +12,7 @@ export function apiUrl(path) {
   if (!STATIC_MODE) return path;
   if (path === "/api/restaurants") return `${BASE}data/restaurants.json`;
   if (path === "/api/dishes") return `${BASE}data/dishes.json`;
+  if (path === "/api/dishes.gz") return `${BASE}data/dishes.json.gz`;
   return path;
 }
 
@@ -20,6 +21,13 @@ export function apiUrl(path) {
 // Response-shaped object so DishModal's fetch handling stays unchanged.
 export async function fetchRestaurantDishes(restaurantId) {
   if (!STATIC_MODE) return fetch(`/api/restaurants/${restaurantId}/dishes`);
+
+  // Newer exports publish one small file per restaurant. Fall back to the
+  // legacy all-dishes snapshot so older deployments and local fixtures keep
+  // working while the data format rolls out.
+  const shard = await fetch(`${BASE}data/restaurant-dishes/${restaurantId}.json`);
+  if (shard.ok || shard.status !== 404) return shard;
+
   const res = await fetch(`${BASE}data/dishes.json`);
   if (!res.ok) return res;
   const data = await res.json();

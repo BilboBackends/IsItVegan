@@ -15,7 +15,9 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const isAdmin = hash.startsWith("#admin");
+  // The static public build is a consumer product. Keep the local pipeline
+  // dashboard out of both its navigation and its hash-routed surface.
+  const isAdmin = !STATIC_MODE && hash.startsWith("#admin");
   const exploreView = hash.startsWith("#dishes")
     ? "food"
     : hash.startsWith("#saved")
@@ -32,7 +34,8 @@ export default function App() {
             </span>
             <span className="hidden sm:inline">VeganFind</span>
           </a>
-          <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-xs shadow-sm sm:text-sm">
+          {!STATIC_MODE && (
+            <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-xs shadow-sm sm:text-sm">
             <a
               href="#restaurants"
               className={`rounded-full px-2.5 py-1.5 font-semibold transition sm:px-4 ${
@@ -53,23 +56,12 @@ export default function App() {
             >
               Admin
             </a>
-          </div>
+            </div>
+          )}
         </div>
       </nav>
       {isAdmin ? (
-        STATIC_MODE ? (
-          <div className="mx-auto max-w-xl px-4 py-16 text-center text-stone-500">
-            <p className="text-lg font-semibold text-stone-700">
-              Admin isn't available on the public site.
-            </p>
-            <p className="mt-2 text-sm">
-              The pipeline dashboard runs only on the machine that hosts the
-              data pipeline.
-            </p>
-          </div>
-        ) : (
-          <Admin />
-        )
+        <Admin />
       ) : (
         <ExploreHub view={exploreView} />
       )}

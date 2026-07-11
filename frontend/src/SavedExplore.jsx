@@ -176,7 +176,7 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
 
           <section>
             <h2 className="mb-3 text-lg font-extrabold text-stone-900">
-              Food items <span className="text-sm font-normal text-stone-400">{savedDishes.length}</span>
+              Dishes <span className="text-sm font-normal text-stone-400">{savedDishes.length}</span>
             </h2>
             {savedDishes.length === 0 ? (
               <p className="text-sm text-stone-400">No saved food items.</p>
@@ -195,6 +195,16 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
                         </span>
                         <VerdictChip verdict={dish.verdict} />
                         {dish.price && <span>{dish.price}</span>}
+                        {dish.menu_url?.startsWith("http") && (
+                          <a
+                            href={dish.menu_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold text-emerald-700 hover:underline"
+                          >
+                            Source menu ↗
+                          </a>
+                        )}
                       </div>
                     </div>
                     <FavoriteButton active onClick={() => toggleDish(dish.id)} label="dish" />

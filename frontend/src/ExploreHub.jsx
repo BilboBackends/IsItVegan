@@ -73,7 +73,7 @@ export default function ExploreHub({ view = "restaurants" }) {
                 : "text-stone-500 hover:bg-stone-50 hover:text-stone-800"
             }`}
           >
-            Food items
+            Dishes
           </a>
           <a
             href="#saved"

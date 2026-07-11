@@ -6,7 +6,6 @@ import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
 import LocationPicker, { NearMeIconButton } from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
-import ThumbVote from "./ThumbVote.jsx";
 import { formatRatingCount, ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
@@ -49,6 +48,23 @@ function pinColor(r) {
   if ((r.vegan_options || 0) >= 3) return "#047857";
   if ((r.vegan_options || 0) >= 1) return "#65a30d";
   return "#78716c"; // analyzed, nothing vegan
+}
+
+function veganOptionSummary(r) {
+  if (!(r.dish_count > 0)) return "Menu not analyzed";
+  const unit = isDessertVenue(r.primary_type) ? "treat" : "meal";
+  if (r.vegan_options > 0) {
+    return (
+      `${r.vegan_options} vegan ${unit}${r.vegan_options === 1 ? "" : "s"}` +
+      ((r.vegan_sides || 0) > 0
+        ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
+        : "")
+    );
+  }
+  if ((r.vegan_sides || 0) > 0) {
+    return `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`;
+  }
+  return `No vegan ${unit}s found`;
 }
 
 const SORTS = [
@@ -267,22 +283,8 @@ export default function Explore({
   // place_id of the card whose score popover is open (that card gets a
   // higher z-index so the popover isn't painted under the map).
   const [scoreOpenFor, setScoreOpenFor] = useState(null);
-  // Per-card disclosures: full address, and the editorial blurb (collapsed
-  // by default to keep cards lean).
-  const [openAddresses, setOpenAddresses] = useState(() => new Set());
-  const [openSummaries, setOpenSummaries] = useState(() => new Set());
-
-  const toggleIn = (setter) => (id) =>
-    setter((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  const toggleAddress = toggleIn(setOpenAddresses);
-  const toggleSummary = toggleIn(setOpenSummaries);
   // Dish detail opened from the menu modal — hosted HERE so it never
-  // navigates away to the Food items tab. The dish is merged with its
+  // navigates away to the Dishes tab. The dish is merged with its
   // restaurant's fields because the per-restaurant dish rows don't carry
   // restaurant context.
   const [detailDish, setDetailDish] = useState(null);
@@ -694,10 +696,10 @@ export default function Explore({
           : "border-stone-200/80"
       }`}
     >
-      {/* Name + heart share the top line (heart is a fixed small square, so
-          it can't overflow); the score/mileage badges get their own row. */}
+      {/* One decision hierarchy: identity, vegan usefulness, practical
+          metadata, then a single primary menu action. */}
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 font-bold leading-snug text-stone-900">
+        <div className="min-w-0 text-base font-extrabold leading-snug text-stone-900">
           {r.name}
         </div>
         <FavoriteButton
@@ -706,22 +708,24 @@ export default function Explore({
           label="restaurant"
         />
       </div>
-      {(r.distance != null || (r.vegan_score != null && r.dish_count > 0)) && (
-        <div className="mt-1.5 flex items-center gap-1.5">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {r.vegan_score != null && r.dish_count > 0 && (
           <VeganScoreBadge
             r={r}
             open={scoreOpenFor === r.place_id}
             onToggle={setScoreOpenFor}
           />
-          {r.distance != null && (
-            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-500">
-              {r.distance.toFixed(1)} mi
-            </span>
-          )}
-        </div>
-      )}
-      {/* One quiet meta line: cuisine · price · Google rating. */}
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
+        )}
+        <span
+          className={`text-xs font-bold ${
+            r.dish_count > 0 ? "text-emerald-800" : "text-stone-400"
+          }`}
+        >
+          {veganOptionSummary(r)}
+        </span>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-stone-500">
         <span className="capitalize">
           {prettyType(r.primary_type) || "restaurant"}
         </span>
@@ -739,11 +743,16 @@ export default function Explore({
             </span>
           </span>
         )}
+        {r.distance != null && (
+          <span className="font-medium text-stone-500">
+            · {r.distance.toFixed(1)} mi
+          </span>
+        )}
         {r.dish_count === 0 && r.serves_vegetarian === 1 && (
           <span className="font-medium text-emerald-700">✓ veg-friendly</span>
         )}
       </div>
-      {/* One status line: open state · today's hours. */}
+
       {(() => {
         // Google's business status outranks the hours math — don't tell
         // anyone a temporarily closed restaurant is "open now".
@@ -760,7 +769,7 @@ export default function Explore({
         const todayHours = todayOpeningHours(r.opening_hours);
         if (openState == null && !todayHours) return null;
         return (
-          <div className="mt-1 text-xs font-medium text-stone-600">
+          <div className="mt-2 text-xs font-medium text-stone-600">
             {openState != null && (
               <span
                 className={`font-bold ${
@@ -775,40 +784,27 @@ export default function Explore({
           </div>
         );
       })()}
+
       {r.address && (
-        // One line by default; tap to unfold the full address.
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleAddress(r.place_id);
-          }}
+        <div
           title={r.address}
-          className={`mt-1 block w-full text-left text-xs leading-snug text-stone-500 ${
-            openAddresses.has(r.place_id) ? "" : "truncate"
-          }`}
+          className="mt-1 flex min-w-0 items-center gap-1 text-xs text-stone-400"
         >
-          {r.address}
-        </button>
-      )}
-      {r.editorial_summary && (
-        // The blurb is nice-to-have, not at-a-glance — collapsed by default.
-        <div className="mt-1.5">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleSummary(r.place_id);
-            }}
-            className="text-xs font-semibold text-stone-400 hover:text-stone-600"
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className="h-3 w-3 shrink-0"
+            aria-hidden="true"
           >
-            About {openSummaries.has(r.place_id) ? "▴" : "▾"}
-          </button>
-          {openSummaries.has(r.place_id) && (
-            <div className="mt-1 text-xs leading-relaxed text-stone-500">
-              {r.editorial_summary}
-            </div>
-          )}
+            <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" />
+            <circle cx="12" cy="10" r="2.5" />
+          </svg>
+          <span className="truncate">{r.address}</span>
         </div>
       )}
+
       {/* The routine "checked N days ago" chip is noise; only warn when the
           menu is actually stale. */}
       {isMenuStale(r.menu_fetched_at) && (
@@ -816,76 +812,39 @@ export default function Explore({
           <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
         </div>
       )}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-y-2 border-t border-stone-100 pt-3">
-        {r.dish_count > 0 ? (
-          // Dot + plain text, colored like the map pin for this restaurant —
-          // quieter than a filled pill, and card ↔ pin read as one system.
-          // Clicking jumps straight into the menu, pre-filtered to the
-          // vegan-friendly items the count is talking about.
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setDishesFilter("veganish");
-              setDishesFor(r);
-            }}
-            title="See these vegan-friendly items"
-            className="flex items-center gap-1.5 text-xs font-semibold hover:underline"
-            style={{ color: pinColor(r) }}
-          >
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ background: pinColor(r) }}
-            />
-            {(() => {
-              // Dessert venues (ice cream, bakeries): the counted items are
-              // their desserts, so say "treats", never "meals".
-              const unit = isDessertVenue(r.primary_type) ? "treat" : "meal";
-              return r.vegan_options > 0
-                ? `${r.vegan_options} vegan ${unit}${r.vegan_options === 1 ? "" : "s"}` +
-                    ((r.vegan_sides || 0) > 0
-                      ? ` · ${r.vegan_sides} side${r.vegan_sides === 1 ? "" : "s"}`
-                      : "")
-                : (r.vegan_sides || 0) > 0
-                  ? `${r.vegan_sides} vegan side${r.vegan_sides === 1 ? "" : "s"}`
-                  : `no vegan ${unit}s found`;
-            })()}
-          </button>
-        ) : (
-          <span className="text-xs italic text-stone-400">
-            menu not analyzed yet
-          </span>
-        )}
-        <div className="flex items-center gap-3">
-          <ThumbVote
-            restaurantId={r.id}
-            upVotes={r.up_votes}
-            downVotes={r.down_votes}
-          />
-          {r.website_url && (
-            <a
-              href={r.website_url}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="text-xs font-semibold text-stone-700 underline decoration-stone-300 underline-offset-2 transition hover:text-emerald-700 hover:decoration-emerald-400"
-            >
-              Website ↗
-            </a>
-          )}
+      {(r.website_url || r.dish_count > 0) && (
+        <div className="mt-auto flex flex-nowrap items-center justify-between gap-1.5 border-t border-stone-100 pt-3">
+          <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
+            {r.website_url && (
+              <a
+                href={r.website_url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="whitespace-nowrap text-stone-500 hover:text-emerald-700 hover:underline"
+              >
+                Website ↗
+              </a>
+            )}
+          </div>
           {r.dish_count > 0 && (
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setDishesFilter("all");
+                setDishesFilter(
+                  r.vegan_options > 0 || (r.vegan_sides || 0) > 0
+                    ? "veganish"
+                    : "all"
+                );
                 setDishesFor(r);
               }}
-              className="text-xs font-bold text-emerald-700 opacity-80 transition group-hover:opacity-100 hover:underline"
+              className="shrink-0 rounded-full bg-emerald-700 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800"
             >
-              See dishes →
+              View dishes →
             </button>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 

@@ -14,6 +14,7 @@ raw source text, no pipeline state.
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from vegan_score import compute_vegan_score, menu_offers_plant_protein
 from venue_filter import is_consumer_food_venue
 
 DATA_DIR = Path(__file__).parent / "frontend" / "public" / "data"
+RESTAURANT_DISH_DIR = DATA_DIR / "restaurant-dishes"
 
 # The consumer UI reads exactly these restaurant fields — admin bookkeeping
 # (costs, hashes, refresh/crawl state) stays local.
@@ -40,6 +42,58 @@ _RESTAURANT_FIELDS = (
     "rating", "user_rating_count", "open_now", "opening_hours",
     "enriched_at", "menu_fetched_at", "business_status",
 )
+
+
+def _write_restaurant_dish_shards(
+    dishes: list[dict], published_at: str
+) -> None:
+    """Write one consumer menu file per restaurant and remove stale shards."""
+    RESTAURANT_DISH_DIR.mkdir(parents=True, exist_ok=True)
+    dishes_by_restaurant: dict[int, list[dict]] = {}
+    for dish in dishes:
+        dishes_by_restaurant.setdefault(int(dish["restaurant_id"]), []).append(dish)
+
+    shard_names = set()
+    for restaurant_id, restaurant_dishes in dishes_by_restaurant.items():
+        shard_name = f"{restaurant_id}.json"
+        shard_names.add(shard_name)
+        (RESTAURANT_DISH_DIR / shard_name).write_text(
+            json.dumps(
+                {
+                    "count": len(restaurant_dishes),
+                    "dishes": restaurant_dishes,
+                    "published_at": published_at,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    for stale_path in RESTAURANT_DISH_DIR.glob("*.json"):
+        if stale_path.name not in shard_names:
+            stale_path.unlink()
+
+
+def _json_bytes(payload: dict) -> bytes:
+    """Compact UTF-8 JSON shared by plain and pre-compressed snapshots."""
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_gzip_snapshot(path: Path, payload: dict) -> None:
+    """Write a deterministic pre-compressed JSON snapshot."""
+    path.write_bytes(gzip.compress(_json_bytes(payload), compresslevel=9, mtime=0))
+
+
+def _write_json_snapshot(path: Path, payload: dict, *, gzip_copy: bool = False) -> None:
+    """Write a compact snapshot and, when requested, a deterministic .gz copy."""
+    content = _json_bytes(payload)
+    path.write_bytes(content)
+    if gzip_copy:
+        _write_gzip_snapshot(path.with_suffix(path.suffix + ".gz"), payload)
 
 
 def export() -> dict:
@@ -73,22 +127,22 @@ def export() -> dict:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     published_at = datetime.now(timezone.utc).isoformat()
-    (DATA_DIR / "restaurants.json").write_text(
-        json.dumps(
-            {"count": len(restaurants), "restaurants": restaurants,
-             "published_at": published_at},
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    _write_json_snapshot(
+        DATA_DIR / "restaurants.json",
+        {"count": len(restaurants), "restaurants": restaurants,
+         "published_at": published_at},
     )
-    (DATA_DIR / "dishes.json").write_text(
-        json.dumps(
-            {"count": len(dishes), "dishes": dishes,
-             "published_at": published_at},
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    _write_json_snapshot(
+        DATA_DIR / "dishes.json",
+        {"count": len(dishes), "dishes": dishes,
+         "published_at": published_at},
+        gzip_copy=True,
     )
+
+    # Restaurant cards and map popups open one menu at a time. Small shards
+    # keep that common action from downloading the full cross-menu search
+    # index (currently tens of megabytes on the public site).
+    _write_restaurant_dish_shards(dishes, published_at)
     return {"restaurants": len(restaurants), "dishes": len(dishes)}
 
 

@@ -128,6 +128,15 @@ export default function DishModal({
       .finally(() => setLoading(false));
   }, [restaurant, initialFilter]);
 
+  useEffect(() => {
+    if (!restaurant) return;
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [restaurant, onClose]);
+
   const byCategory = useMemo(() => {
     const groups = { food: [], dessert: [], drink: [] };
     for (const d of dishes) groups[dishCategory(d)].push(d);
@@ -211,12 +220,20 @@ export default function DishModal({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`restaurant-menu-title-${restaurant.id}`}
         className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div>
-            <h2 className="font-semibold text-slate-900">{restaurant.name}</h2>
+            <h2
+              id={`restaurant-menu-title-${restaurant.id}`}
+              className="font-semibold text-slate-900"
+            >
+              {restaurant.name}
+            </h2>
             <div className="mt-0.5 flex flex-wrap items-center gap-2">
               <span className="text-sm font-normal text-slate-400">
                 {restaurant.vegan_options} vegan{" "}
@@ -243,7 +260,12 @@ export default function DishModal({
               className="mt-1 block text-xs font-medium text-slate-500"
             />
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={`Close ${restaurant.name} menu`}
+            className="text-slate-400 hover:text-slate-700"
+          >
             ✕
           </button>
         </div>
@@ -422,23 +444,35 @@ export default function DishModal({
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}
-                  {onOpenDish ? (
-                    // Host provides its own detail panel — stay on the
-                    // current tab instead of navigating to Food items.
-                    <button
-                      onClick={() => onOpenDish(d)}
-                      className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
-                    >
-                      Details, share, or report →
-                    </button>
-                  ) : (
-                    <a
-                      href={`#dishes?dish=${d.id}`}
-                      className="mt-1 inline-block text-xs font-bold text-emerald-700 hover:underline"
-                    >
-                      Details, share, or report →
-                    </a>
-                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    {onOpenDish ? (
+                      // Host provides its own detail panel — stay on the
+                      // current tab instead of navigating to Dishes.
+                      <button
+                        onClick={() => onOpenDish(d)}
+                        className="font-bold text-emerald-700 hover:underline"
+                      >
+                        Details, share, or report →
+                      </button>
+                    ) : (
+                      <a
+                        href={`#dishes?dish=${d.id}`}
+                        className="font-bold text-emerald-700 hover:underline"
+                      >
+                        Details, share, or report →
+                      </a>
+                    )}
+                    {d.menu_url?.startsWith("http") && (
+                      <a
+                        href={d.menu_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-semibold text-stone-500 hover:text-emerald-700 hover:underline"
+                      >
+                        Source menu ↗
+                      </a>
+                    )}
+                  </div>
                 </li>
               ))}
                     </ul>

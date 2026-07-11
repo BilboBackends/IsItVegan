@@ -1231,7 +1231,8 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    (SELECT COUNT(*) FROM dish_votes v
                      WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
                    (SELECT COUNT(*) FROM dish_votes v
-                     WHERE v.dish_id = d.id AND v.vote = 'down') AS down_votes
+                     WHERE v.dish_id = d.id AND v.vote = 'down') AS down_votes,
+                   s.url AS menu_url
             FROM dishes d
             LEFT JOIN classifications c ON c.id = (
                 SELECT id FROM classifications
@@ -1239,6 +1240,7 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
             )
+            LEFT JOIN sources s ON s.id = c.source_id
             WHERE d.restaurant_id = ?
             ORDER BY
                 CASE c.verdict

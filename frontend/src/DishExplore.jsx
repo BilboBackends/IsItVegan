@@ -138,6 +138,7 @@ export default function DishExplore({
   const mapRef = useRef(null);
   const markersRef = useRef({});
   const loadMoreRef = useRef(null);
+  const sortBeforeRestaurantRef = useRef(null);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1280px)");
@@ -680,6 +681,7 @@ export default function DishExplore({
   }
 
   function showRestaurantItems(restaurantId) {
+    if (restaurant === "all") sortBeforeRestaurantRef.current = sortBy;
     setRestaurant(String(restaurantId));
     setCuisine("all");
     setOpenFilter("all");
@@ -687,16 +689,22 @@ export default function DishExplore({
     setVerdicts(new Set());
     setServingRole("all");
     setMaxMiles(0);
-    setSortBy("name");
+    // A restaurant menu still needs verdict order: vegan, likely vegan,
+    // adaptable, unclear, then not vegan. Alphabetical sorting scattered
+    // those groups and made the shortcut feel like the list reshuffled.
+    setSortBy("recommended");
     setMobileView("list");
   }
 
   function clearRestaurantFilter() {
     setRestaurant("all");
-    // Filtering to a restaurant auto-switched the sort to dish name; when
-    // the filter goes, return to the Best match default — unless the user
-    // picked a different sort themselves in the meantime.
-    setSortBy((current) => (current === "name" ? "recommended" : current));
+    const previousSort = sortBeforeRestaurantRef.current;
+    sortBeforeRestaurantRef.current = null;
+    // Restore the earlier list sort when the restaurant view is still using
+    // its automatic Best match order. A sort chosen inside the view wins.
+    setSortBy((current) =>
+      current === "recommended" && previousSort ? previousSort : current
+    );
   }
 
   function toggleRestaurantFilter(restaurantId) {
@@ -1078,7 +1086,7 @@ export default function DishExplore({
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
         onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className="fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
+        className="fixed bottom-5 right-4 z-30 w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
       >
         {mobileView === "list" ? "🗺 Map" : "☰ List"}
       </button>
@@ -1117,7 +1125,6 @@ export default function DishExplore({
           <ol className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm divide-y divide-stone-100">
             {visibleDishes.map((dish, index) => {
               const details = splitReasoning(dish.reasoning);
-              const cuisine = prettyType(dish.primary_type);
               const isExpanded = expandedIds.has(dish.id);
               const isSide = dish.serving_role === "side";
               const previousWasSide = visibleDishes[index - 1]?.serving_role === "side";
@@ -1169,9 +1176,20 @@ export default function DishExplore({
                               showRestaurantOnMap(dish);
                             }}
                             title={`Show ${dish.restaurant_name} on the map`}
-                            className="truncate font-medium text-emerald-700 hover:underline"
+                            className="inline-flex min-w-0 items-center gap-1 font-semibold text-emerald-700 underline decoration-emerald-300 decoration-dotted underline-offset-2 transition hover:decoration-emerald-700"
                           >
-                            {dish.restaurant_name}
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              className="h-3 w-3 shrink-0"
+                              aria-hidden="true"
+                            >
+                              <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" />
+                              <circle cx="12" cy="10" r="2.5" />
+                            </svg>
+                            <span className="truncate">{dish.restaurant_name}</span>
                           </button>
                         ) : (
                           <span className="truncate">{dish.restaurant_name}</span>
@@ -1211,26 +1229,24 @@ export default function DishExplore({
                   </div>
 
                   {isExpanded && (
-                    <div className="px-4 pb-4 sm:px-5">
+                    <div className="border-t border-stone-100 bg-stone-50/60 px-4 py-3 sm:px-5 sm:py-4">
                       <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          {dish.calories && (
-                            <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-semibold text-stone-500">
-                              {calorieLabel(dish.calories)}
-                            </span>
-                          )}
+                        <div className="min-w-0 flex-1">
                           {dish.raw_description && (
-                            <p className="mt-1 text-sm leading-relaxed text-stone-600">
+                            <p className="text-sm leading-relaxed text-stone-700">
                               {dish.raw_description}
                             </p>
                           )}
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                            {dish.calories && (
+                              <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-stone-500 ring-1 ring-stone-200">
+                                {calorieLabel(dish.calories)}
+                              </span>
+                            )}
+                            <DietaryBadges dish={dish} maxBadges={4} />
+                          </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          {dish.confidence != null && (
-                            <span className="hidden text-xs tabular-nums text-stone-400 sm:inline">
-                              {Math.round(dish.confidence * 100)}%
-                            </span>
-                          )}
                           <ThumbVote
                             dishId={dish.id}
                             upVotes={dish.up_votes}
@@ -1244,83 +1260,76 @@ export default function DishExplore({
                         </div>
                       </div>
 
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
-                        {(() => {
-                          const isFiltered =
-                            restaurant === String(dish.restaurant_id);
-                          return (
-                            <button
-                              onClick={() =>
-                                toggleRestaurantFilter(dish.restaurant_id)
-                              }
-                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-bold transition ${
-                                isFiltered
-                                  ? "bg-emerald-700 text-white ring-1 ring-emerald-700 hover:bg-emerald-800"
-                                  : "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-100 hover:ring-emerald-300"
-                              }`}
-                              title={
-                                isFiltered
-                                  ? "Remove the restaurant filter"
-                                  : `Show every menu item from ${dish.restaurant_name} and zoom the map to it`
-                              }
-                            >
-                              <span aria-hidden="true">📍</span>
-                              {dish.restaurant_name}
-                              <span
-                                className={`font-semibold ${
-                                  isFiltered ? "text-emerald-100" : "text-emerald-600"
-                                }`}
-                              >
-                                {isFiltered ? "· clear filter ×" : "· all dishes →"}
-                              </span>
-                            </button>
-                          );
-                        })()}
-                        {cuisine && <span className="rounded-full bg-stone-100 px-2.5 py-1 capitalize text-stone-600">{cuisine}</span>}
-                        <DietaryBadges dish={dish} maxBadges={3} />
-                        <RatingBadge
-                          rating={dish.rating}
-                          userRatingCount={dish.user_rating_count}
-                          className="rounded-full bg-amber-50 px-2.5 py-1"
-                        />
-                        <OpenStatusBadge
-                          openNow={dish.open_now}
-                          enrichedAt={dish.enriched_at}
-                          openingHours={dish.opening_hours}
-                        />
-                        <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
-                      </div>
-
                       {(details.reasoning || details.evidence) && (
-                        <div className="mt-2 text-xs leading-relaxed text-stone-400">
-                          {details.reasoning}
+                        <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+                          <div className="flex flex-wrap items-baseline justify-between gap-2">
+                            <span className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-800">
+                              Why this verdict
+                            </span>
+                            <span className="flex items-center gap-2">
+                              {dish.confidence != null && (
+                                <span className="text-[11px] font-semibold tabular-nums text-emerald-700">
+                                  {Math.round(dish.confidence * 100)}% confidence
+                                </span>
+                              )}
+                              {dish.menu_url?.startsWith("http") && (
+                                <a
+                                  href={dish.menu_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-[11px] font-bold text-emerald-800 underline decoration-emerald-400 underline-offset-2 hover:text-emerald-950"
+                                >
+                                  Source menu ↗
+                                </a>
+                              )}
+                            </span>
+                          </div>
+                          {details.reasoning && (
+                            <p className="mt-1 text-xs leading-relaxed text-emerald-950">
+                              {details.reasoning}
+                            </p>
+                          )}
                           {details.evidence && (
-                            <span className="ml-1 text-stone-500">Menu evidence: {details.evidence}</span>
+                            <blockquote className="mt-1.5 border-l-2 border-emerald-400 pl-2.5 text-xs italic leading-relaxed text-emerald-900">
+                              {details.evidence}
+                            </blockquote>
                           )}
                         </div>
                       )}
 
-                      <div className="mt-2 flex flex-wrap gap-3 text-xs">
-                        {dish.distance != null && (
-                          <span className="font-semibold text-stone-500">{dish.distance.toFixed(1)} mi from {originLabel}</span>
-                        )}
-                        {dish.address && <span className="text-stone-400">{dish.address}</span>}
-                        {dish.lat != null && dish.lng != null && (
+                      <div className="mt-3 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+                          <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
+                          {dish.distance != null && dish.lat != null && dish.lng != null && (
+                            <button
+                              onClick={() => showRestaurantOnMap(dish)}
+                              className="font-semibold text-stone-600 hover:text-emerald-700 hover:underline"
+                            >
+                              {dish.distance.toFixed(1)} mi from {originLabel} · map
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
                           <button
-                            onClick={() => showRestaurantOnMap(dish)}
+                            onClick={() => toggleRestaurantFilter(dish.restaurant_id)}
                             className="font-semibold text-emerald-700 hover:underline"
+                            title={
+                              restaurant === String(dish.restaurant_id)
+                                ? "Remove the restaurant filter"
+                                : `Show every menu item from ${dish.restaurant_name}`
+                            }
                           >
-                            Show on map
+                            {restaurant === String(dish.restaurant_id)
+                              ? "Clear filter"
+                              : "All dishes"}
                           </button>
-                        )}
-                        {dish.website_url && (
-                          <a href={dish.website_url} target="_blank" rel="noreferrer" className="font-semibold text-emerald-700 hover:underline">
-                            Restaurant website ↗
-                          </a>
-                        )}
-                        <button onClick={() => openDish(dish)} className="font-bold text-emerald-700 hover:underline">
-                          Details & share
-                        </button>
+                          <button
+                            onClick={() => openDish(dish)}
+                            className="rounded-full bg-emerald-700 px-3 py-1.5 font-bold text-white transition hover:bg-emerald-800"
+                          >
+                            Full details →
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}

@@ -315,9 +315,15 @@ python publish_static.py
 ```
 
 Only consumer-facing data ships (archived/hidden/non-food venues excluded,
-admin fields stripped). On the static build the `#admin` route shows a
-notice instead of the dashboard and report submission is hidden — there is
-no backend to receive either.
+admin fields stripped). The global Food search snapshot is published as both
+plain JSON (compatibility fallback) and deterministic gzip; static clients
+stream-decompress the small gzip asset in the browser. Restaurant menus also
+get individual shards, so opening one restaurant never downloads the global
+index. These are static-hosting adapters behind one data-loader boundary. When
+the catalog outgrows client-side search, that boundary is the migration point
+for a paginated PostgreSQL search API and server-side facets. On the static
+build Admin and report submission are hidden because there is no backend to
+receive them.
 
 ## Discovery configuration (`.env`)
 
