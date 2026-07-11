@@ -26,3 +26,13 @@ def is_consumer_food_venue(place: dict) -> bool:
         and not bool(place.get("consumer_hidden"))
         and place.get("primary_type") not in EXCLUDED_PRIMARY_TYPES
     )
+
+
+def is_consumer_ready(place: dict, dish_count: int | None) -> bool:
+    """Show a consumer venue only after it has classified dishes.
+
+    Admin still sees every pipeline row. Explore and static exports begin
+    showing a venue automatically once classification successfully persists
+    at least one dish.
+    """
+    return is_consumer_food_venue(place) and bool((dish_count or 0) > 0)

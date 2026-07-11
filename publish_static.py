@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 import db
 from vegan_score import compute_vegan_score, menu_offers_plant_protein
-from venue_filter import is_consumer_food_venue
+from venue_filter import is_consumer_food_venue, is_consumer_ready
 
 DATA_DIR = Path(__file__).parent / "frontend" / "public" / "data"
 RESTAURANT_DISH_DIR = DATA_DIR / "restaurant-dishes"
@@ -101,10 +101,10 @@ def export() -> dict:
     counts = db.verdict_counts_by_restaurant()
     restaurants = []
     for r in db.list_restaurants():
-        if not is_consumer_food_venue(r):
+        c = counts.get(r["id"])
+        if not is_consumer_ready(r, c["total"] if c else 0):
             continue
         row = {field: r.get(field) for field in _RESTAURANT_FIELDS}
-        c = counts.get(r["id"])
         row["dish_count"] = c["total"] if c else 0
         row["vegan_options"] = c["vegan_meals"] if c else 0
         row["vegan_sides"] = c["vegan_sides"] if c else 0
@@ -123,7 +123,11 @@ def export() -> dict:
         row["vegan_score_parts"] = score
         restaurants.append(row)
 
-    dishes = [d for d in db.list_all_dishes() if is_consumer_food_venue(d)]
+    dishes = [
+        d
+        for d in db.list_all_dishes()
+        if is_consumer_food_venue(d) and d.get("verdict")
+    ]
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     published_at = datetime.now(timezone.utc).isoformat()

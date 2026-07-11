@@ -4,7 +4,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from venue_filter import EXCLUDED_PRIMARY_TYPES, is_consumer_food_venue
+from venue_filter import (
+    EXCLUDED_PRIMARY_TYPES,
+    is_consumer_food_venue,
+    is_consumer_ready,
+)
 
 
 def test_real_restaurants_are_kept():
@@ -36,3 +40,10 @@ def test_archived_or_hidden_never_a_consumer_venue():
     assert not is_consumer_food_venue(
         {"primary_type": "restaurant", "consumer_hidden": 1}
     )
+
+
+def test_consumer_ready_requires_at_least_one_classified_dish():
+    place = {"primary_type": "restaurant"}
+    assert is_consumer_ready(place, 0) is False
+    assert is_consumer_ready(place, None) is False
+    assert is_consumer_ready(place, 1) is True

@@ -32,7 +32,7 @@ from config import settings
 from location_filter import area_from_address, metro_from_area
 from menu_score import score_menu_text
 from vegan_score import compute_vegan_score, menu_offers_plant_protein
-from venue_filter import is_consumer_food_venue
+from venue_filter import is_consumer_food_venue, is_consumer_ready
 
 app = Flask(__name__)
 # Allow the Vite dev server origin during local development.
@@ -156,6 +156,12 @@ def get_restaurants() -> object:
             if r.get("has_menu_text") and r.get("menu_chars")
             else None
         )
+    if not include_excluded:
+        restaurants = [
+            restaurant
+            for restaurant in restaurants
+            if is_consumer_ready(restaurant, restaurant["dish_count"])
+        ]
     return jsonify({"count": len(restaurants), "restaurants": restaurants})
 
 

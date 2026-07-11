@@ -182,6 +182,11 @@ high-confidence `likely_vegan` (≥ 0.75) only; `vegan_adaptable` never
 counts; drinks and desserts are excluded; meals and sides are counted
 separately.
 
+Consumer Explore and static publishing currently require a restaurant to have
+at least one classified dish. Unfinished expansion rows stay visible in Admin
+and become consumer-visible automatically after classification and the next
+static publish.
+
 The public site is GitHub Pages (fully static: built frontend + JSON
 snapshots via `publish_static.py [--push]`); the live pipeline and Admin
 exist only locally.

@@ -104,6 +104,9 @@ Consumer views automatically exclude Google place types that are not food
 venues (for example convenience stores, gas stations, and supermarkets).
 Excluded records remain visible and labeled in Admin, where any additional
 false-positive listing can be hidden from Explore without deleting its data.
+While the expanded catalog is being processed, consumer views and static
+exports also require at least one classified dish. Unfinished venues remain
+visible in Admin and appear automatically after classification.
 
 ## Running the pipeline from the command line
 
