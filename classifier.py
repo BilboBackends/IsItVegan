@@ -233,7 +233,10 @@ When preparation is genuinely unknown, prefer likely_vegan over vegan, and \
 unclear over likely_vegan. Drinks, sides, and desserts count as dishes.
 - Use cuisine knowledge: naan usually has dairy; pad thai usually has fish \
 sauce and egg; refried beans often have lard; pizza dough is usually vegan \
-but check toppings; miso soup usually uses fish dashi; yakitori/izakaya tare \
+but check toppings; miso paste itself is plant-based (a miso glaze or \
+dressing is fine on that count), but restaurant miso SOUP is usually built \
+on fish (bonito) dashi — miso soup is likely_vegan at best, and only when a \
+vegan/kombu dashi is stated; yakitori/izakaya tare \
 glaze often contains chicken stock or bonito — grilled items with tare are \
 likely_vegan at best, never vegan.
 - Pizza/flatbread with dairy cheese listed is not_vegan, never \
