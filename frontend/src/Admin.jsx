@@ -23,6 +23,27 @@ const PROVIDER_LABELS = {
   deepseek: "DeepSeek",
 };
 
+// Non-food primary types a gap sweep matches but that shouldn't enter the
+// pipeline (a pet bakery, a mall, a liquor store). Mirrors the backend
+// venue_filter.EXCLUDED_PRIMARY_TYPES so the pre-add filter agrees with it.
+const EXCLUDED_SWEEP_TYPES = new Set([
+  "convenience_store",
+  "gas_station",
+  "grocery_store",
+  "supermarket",
+  "liquor_store",
+  "pharmacy",
+  "store",
+  "shopping_mall",
+  "pet_care",
+]);
+
+const isFoodVenue = (place) => !EXCLUDED_SWEEP_TYPES.has(place.primary_type);
+
+// Backend caps a names-only add at 60 places per request; larger sets are
+// split into sequential batches.
+const ADD_BATCH_SIZE = 60;
+
 // "resets_at" from the usage endpoints may be an ISO string or an epoch in
 // seconds/milliseconds — render whatever arrives as a countdown.
 function formatReset(resetsAt) {
@@ -544,6 +565,74 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     [places, onlyNew]
   );
 
+  // New (not-yet-added) places split into real food venues vs excluded types.
+  const { keepers, droppedByType } = useMemo(() => {
+    const kept = [];
+    const dropped = new Map();
+    for (const p of newPlaces) {
+      if (isFoodVenue(p)) {
+        kept.push(p);
+      } else {
+        const t = p.primary_type || "unknown";
+        dropped.set(t, (dropped.get(t) || 0) + 1);
+      }
+    }
+    return {
+      keepers: kept,
+      droppedByType: [...dropped.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [newPlaces]);
+  const droppedCount = droppedByType.reduce((sum, [, n]) => sum + n, 0);
+
+  // Add every food-venue keeper, names-only, in <=60 batches (the backend
+  // per-request cap). Enrichment only — scrape/classify run later as jobs.
+  async function addAllKeepers() {
+    if (keepers.length === 0 || adding) return;
+    setAdding(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const addedIds = new Map();
+      let added = 0;
+      for (let i = 0; i < keepers.length; i += ADD_BATCH_SIZE) {
+        const batch = keepers.slice(i, i + ADD_BATCH_SIZE);
+        setNotice(
+          `Adding ${added + 1}–${Math.min(
+            added + batch.length,
+            keepers.length
+          )} of ${keepers.length}…`
+        );
+        const res = await fetch("/api/restaurants/add", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ places: batch, ingest: false, classify: false }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
+        batch.forEach((p, j) => addedIds.set(p.place_id, data.added?.[j]?.id ?? true));
+        added += batch.length;
+      }
+      setPlaces((current) =>
+        (current || []).map((p) =>
+          addedIds.has(p.place_id)
+            ? { ...p, already_added_id: addedIds.get(p.place_id) }
+            : p
+        )
+      );
+      setSelected(new Set());
+      setNotice(
+        `Added ${added} food venue(s)${
+          droppedCount ? ` (skipped ${droppedCount} non-food)` : ""
+        } — scrape & classify them from the Active table when ready.`
+      );
+      onAdded?.();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function addSelected() {
     const chosen = (places || []).filter((p) => selected.has(p.place_id));
     if (chosen.length === 0) return;
@@ -822,6 +911,23 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                 ? "Adding…"
                 : `Add ${selected.size} to pipeline (names only)`}
             </button>
+            {keepers.length > 0 && (
+              <button
+                onClick={addAllKeepers}
+                disabled={adding || Boolean(pipeline)}
+                className="rounded-lg bg-emerald-700 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                title={
+                  `Adds all ${keepers.length} food-venue result(s) not yet in the ` +
+                  `pipeline, in batches of ${ADD_BATCH_SIZE}. Names only — ` +
+                  `enrichment runs now; scrape & classify from the Active table.` +
+                  (droppedCount ? ` Skips ${droppedCount} non-food venue(s).` : "")
+                }
+              >
+                {adding
+                  ? "Adding…"
+                  : `Add all ${keepers.length} food venues`}
+              </button>
+            )}
             <span className="mx-1 text-xs text-slate-300">|</span>
             <select
               value={pipelineProvider}
@@ -848,6 +954,16 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                 : `Add + scrape + classify (${selected.size})`}
             </button>
           </div>
+
+          {droppedCount > 0 && (
+            <div className="text-xs text-slate-500">
+              “Add all food venues” skips {droppedCount} non-food result(s):{" "}
+              {droppedByType
+                .map(([type, n]) => `${n} ${type.replace(/_/g, " ")}`)
+                .join(", ")}
+              .
+            </div>
+          )}
 
           {pipeline && (
             <div className="flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900">

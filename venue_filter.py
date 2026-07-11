@@ -9,6 +9,9 @@ EXCLUDED_PRIMARY_TYPES = {
     "pharmacy",
     "store",
     "shopping_mall",
+    # A pet bakery/groomer (Woof Gang Bakery) matches a "bakery" sweep but is
+    # not a food venue for humans.
+    "pet_care",
 }
 
 
