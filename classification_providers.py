@@ -241,6 +241,30 @@ def provider_status() -> dict:
     }
 
 
+def model_for_provider(name: str) -> str:
+    """The model id a given provider classifies with — used for cost
+    estimates so the Admin's pre-run number matches what will actually run.
+
+    Subscriptions (claude/codex) are flat-rate, not per-token; callers price
+    those at $0 and this returns their label only for display.
+    """
+    name = (name or "").strip().lower()
+    if name == "deepseek":
+        return settings.deepseek_classifier_model
+    if name == "anthropic":
+        return settings.anthropic_classifier_model
+    if name == "claude":
+        return settings.claude_classifier_model or "claude"
+    if name == "codex":
+        return settings.codex_classifier_model or "codex"
+    return settings.deepseek_classifier_model
+
+
+# Providers billed per token — the only ones a cost estimate is meaningful
+# for. Subscriptions are flat-rate; their pre-run "cost" is $0.
+METERED_PROVIDERS = frozenset({"deepseek", "anthropic"})
+
+
 def resolve_provider(requested: str | None = None) -> str:
     """Return DeepSeek when its API key is configured."""
     names = _provider_chain(requested)

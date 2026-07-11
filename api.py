@@ -105,6 +105,10 @@ def get_restaurants() -> object:
     db.init_db()
     restaurants = db.list_restaurants()
     include_excluded = request.args.get("include_excluded") == "true"
+    # Estimates are priced against the provider that will actually run; the
+    # UI passes its selected provider so the pre-run number matches the
+    # button. Absent -> the configured default (DeepSeek here).
+    estimate_provider = request.args.get("provider") or None
     for restaurant in restaurants:
         restaurant["is_consumer_venue"] = is_consumer_food_venue(restaurant)
         # City parsed from the Places address — the Admin coverage view
@@ -148,7 +152,7 @@ def get_restaurants() -> object:
         # Pre-run classification cost estimate from menu size; the actual
         # cost of the last run (if any) rides along as last_classify_cost.
         r["classify_estimate"] = (
-            classifier.estimate_cost(r["menu_chars"])
+            classifier.estimate_cost(r["menu_chars"], provider=estimate_provider)
             if r.get("has_menu_text") and r.get("menu_chars")
             else None
         )

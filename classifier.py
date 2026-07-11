@@ -69,16 +69,37 @@ MODEL = settings.anthropic_classifier_model
 _MAX_MENU_CHARS = 50_000
 
 
-def estimate_cost(menu_chars: int) -> float:
+def estimate_cost(menu_chars: int, provider: str | None = None) -> float:
     """Pre-run cost estimate ($) for classifying a menu of this size.
 
+    Priced against the model the given provider actually runs, so the Admin's
+    pre-run number matches reality — the default is the configured classifier
+    provider (DeepSeek in this project), NOT the Anthropic API model. Flat-rate
+    subscriptions (claude/codex) have no per-token cost, so they estimate $0.
+
     Calibrated against observed runs: input is prompt overhead plus the menu
-    at ~4 chars/token; output dominates at ~70 tokens per dish, with dishes
+    at ~4 chars/token; output dominates at ~110 tokens per dish, with dishes
     running ~1 per 120 chars of menu text. An estimate, not a quote — the
     dashboard shows the actual cost after a run and keeps it per restaurant.
     """
+    from classification_providers import (
+        METERED_PROVIDERS,
+        model_for_provider,
+        resolve_provider,
+    )
+
+    name = (provider or settings.classifier_provider or "deepseek").strip().lower()
+    # "auto" and unknown names resolve to whatever will actually run.
+    if name not in METERED_PROVIDERS:
+        try:
+            name = resolve_provider(name)
+        except Exception:
+            name = "deepseek"
+    if name not in METERED_PROVIDERS:
+        return 0.0  # flat-rate subscription — no per-token cost to estimate
+
     chars = min(max(menu_chars, 0), _MAX_MENU_CHARS)
-    in_price, out_price = _PRICES.get(MODEL, (3.0, 15.0))
+    in_price, out_price = _PRICES.get(model_for_provider(name), (0.14, 0.28))
     input_tokens = 1_200 + chars / 4
     # Dietary attributes, meal tags, and key ingredients make each extracted
     # dish somewhat larger than the original vegan-only response.

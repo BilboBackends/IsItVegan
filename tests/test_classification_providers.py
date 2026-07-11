@@ -60,6 +60,48 @@ def test_auto_chain_is_deepseek_only(monkeypatch):
     assert cp._provider_chain(None) == ["deepseek"]
 
 
+def test_deepseek_prices_are_v4_rates():
+    # V4-Flash pricing; the deprecated aliases map to the same rates.
+    assert cp.PRICES["deepseek-v4-flash"] == (0.14, 0.28)
+    assert cp.PRICES["deepseek-reasoner"] == (0.14, 0.28)
+    assert cp.PRICES["deepseek-chat"] == (0.14, 0.28)
+
+
+def test_estimate_cost_prices_against_running_provider(monkeypatch):
+    import classifier
+
+    # Default estimate is the cheap DeepSeek tier, not the Anthropic API model.
+    deepseek_est = classifier.estimate_cost(20_000, provider="deepseek")
+    anthropic_est = classifier.estimate_cost(20_000, provider="anthropic")
+    assert deepseek_est < 0.05  # ~half a cent for a 20k-char menu
+    # Anthropic (Sonnet) is far pricier — the estimate must reflect that so a
+    # metered run is not undersold.
+    assert anthropic_est > deepseek_est * 20
+
+
+def test_estimate_cost_defaults_to_configured_provider(monkeypatch):
+    import dataclasses
+
+    import classifier
+
+    monkeypatch.setattr(
+        cp, "settings", dataclasses.replace(cp.settings, classifier_provider="deepseek")
+    )
+    monkeypatch.setattr(
+        classifier, "settings",
+        dataclasses.replace(classifier.settings, classifier_provider="deepseek"),
+    )
+    # No provider arg -> the configured default (DeepSeek), not Anthropic.
+    assert classifier.estimate_cost(20_000) == classifier.estimate_cost(
+        20_000, provider="deepseek"
+    )
+
+
+def test_model_for_provider_maps_deepseek_to_configured_model():
+    assert cp.model_for_provider("deepseek") == cp.settings.deepseek_classifier_model
+    assert cp.model_for_provider("anthropic") == cp.settings.anthropic_classifier_model
+
+
 def test_auto_never_falls_back_from_deepseek(monkeypatch):
     monkeypatch.setattr(cp, "_provider_available", lambda name: True)
     calls = []

@@ -1525,8 +1525,11 @@ export default function Admin() {
     setLoading(true);
     setError(null);
     try {
+      // Price the cost estimates against the provider currently selected in
+      // the classify controls, so the pre-run number matches the button.
+      const providerParam = encodeURIComponent(classifierProvider);
       const [rRes, cRes, reportRes, qualityRes, usageRes] = await Promise.all([
-        fetch("/api/restaurants?include_excluded=true"),
+        fetch(`/api/restaurants?include_excluded=true&provider=${providerParam}`),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
         fetch("/api/menu-quality"),
@@ -1548,6 +1551,35 @@ export default function Admin() {
       setLoading(false);
     }
   }
+
+  // Re-price cost estimates when the classify provider changes — refetch
+  // just the restaurant list (estimates ride on it), skipping the initial
+  // mount which loadData() already covers.
+  const didMountRef = useRef(false);
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/restaurants?include_excluded=true&provider=${encodeURIComponent(
+            classifierProvider
+          )}`
+        );
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (!cancelled) setRestaurants(data.restaurants);
+      } catch {
+        /* keep the existing estimates on a transient failure */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [classifierProvider]);
 
   useEffect(() => {
     loadData();
