@@ -1,7 +1,16 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import DishExplore from "./DishExplore.jsx";
 import Explore from "./Explore.jsx";
 import SavedExplore from "./SavedExplore.jsx";
+import { loadDishes } from "./dishData.js";
+import { apiUrl } from "./staticData.js";
+import {
+  SessionContext,
+  mergeLocalFavorites,
+  pullFavorites,
+  registerRestaurants,
+  syncFavorite,
+} from "./cloud.js";
 
 const EMPTY_FAVORITES = { dishes: [], restaurants: [] };
 
@@ -21,19 +30,57 @@ export default function ExploreHub({ view = "restaurants" }) {
   const foodActive = view === "food";
   const savedActive = view === "saved";
   const [favorites, setFavorites] = useState(loadFavorites);
+  const session = useContext(SessionContext);
+  const syncedUserRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem("veganfind:favorites", JSON.stringify(favorites));
   }, [favorites]);
 
+  // On sign-in: upload anything saved anonymously in this browser, then pull
+  // the account's favorites and union them in — no heart is ever lost. The
+  // datasets load first so favorites can carry stable keys (place_id + dish
+  // name) instead of the renumber-prone numeric ids.
+  useEffect(() => {
+    const userId = session?.user?.id;
+    if (!userId || syncedUserRef.current === userId) return;
+    syncedUserRef.current = userId;
+    (async () => {
+      try {
+        const [restaurantsRes] = await Promise.all([
+          fetch(apiUrl("/api/restaurants")),
+          loadDishes(), // registers dishes as a side effect
+        ]);
+        if (restaurantsRes.ok) {
+          const data = await restaurantsRes.json();
+          registerRestaurants(data.restaurants || []);
+        }
+        await mergeLocalFavorites(loadFavorites(), userId);
+        const cloud = await pullFavorites();
+        if (cloud) {
+          setFavorites((current) => ({
+            dishes: [...new Set([...current.dishes, ...cloud.dishes])],
+            restaurants: [
+              ...new Set([...current.restaurants, ...cloud.restaurants]),
+            ],
+          }));
+        }
+      } catch {
+        /* cloud sync is additive; local favorites keep working regardless */
+      }
+    })();
+  }, [session]);
+
   function toggle(kind, id) {
     setFavorites((current) => {
       const values = current[kind];
+      const active = !values.includes(id);
+      syncFavorite(kind, id, active, session?.user?.id);
       return {
         ...current,
-        [kind]: values.includes(id)
-          ? values.filter((value) => value !== id)
-          : [...values, id],
+        [kind]: active
+          ? [...values, id]
+          : values.filter((value) => value !== id),
       };
     });
   }

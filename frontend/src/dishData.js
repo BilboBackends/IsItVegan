@@ -1,5 +1,6 @@
 import { apiUrl, STATIC_MODE } from "./staticData.js";
 import { readGzipJson } from "./gzipJson.js";
+import { registerDishes } from "./cloud.js";
 const CACHE_TTL_MS = 30_000;
 
 let cachedDishes = null;
@@ -21,6 +22,8 @@ export function loadDishes() {
     .then((data) => {
       cachedDishes = data.dishes || [];
       cachedAt = Date.now();
+      // Cloud favorites/votes key on stable identities built from these rows.
+      registerDishes(cachedDishes);
       return cachedDishes;
     })
     .finally(() => {

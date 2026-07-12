@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { STATIC_MODE } from "./staticData.js";
+import { SessionContext, syncVote } from "./cloud.js";
 
 // Thumbs up/down on a dish OR a restaurant — the lightweight "was this
 // right / did you like it" signal, with a running count next to each thumb.
@@ -64,6 +65,7 @@ export default function ThumbVote({
 }) {
   const kind = restaurantId != null ? KINDS.restaurant : KINDS.dish;
   const targetId = restaurantId ?? dishId;
+  const session = useContext(SessionContext);
   const [vote, setVote] = useState(
     () => readVotes(kind.storageKey)[targetId] || null
   );
@@ -80,6 +82,15 @@ export default function ThumbVote({
     if (value) all[targetId] = value;
     else delete all[targetId];
     writeVotes(kind.storageKey, all);
+    // Signed-in likes persist to the account (deduped per user by the DB).
+    if (session?.user) {
+      syncVote(
+        restaurantId != null ? "restaurants" : "dishes",
+        targetId,
+        value,
+        session.user.id
+      ).catch(() => {});
+    }
     if (!STATIC_MODE) {
       fetch(kind.endpoint, {
         method: "POST",

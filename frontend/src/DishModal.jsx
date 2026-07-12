@@ -6,6 +6,8 @@ import { calorieLabel } from "./calories.js";
 import { isDessertVenue } from "./cuisine.js";
 import { isCountedVegan } from "./verdicts.js";
 import { fetchRestaurantDishes } from "./staticData.js";
+import { registerDishes, registerRestaurants } from "./cloud.js";
+import Comments from "./Comments.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
@@ -118,6 +120,10 @@ export default function DishModal({
       .then((data) => {
         const list = data.dishes || [];
         setDishes(list);
+        // Stable identities for account features (likes key on place_id +
+        // dish name, not the renumber-prone numeric ids).
+        registerRestaurants([restaurant]);
+        registerDishes(list);
         // Open on the first category that actually has items.
         const first = CATEGORIES.find((c) =>
           list.some((d) => dishCategory(d) === c.key)
@@ -482,6 +488,11 @@ export default function DishModal({
               })}
             </div>
           )}
+          <Comments
+            restaurant={restaurant}
+            dishes={dishes}
+            onOpenDish={onOpenDish}
+          />
         </div>
         <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
           Verdicts are inferred from the restaurant's menu text — evidence shown

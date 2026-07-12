@@ -1,0 +1,40 @@
+project_id = "IsItVegan"
+
+[api]
+enabled = true
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+auto_expose_new_tables = false
+
+[db]
+major_version = 17
+
+[auth]
+enabled = true
+site_url = "https://bilbobackends.github.io/IsItVegan/"
+additional_redirect_urls = [
+  "http://localhost:5173/",
+  "http://127.0.0.1:5173/",
+  "https://bilbobackends.github.io/IsItVegan/",
+]
+enable_signup = true
+enable_anonymous_sign_ins = false
+enable_manual_linking = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+max_frequency = "1m"
+otp_length = 8
+otp_expiry = 3600
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+[auth.external.google]
+enabled = false
+client_id = ""
+secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"

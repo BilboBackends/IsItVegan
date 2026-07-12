@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { STATIC_MODE } from "./staticData.js";
+import { SessionContext } from "./cloud.js";
+import AccountButton from "./AccountButton.jsx";
 import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
 
@@ -8,6 +10,8 @@ import Admin from "./Admin.jsx";
 
 export default function App() {
   const [hash, setHash] = useState(window.location.hash);
+  // Supabase session when the account backend is configured; null otherwise.
+  const [session, setSession] = useState(null);
 
   useEffect(() => {
     const onHash = () => setHash(window.location.hash);
@@ -25,6 +29,7 @@ export default function App() {
       : "restaurants";
 
   return (
+    <SessionContext.Provider value={session}>
     <div className="min-h-screen bg-[#faf8f4] text-stone-900">
       <nav className="sticky top-0 z-20 border-b border-stone-200/80 bg-[#faf8f4]/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
@@ -34,6 +39,8 @@ export default function App() {
             </span>
             <span className="hidden sm:inline">VeganFind</span>
           </a>
+          <div className="flex items-center gap-2">
+          <AccountButton session={session} onSession={setSession} />
           {!STATIC_MODE && (
             <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-xs shadow-sm sm:text-sm">
             <a
@@ -58,6 +65,7 @@ export default function App() {
             </a>
             </div>
           )}
+          </div>
         </div>
       </nav>
       {isAdmin ? (
@@ -66,5 +74,6 @@ export default function App() {
         <ExploreHub view={exploreView} />
       )}
     </div>
+    </SessionContext.Provider>
   );
 }
