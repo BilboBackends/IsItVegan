@@ -22,10 +22,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import db
 
@@ -102,6 +103,15 @@ def build_prompt(
         "Work autonomously; no one can answer questions mid-run. End with the",
         "SCRAPE-DOCTOR RESULT line the skill requires.",
     ]
+    if agent == "codex":
+        lines += [
+            "",
+            "Codex commit handoff: .git is intentionally read-only in your sandbox.",
+            "Do NOT run git add or git commit. Leave only the intended Python source",
+            "and regression-test changes in the worktree. The trusted launcher will",
+            "validate that file list and commit it after you report `fixed`. A fully",
+            "implemented and verified repair is `fixed` even though you did not commit.",
+        ]
     return "\n".join(lines)
 
 
@@ -197,6 +207,108 @@ def _worktree_is_clean() -> bool:
         errors="replace",
     )
     return completed.returncode == 0 and not completed.stdout.strip()
+
+
+def _git_output(*args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(detail or f"git {' '.join(args)} failed")
+    return completed.stdout
+
+
+def _cleanup_codex_test_artifacts() -> None:
+    """Remove only known disposable pytest directories inside this repo."""
+    root = Path(_REPO_ROOT).resolve()
+    for name in (".pytest-tmp", "test-temp"):
+        candidate = root / name
+        if not candidate.exists():
+            continue
+        target = candidate.resolve()
+        if target.parent != root:
+            raise RuntimeError(f"Refusing to clean unexpected path: {target}")
+        shutil.rmtree(target)
+        _log(f"[launcher] removed test artifact {name}")
+
+
+def _codex_changed_paths() -> list[str]:
+    """Return every tracked, staged, or untracked path left by Codex."""
+    paths: set[str] = set()
+    for args in (
+        ("diff", "--name-only", "-z"),
+        ("diff", "--cached", "--name-only", "-z"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+    ):
+        paths.update(path for path in _git_output(*args).split("\0") if path)
+    return sorted(paths)
+
+
+def _codex_path_is_committable(path: str) -> bool:
+    """Limit the trusted handoff to scraper Python and Python regression tests."""
+    normalized = path.replace("\\", "/")
+    parsed = PurePosixPath(normalized)
+    if (
+        parsed.is_absolute()
+        or ":" in normalized
+        or ".." in parsed.parts
+        or parsed.suffix != ".py"
+    ):
+        return False
+    return len(parsed.parts) == 1 or (
+        len(parsed.parts) == 2 and parsed.parts[0] == "tests"
+    )
+
+
+def _run_parent_test_suite() -> None:
+    """Independently confirm the sandbox changes before granting a commit."""
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=600,
+    )
+    tail = (completed.stdout.strip() or completed.stderr.strip()).splitlines()
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "parent verification failed: " + " | ".join(tail[-5:])
+        )
+    _log(f"[launcher] parent test verification passed: {tail[-1] if tail else 'ok'}")
+
+
+def _commit_codex_changes(restaurant: dict, summary: str | None) -> str:
+    """Validate Codex's sandbox output, then commit from the trusted parent."""
+    _cleanup_codex_test_artifacts()
+    paths = _codex_changed_paths()
+    if not paths:
+        raise RuntimeError("Codex reported a fix but left no changes to commit.")
+    rejected = [path for path in paths if not _codex_path_is_committable(path)]
+    if rejected:
+        raise RuntimeError(
+            "Refusing to commit unexpected Codex paths: " + ", ".join(rejected)
+        )
+
+    _git_output("diff", "--check")
+    _run_parent_test_suite()
+    _git_output("add", "--", *paths)
+    name = str(restaurant.get("name") or f"restaurant {restaurant['id']}")
+    subject = f"Fix menu scraping exposed by {name}"[:72].rstrip()
+    command = ["commit", "-m", subject]
+    if summary:
+        command += ["-m", summary.strip()[:500]]
+    _git_output(*command)
+    commit = _git_output("rev-parse", "--short", "HEAD").strip()
+    _log(f"[launcher] committed verified Codex changes as {commit}")
+    return commit
 
 
 def _codex_command(executable: str, output_path: Path) -> list[str]:
@@ -300,6 +412,13 @@ def _run_job(restaurant: dict, profile: dict | None, agent: str) -> None:
                 summary = final_text.strip()[-400:]
         if process.returncode != 0 and verdict == "failed" and not summary:
             summary = f"{agent} exited with code {process.returncode}"
+        if agent == "codex" and verdict == "fixed":
+            try:
+                commit = _commit_codex_changes(restaurant, summary)
+                summary = f"{summary or 'Scraper fix verified.'} Committed as {commit}."
+            except Exception as exc:
+                verdict = "failed"
+                summary = f"Fix was not committed safely: {type(exc).__name__}: {exc}"
         with _state_lock:
             _state.update(running=False, verdict=verdict, summary=summary)
     except Exception as exc:  # never leave the job wedged in "running"

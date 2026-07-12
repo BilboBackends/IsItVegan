@@ -4,6 +4,7 @@ The agent run itself (headless claude) is not tested here; these pin the
 deterministic shell around it so the button can't mis-fire.
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,6 +42,8 @@ def test_codex_prompt_and_command_use_bounded_workspace_access():
         agent="codex",
     )
     assert "codex CLI" in prompt
+    assert ".git is intentionally read-only" in prompt
+    assert "trusted launcher" in prompt
     command = scrape_doctor._codex_command("codex", Path("result.txt"))
     assert command[:2] == ["codex", "exec"]
     assert command[command.index("--sandbox") + 1] == "workspace-write"
@@ -48,6 +51,54 @@ def test_codex_prompt_and_command_use_bounded_workspace_access():
     assert "sandbox_workspace_write.network_access=true" in command
     assert "--json" in command and "--output-last-message" in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
+def test_codex_commit_handoff_only_accepts_python_source_and_tests():
+    accepted = (
+        "scraper.py",
+        "new_collector.py",
+        "tests/test_scraper.py",
+    )
+    rejected = (
+        ".env",
+        "veganfind.db",
+        "README.md",
+        "frontend/public/data/restaurants.json",
+        "tests/fixture.json",
+        "../outside.py",
+        "C:/outside.py",
+    )
+    assert all(scrape_doctor._codex_path_is_committable(path) for path in accepted)
+    assert not any(scrape_doctor._codex_path_is_committable(path) for path in rejected)
+
+
+def test_codex_commit_handoff_creates_commit_in_trusted_parent(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init")
+    git("config", "user.email", "doctor@example.test")
+    git("config", "user.name", "Scrape Doctor Test")
+    source = repo / "scraper.py"
+    source.write_text("before = True\n", encoding="utf-8")
+    git("add", "scraper.py")
+    git("commit", "-m", "baseline")
+    source.write_text("after = True\n", encoding="utf-8")
+
+    monkeypatch.setattr(scrape_doctor, "_REPO_ROOT", str(repo))
+    monkeypatch.setattr(scrape_doctor, "_run_parent_test_suite", lambda: None)
+    commit = scrape_doctor._commit_codex_changes(
+        {"id": 42, "name": "Cafe X"}, "bounded retry verified"
+    )
+
+    assert commit == git("rev-parse", "--short", "HEAD")
+    assert git("status", "--porcelain") == ""
+    assert git("log", "-1", "--pretty=%s") == "Fix menu scraping exposed by Cafe X"
 
 
 def test_result_line_parses_all_verdicts():

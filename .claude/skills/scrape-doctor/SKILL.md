@@ -102,11 +102,16 @@ restaurant that exposed it).
 If verification fails and you cannot fix it, `git checkout` your changes and
 report honestly.
 
-## Step 7 — Commit and report
+## Step 7 — Commit handoff and report
 
-Commit (never push) with a message following repo convention: what class of
-failure, which restaurant exposed it, how it's now guarded, verification
-results.
+When running through Claude, commit (never push) with a message following repo
+convention: what class of failure, which restaurant exposed it, how it is now
+guarded, and verification results.
+
+When the kickoff prompt identifies the Codex CLI, `.git` is intentionally
+read-only. Do not attempt `git add` or `git commit`. Leave only the intended
+Python source and regression-test changes in the worktree. The trusted launcher
+validates the changed paths and creates the commit after a `fixed` result.
 
 End your FINAL message with exactly one line so the caller can parse it:
 
@@ -114,7 +119,8 @@ End your FINAL message with exactly one line so the caller can parse it:
 SCRAPE-DOCTOR RESULT: <fixed|unscrapeable|failed> — <one-sentence summary>
 ```
 
-- `fixed` — scraper changed, verified, committed.
+- `fixed` — scraper changed and verified; committed directly by Claude or by
+  the trusted Codex launcher handoff.
 - `unscrapeable` — no generic fix exists; name the reason (photo-only,
   social-only, bot wall) so the restaurant goes to the photo-fallback queue.
 - `failed` — you could not complete the diagnosis/fix; say what you learned
