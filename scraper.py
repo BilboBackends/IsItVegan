@@ -179,6 +179,9 @@ _MAX_FOLLOW = 8
 # two-hop expansion of menu index pages (/menu/ -> /menu/lunch, /menu/dinner).
 _MAX_HTTP_FETCHES = 12
 _MAX_VIGUEST_CATEGORY_RENDERS = 24
+# Some edge/WAF layers intermittently reject an otherwise valid request before
+# serving it unchanged on retry. Keep retries bounded so a hard block stays fast.
+_TRANSIENT_FORBIDDEN_RETRIES = 2
 
 # Cap on combined kept text across pages — bounds classification cost.
 _MAX_COMBINED_CHARS = 50_000
@@ -329,6 +332,10 @@ def _fetch(client: httpx.Client, url: str) -> _Fetched:
     """
     try:
         resp = client.get(url)
+        for _ in range(_TRANSIENT_FORBIDDEN_RETRIES):
+            if resp.status_code != 403:
+                break
+            resp = client.get(url)
     except httpx.HTTPError as exc:
         if not _is_cert_verify_error(exc):
             return _Fetched(error=f"{type(exc).__name__}: {exc}")

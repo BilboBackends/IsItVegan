@@ -447,6 +447,46 @@ def test_fetch_retries_certificate_errors_without_verification(monkeypatch):
     assert "Menu from https://badcert.example/menu" in result.html
 
 
+def test_fetch_retries_intermittent_forbidden_response():
+    # F&D Woodfired's edge sometimes returns two 403s before the same request works.
+    responses = [
+        SimpleNamespace(
+            status_code=403,
+            headers={"content-type": "text/html"},
+            text="Forbidden",
+            url="https://fd.example/menu",
+        ),
+        SimpleNamespace(
+            status_code=403,
+            headers={"content-type": "text/html"},
+            text="Forbidden",
+            url="https://fd.example/menu",
+        ),
+        SimpleNamespace(
+            status_code=200,
+            headers={"content-type": "text/html"},
+            text="<html><body>Complete menu</body></html>",
+            url="https://fd.example/menu",
+        ),
+    ]
+
+    class IntermittentForbiddenClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, _url):
+            response = responses[self.calls]
+            self.calls += 1
+            return response
+
+    client = IntermittentForbiddenClient()
+    result = scraper._fetch(client, "https://fd.example/menu")
+
+    assert client.calls == 3
+    assert result.error is None
+    assert "Complete menu" in result.html
+
+
 def test_fetch_pdf_pages_retries_certificate_errors(monkeypatch):
     import pdf_menu
 
