@@ -308,6 +308,7 @@ export default function Explore({
   const mapEl = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
+  const commentsReturnHandledRef = useRef(false);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1024px)");
@@ -326,6 +327,26 @@ export default function Explore({
       .catch((e) => setError(e.message || "Backend not reachable on :5000"))
       .finally(() => setLoading(false));
   }, []);
+
+  // OAuth and email magic links return with the restaurant's stable Google
+  // place id. Reopen that exact record on its comments tab, then remove the
+  // temporary parameter so refreshes do not keep forcing the modal open.
+  useEffect(() => {
+    if (commentsReturnHandledRef.current || restaurants.length === 0) return;
+    const url = new URL(window.location.href);
+    const returnPlaceId = url.searchParams.get("comments");
+    if (!returnPlaceId) return;
+    const target = restaurants.find(
+      (restaurant) => restaurant.place_id === returnPlaceId
+    );
+    if (!target) return;
+    commentsReturnHandledRef.current = true;
+    setDishesFilter("all");
+    setDishesTab("comments");
+    setDishesFor(target);
+    url.searchParams.delete("comments");
+    window.history.replaceState(null, "", url.toString());
+  }, [restaurants]);
 
   useEffect(() => {
     const match = window.location.hash.match(/^#restaurants\?restaurant=(\d+)/);

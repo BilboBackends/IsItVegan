@@ -54,6 +54,19 @@ export default function Comments({
     };
   }, [placeId, controlled]);
 
+  useEffect(() => {
+    if (!session?.user) return undefined;
+    const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [session?.user]);
+
+  function returnToCommentsUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("comments", placeId);
+    url.hash = "restaurants";
+    return url.toString();
+  }
+
   // "@" suggestions: the token being typed after the last unaccepted "@".
   const mentionQuery = useMemo(() => {
     const match = /@([^@\n]{0,40})$/.exec(body);
@@ -122,7 +135,7 @@ export default function Comments({
     setAuthBusy(true);
     setAuthError(null);
     try {
-      await signInWithMagicLink(email.trim());
+      await signInWithMagicLink(email.trim(), returnToCommentsUrl());
       setAuthSent(true);
     } catch (e) {
       setAuthError(e.message);
@@ -136,7 +149,7 @@ export default function Comments({
     setAuthBusy(true);
     setAuthError(null);
     try {
-      await signInWithGoogle();
+      await signInWithGoogle(returnToCommentsUrl());
     } catch (e) {
       setAuthError(e.message);
       setAuthBusy(false);

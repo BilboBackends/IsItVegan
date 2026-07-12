@@ -109,20 +109,30 @@ export async function onAuthChange(callback) {
   return () => sub?.subscription?.unsubscribe();
 }
 
-export async function signInWithGoogle() {
-  const client = await getClient();
-  await client?.auth.signInWithOAuth({
-    provider: "google",
-    options: { redirectTo: window.location.origin + window.location.pathname },
-  });
+function authRedirectUrl(returnTo) {
+  const fallback = new URL(window.location.pathname, window.location.origin);
+  if (!returnTo) return fallback.toString();
+  const candidate = new URL(returnTo, window.location.origin);
+  return candidate.origin === window.location.origin
+    ? candidate.toString()
+    : fallback.toString();
 }
 
-export async function signInWithMagicLink(email) {
+export async function signInWithGoogle(returnTo) {
+  const client = await getClient();
+  const { error } = (await client?.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: authRedirectUrl(returnTo) },
+  })) || { error: null };
+  if (error) throw new Error(error.message);
+}
+
+export async function signInWithMagicLink(email, returnTo) {
   const client = await getClient();
   const { error } = await client.auth.signInWithOtp({
     email,
     options: {
-      emailRedirectTo: window.location.origin + window.location.pathname,
+      emailRedirectTo: authRedirectUrl(returnTo),
     },
   });
   if (error) throw new Error(error.message);
