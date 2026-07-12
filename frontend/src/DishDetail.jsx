@@ -212,7 +212,7 @@ export default function DishDetail({
             )}
             <div className="mt-3 flex flex-wrap gap-3 text-sm font-bold">
               {dish.lat != null && dish.lng != null && (
-                <button onClick={() => onShowMap(dish)} className="text-emerald-700 hover:underline">Show on VeganFind map</button>
+                <button onClick={() => onShowMap(dish)} className="text-emerald-700 hover:underline">Show on DishTune map</button>
               )}
               {dish.website_url && (
                 <a href={dish.website_url} target="_blank" rel="noreferrer" className="text-stone-600 hover:underline">Restaurant website ↗</a>

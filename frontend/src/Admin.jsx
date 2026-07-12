@@ -2835,7 +2835,7 @@ export default function Admin() {
       <div className="w-full max-w-none px-2 py-4 sm:px-6 sm:py-8 lg:px-8">
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-lg font-bold sm:text-2xl">VeganFind — Pipeline Dashboard</h1>
+            <h1 className="text-lg font-bold sm:text-2xl">DishTune — Pipeline Dashboard</h1>
             <p className="text-sm text-slate-500">
               Discovery · menu scraping · dish classification
               {config?.city ? ` · ${config.city}, FL` : ""}

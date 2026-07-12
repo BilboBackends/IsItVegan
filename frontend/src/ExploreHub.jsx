@@ -89,12 +89,18 @@ export default function ExploreHub({ view = "restaurants" }) {
     <div>
       <div className="mx-auto max-w-7xl px-4 pt-8">
         <div className="mb-5">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-700">
+            <span>Made for vegans</span>
+            <span className="h-1 w-1 rounded-full bg-emerald-300" />
+            <span>Greater Orlando</span>
+          </div>
           <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
-            Find <span className="text-emerald-700">vegan-friendly</span> food near you
+            Tune your search to find <span className="text-emerald-700">vegan food</span> you&rsquo;ll love
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-500">
-            Search every analyzed menu at once, or browse nearby restaurants on the map.
-            Every verdict is backed by menu evidence.
+            DishTune searches analyzed menus across Greater Orlando. Customize your search
+            by location, distance, cuisine, price, and what&rsquo;s open—or look for a specific
+            dish. Every verdict is backed by menu evidence.
           </p>
         </div>
       </div>

@@ -40,7 +40,7 @@ export default function App() {
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-base text-white">
               🌱
             </span>
-            <span className="hidden sm:inline">VeganFind</span>
+            <span>DishTune</span>
           </a>
           <div className="flex items-center gap-2">
           <AccountButton session={session} onSession={setSession} />

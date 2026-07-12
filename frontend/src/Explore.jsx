@@ -828,30 +828,12 @@ export default function Explore({
       )}
       {(r.website_url ||
         r.dish_count > 0 ||
-        (commentCounts?.get(r.place_id) || 0) > 0) && (
-        <div className="mt-auto flex flex-nowrap items-center justify-between gap-1.5 border-t border-stone-100 pt-3">
-          {/* Bottom-left: the community buzz chip; Website + View dishes
-              stay paired on the right. The empty span keeps justify-between
-              honest when there's no thread yet. */}
-          {(commentCounts?.get(r.place_id) || 0) > 0 ? (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setDishesFilter("all");
-                setDishesTab("comments");
-                setDishesFor(r);
-              }}
-              className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-              title={`${commentCounts.get(r.place_id)} post${
-                commentCounts.get(r.place_id) === 1 ? "" : "s"
-              } from visitors — tips, reviews, and chat about this place`}
-            >
-              💬 {commentCounts.get(r.place_id)}
-            </button>
-          ) : (
-            <span />
-          )}
-          <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
+        CLOUD_ENABLED) && (
+        <div className="mt-auto grid grid-cols-[1fr_auto_1fr] items-center gap-1.5 border-t border-stone-100 pt-3 text-xs font-semibold">
+          {/* Keep all three actions anchored: Website left, community thread
+              centered, and View dishes right. Nothing shifts when the first
+              comment arrives or when an action is unavailable. */}
+          <div className="flex min-w-0 justify-start">
             {r.website_url && (
               <a
                 href={r.website_url}
@@ -863,6 +845,32 @@ export default function Explore({
                 Website ↗
               </a>
             )}
+          </div>
+          <div className="flex justify-center">
+            {CLOUD_ENABLED && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDishesFilter("all");
+                  setDishesTab("comments");
+                  setDishesFor(r);
+                }}
+                className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
+                title={
+                  (commentCounts?.get(r.place_id) || 0) > 0
+                    ? `${commentCounts.get(r.place_id)} post${
+                        commentCounts.get(r.place_id) === 1 ? "" : "s"
+                      } from visitors — tips, reviews, and chat about this place`
+                    : "Start the conversation about this restaurant"
+                }
+              >
+                💬 Buzz
+                {(commentCounts?.get(r.place_id) || 0) > 0 &&
+                  ` · ${commentCounts.get(r.place_id)}`}
+              </button>
+            )}
+          </div>
+          <div className="flex min-w-0 justify-end">
             {r.dish_count > 0 && (
               <button
                 onClick={(e) => {
