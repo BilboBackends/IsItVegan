@@ -555,12 +555,16 @@ export default function DishModal({
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                  {/* Keep the three menu actions on one deliberate row on
+                      phones. The long desktop detail label was what pushed
+                      Source menu onto an awkward second line at narrow
+                      widths. */}
+                  <div className="mt-1 flex items-center justify-between gap-2 text-xs sm:justify-start sm:gap-3">
                     {CLOUD_ENABLED && restaurant.place_id && (
                       <button
                         type="button"
                         onClick={() => openDishComments(d, "add")}
-                        className="min-h-7 rounded-md px-2 py-1 font-bold text-sky-700 hover:bg-sky-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+                        className="min-h-7 shrink-0 whitespace-nowrap rounded-md px-1.5 py-1 font-bold text-sky-700 hover:bg-sky-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 sm:px-2"
                       >
                         Add a note
                       </button>
@@ -570,16 +574,20 @@ export default function DishModal({
                       // current tab instead of navigating to Dishes.
                       <button
                         onClick={() => onOpenDish(d)}
-                        className="font-bold text-emerald-700 hover:underline"
+                        aria-label="Details, share, or report"
+                        className="shrink-0 whitespace-nowrap font-bold text-emerald-700 hover:underline"
                       >
-                        Details, share, or report →
+                        <span className="sm:hidden">Details →</span>
+                        <span className="max-sm:hidden">Details, share, or report →</span>
                       </button>
                     ) : (
                       <a
                         href={`#dishes?dish=${d.id}`}
-                        className="font-bold text-emerald-700 hover:underline"
+                        aria-label="Details, share, or report"
+                        className="shrink-0 whitespace-nowrap font-bold text-emerald-700 hover:underline"
                       >
-                        Details, share, or report →
+                        <span className="sm:hidden">Details →</span>
+                        <span className="max-sm:hidden">Details, share, or report →</span>
                       </a>
                     )}
                     {d.menu_url?.startsWith("http") && (
@@ -587,7 +595,7 @@ export default function DishModal({
                         href={d.menu_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-semibold text-stone-500 hover:text-emerald-700 hover:underline"
+                        className="shrink-0 whitespace-nowrap font-semibold text-stone-500 hover:text-emerald-700 hover:underline"
                       >
                         Source menu ↗
                       </a>

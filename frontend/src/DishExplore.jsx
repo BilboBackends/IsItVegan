@@ -27,11 +27,13 @@ import { calorieLabel } from "./calories.js";
 import { parsePriceValue, priceLevelSymbol } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
 import VenueTypeLegend from "./VenueTypeLegend.jsx";
+import VenueKindFilter from "./VenueKindFilter.jsx";
 import {
   VENUE_MARKER_ANCHOR,
   VENUE_MARKER_SIZE,
   venueMarkerHtml,
 } from "./venueMarkers.js";
+import { focusMapOnMarker } from "./mapFocus.js";
 import {
   buildDishSearchIndex,
   dishMatchesQuery,
@@ -124,6 +126,7 @@ export default function DishExplore({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
+  const [placeType, setPlaceType] = useState("all");
   // Multi-select toggle sets: pick any combination (vegan + adaptable, or
   // food + desserts). Empty verdict set = all verdicts; type defaults to
   // food and empty = all types.
@@ -264,6 +267,9 @@ export default function DishExplore({
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) {
         continue;
       }
+      if (placeType !== "all" && venueKind(dish.primary_type) !== placeType) {
+        continue;
+      }
       if (
         openFilter !== "all" &&
         currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
@@ -274,7 +280,7 @@ export default function DishExplore({
       counts[categoryOf(dish)] += 1;
     }
     return counts;
-  }, [dishes, restaurant, cuisine, openFilter]);
+  }, [dishes, restaurant, cuisine, placeType, openFilter]);
 
   const cuisines = useMemo(() => cuisineOptions(dishes), [dishes]);
 
@@ -344,6 +350,7 @@ export default function DishExplore({
       if (maxPrice > 0 && (dish.priceValue == null || dish.priceValue > maxPrice)) return false;
       if (restaurant !== "all" && String(dish.restaurant_id) !== restaurant) return false;
       if (cuisine !== "all" && cuisineLabel(dish.primary_type) !== cuisine) return false;
+      if (placeType !== "all" && venueKind(dish.primary_type) !== placeType) return false;
       if (
         openFilter !== "all" &&
         currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
@@ -428,6 +435,7 @@ export default function DishExplore({
     maxPrice,
     restaurant,
     cuisine,
+    placeType,
     openFilter,
     maxMiles,
     sortBy,
@@ -443,6 +451,7 @@ export default function DishExplore({
     maxPrice,
     restaurant,
     cuisine,
+    placeType,
     openFilter,
     maxMiles,
     sortBy,
@@ -485,7 +494,7 @@ export default function DishExplore({
   const hasActiveFilters =
     verdicts.size > 0 || categoriesActive || servingRole !== "all" ||
     maxPrice > 0 || restaurant !== "all" || cuisine !== "all" ||
-    openFilter !== "all" || maxMiles > 0;
+    placeType !== "all" || openFilter !== "all" || maxMiles > 0;
 
   const mappedRestaurants = useMemo(() => {
     const groups = new Map();
@@ -563,6 +572,7 @@ export default function DishExplore({
       const marker = L.marker([item.lat, item.lng], { icon }).addTo(map);
       markersRef.current[item.id] = marker;
       bounds.push([item.lat, item.lng]);
+      marker.on("click", () => focusMapOnMarker(map, marker));
 
       const tip = document.createElement("span");
       tip.textContent =
@@ -727,7 +737,7 @@ export default function DishExplore({
     const map = mapRef.current;
     const marker = markersRef.current[focus.restaurantId];
     if (!map || !marker) return;
-    map.flyTo(marker.getLatLng(), 16, { duration: 0.8 });
+    focusMapOnMarker(map, marker);
     const timer = setTimeout(() => marker.openPopup(), 850);
     return () => clearTimeout(timer);
   }, [focus, showMap]);
@@ -750,6 +760,7 @@ export default function DishExplore({
   function showRestaurantItems(restaurantId) {
     if (restaurant === "all") sortBeforeRestaurantRef.current = sortBy;
     setRestaurant(String(restaurantId));
+    setPlaceType("all");
     setCuisine("all");
     setOpenFilter("all");
     setQuery("");
@@ -812,6 +823,7 @@ export default function DishExplore({
 
   function clearFilters() {
     setQuery("");
+    setPlaceType("all");
     setVerdicts(new Set());
     setCategories(new Set(["food"]));
     setServingRole("all");
@@ -830,6 +842,7 @@ export default function DishExplore({
     Number(maxPrice > 0) +
     Number(restaurant !== "all") +
     Number(cuisine !== "all") +
+    Number(placeType !== "all") +
     Number(openFilter !== "all") +
     Number(maxMiles > 0);
 
@@ -1127,6 +1140,16 @@ export default function DishExplore({
               <span aria-hidden="true" className="text-base leading-none">×</span>
             </button>
           )}
+          {placeType !== "all" && (
+            <button
+              onClick={() => setPlaceType("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove place-type filter"
+            >
+              Place: {venueKindLabel(placeType)}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
           {cuisine !== "all" && (
             <button
               onClick={() => setCuisine("all")}
@@ -1168,6 +1191,8 @@ export default function DishExplore({
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
+      <VenueKindFilter value={placeType} onChange={setPlaceType} />
+
       <button
         type="button"
         aria-label={

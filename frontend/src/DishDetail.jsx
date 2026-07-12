@@ -219,15 +219,42 @@ export default function DishDetail({
                 </ul>
               </details>
             )}
-            <div className="mt-3 flex flex-wrap gap-3 text-sm font-bold">
+            {/* Fixed mobile columns keep the menu source associated with the
+                other restaurant links instead of looking like a wrapped
+                continuation of the note actions below. */}
+            <div className="mt-3 grid grid-cols-[1fr_auto_1fr] items-center gap-1 text-xs font-bold sm:flex sm:flex-wrap sm:gap-3 sm:text-sm">
               {dish.lat != null && dish.lng != null && (
-                <button onClick={() => onShowMap(dish)} className="text-emerald-700 hover:underline">Show on DishTune map</button>
+                <button
+                  onClick={() => onShowMap(dish)}
+                  aria-label="Show on DishTune map"
+                  className="col-start-1 justify-self-start whitespace-nowrap text-emerald-700 hover:underline"
+                >
+                  <span className="sm:hidden">Map</span>
+                  <span className="max-sm:hidden">Show on DishTune map</span>
+                </button>
               )}
               {dish.website_url && (
-                <a href={dish.website_url} target="_blank" rel="noreferrer" className="text-stone-600 hover:underline">Restaurant website ↗</a>
+                <a
+                  href={dish.website_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Restaurant website (opens in a new tab)"
+                  className="col-start-2 justify-self-center whitespace-nowrap text-stone-600 hover:underline sm:justify-self-auto"
+                >
+                  <span className="sm:hidden">Website ↗</span>
+                  <span className="max-sm:hidden">Restaurant website ↗</span>
+                </a>
               )}
               {dish.menu_url?.startsWith("http") && (
-                <a href={dish.menu_url} target="_blank" rel="noreferrer" className="text-stone-600 hover:underline">Source menu ↗</a>
+                <a
+                  href={dish.menu_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Source menu (opens in a new tab)"
+                  className="col-start-3 justify-self-end whitespace-nowrap text-stone-600 hover:underline sm:justify-self-auto"
+                >
+                  Source menu ↗
+                </a>
               )}
             </div>
           </section>

@@ -25,11 +25,13 @@ import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
 import NoteIcon from "./NoteIcon.jsx";
 import VenueTypeLegend from "./VenueTypeLegend.jsx";
+import VenueKindFilter from "./VenueKindFilter.jsx";
 import {
   VENUE_MARKER_ANCHOR,
   VENUE_MARKER_SIZE,
   venueMarkerHtml,
 } from "./venueMarkers.js";
+import { focusMapOnMarker } from "./mapFocus.js";
 import {
   CLOUD_ENABLED,
   clearCommentAuthReturn,
@@ -281,6 +283,7 @@ export default function Explore({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
+  const [placeType, setPlaceType] = useState("all");
   const [cuisine, setCuisine] = useState("all");
   const [sortBy, setSortBy] = useState("score");
   const [priceTier, setPriceTier] = useState(0);
@@ -405,6 +408,7 @@ export default function Explore({
 
   function clearFilters() {
     setQuery("");
+    setPlaceType("all");
     setCuisine("all");
     setOpenFilter("all");
     setSortBy("score");
@@ -435,6 +439,11 @@ export default function Explore({
           r.name?.toLowerCase().includes(q) ||
           (prettyType(r.primary_type) || "").includes(q) ||
           r.address?.toLowerCase().includes(q)
+      );
+    }
+    if (placeType !== "all") {
+      out = out.filter(
+        (restaurant) => venueKind(restaurant.primary_type) === placeType
       );
     }
     if (cuisine !== "all") {
@@ -488,7 +497,7 @@ export default function Explore({
       }
       return (a.name || "").localeCompare(b.name || "");
     });
-  }, [enriched, query, cuisine, openFilter, maxMiles, sortBy, priceTier]);
+  }, [enriched, query, placeType, cuisine, openFilter, maxMiles, sortBy, priceTier]);
 
   const showMap = isDesktop || view === "map";
 
@@ -542,9 +551,10 @@ export default function Explore({
       const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
       markersRef.current[r.place_id] = marker;
       bounds.push([r.lat, r.lng]);
-      marker.on("click", () =>
-        setFocus({ id: r.place_id, ts: Date.now(), source: "map" })
-      );
+      marker.on("click", () => {
+        focusMapOnMarker(map, marker);
+        setFocus({ id: r.place_id, ts: Date.now(), source: "map" });
+      });
 
       // Tooltip and popup content built as DOM nodes with textContent —
       // never innerHTML with API-sourced strings.
@@ -746,7 +756,7 @@ export default function Explore({
     const map = mapRef.current;
     const marker = markersRef.current[focus.id];
     if (!map || !marker) return;
-    map.flyTo(marker.getLatLng(), 16, { duration: 0.8 });
+    focusMapOnMarker(map, marker);
     const t = setTimeout(() => marker.openPopup(), 850);
     return () => clearTimeout(t);
   }, [focus, showMap]);
@@ -805,13 +815,37 @@ export default function Explore({
             onToggle={setScoreOpenFor}
           />
         )}
-        <span
-          className={`text-xs font-bold ${
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            setDishesFilter("veganish");
+            setDishesTab(null);
+            setDishesMention(null);
+            setDishesCommentFilter(null);
+            setDishesFor(r);
+          }}
+          disabled={
+            !(r.dish_count > 0) ||
+            !((r.vegan_options || 0) > 0 || (r.vegan_sides || 0) > 0)
+          }
+          className={`rounded-full px-1.5 py-0.5 text-xs font-bold transition ${
             r.dish_count > 0 ? "text-emerald-800" : "text-stone-400"
+          } ${
+            r.dish_count > 0 &&
+            ((r.vegan_options || 0) > 0 || (r.vegan_sides || 0) > 0)
+              ? "bg-emerald-50 ring-1 ring-inset ring-emerald-100 hover:bg-emerald-100 hover:underline"
+              : "cursor-default"
           }`}
+          title={
+            r.dish_count > 0 &&
+            ((r.vegan_options || 0) > 0 || (r.vegan_sides || 0) > 0)
+              ? "See vegan-friendly dishes"
+              : undefined
+          }
         >
           {veganOptionSummary(r)}
-        </span>
+        </button>
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-stone-500">
@@ -955,11 +989,7 @@ export default function Explore({
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setDishesFilter(
-                    r.vegan_options > 0 || (r.vegan_sides || 0) > 0
-                      ? "veganish"
-                      : "all"
-                  );
+                  setDishesFilter("all");
                   setDishesTab(null);
                   setDishesMention(null);
                   setDishesCommentFilter(null);
@@ -983,6 +1013,7 @@ export default function Explore({
     0
   );
   const activeFilterCount =
+    Number(placeType !== "all") +
     Number(cuisine !== "all") +
     Number(openFilter !== "all") +
     Number(priceTier > 0) +
@@ -1126,6 +1157,8 @@ export default function Explore({
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
+      <VenueKindFilter value={placeType} onChange={setPlaceType} />
+
       <button
         onClick={() => setView(view === "list" ? "map" : "list")}
         className="fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
