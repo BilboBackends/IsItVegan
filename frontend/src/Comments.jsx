@@ -1,12 +1,15 @@
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   CLOUD_ENABLED,
+  GOOGLE_AUTH_ENABLED,
   SessionContext,
   deleteComment,
   dishKey,
   fetchComments,
   postComment,
   reportComment,
+  signInWithGoogle,
+  signInWithMagicLink,
 } from "./cloud.js";
 
 // Per-restaurant discussion thread. Typing "@" in the composer suggests the
@@ -32,6 +35,10 @@ export default function Comments({
   const [mentions, setMentions] = useState([]); // [{dish_key, dish_name}]
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authSent, setAuthSent] = useState(false);
+  const [authError, setAuthError] = useState(null);
   const textareaRef = useRef(null);
 
   const placeId = restaurant?.place_id;
@@ -106,6 +113,33 @@ export default function Comments({
       setError(null);
     } catch (e) {
       setError(e.message);
+    }
+  }
+
+  async function sendSignInLink(event) {
+    event.preventDefault();
+    if (!email.trim() || authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      await signInWithMagicLink(email.trim());
+      setAuthSent(true);
+    } catch (e) {
+      setAuthError(e.message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function continueWithGoogle() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      await signInWithGoogle();
+    } catch (e) {
+      setAuthError(e.message);
+      setAuthBusy(false);
     }
   }
 
@@ -191,9 +225,60 @@ export default function Comments({
           </div>
         </form>
       ) : (
-        <p className="mt-2 rounded-lg bg-stone-50 px-3 py-2 text-xs text-stone-500">
-          Sign in (top right) to share tips about this restaurant.
-        </p>
+        <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
+          <div className="text-sm font-bold text-stone-800">
+            Join the conversation
+          </div>
+          <p className="mt-0.5 text-xs text-stone-500">
+            Sign in here to share a tip, review, or question about this restaurant.
+          </p>
+          {authSent ? (
+            <div className="mt-3 rounded-lg bg-white px-3 py-2 text-xs text-stone-600">
+              <div className="font-bold text-emerald-700">Check your email 📬</div>
+              <p className="mt-0.5">
+                We sent a sign-in link to <span className="font-semibold">{email}</span>.
+                Open it on this device to finish signing in.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3">
+              {GOOGLE_AUTH_ENABLED && (
+                <button
+                  type="button"
+                  onClick={continueWithGoogle}
+                  disabled={authBusy}
+                  className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white py-2 text-sm font-bold text-stone-700 hover:bg-stone-50 disabled:text-stone-300"
+                >
+                  <span aria-hidden>G</span> Continue with Google
+                </button>
+              )}
+              <form
+                onSubmit={sendSignInLink}
+                className="flex gap-2 max-sm:flex-col"
+              >
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  aria-label="Email address"
+                  className="min-w-0 flex-1 rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+                />
+                <button
+                  type="submit"
+                  disabled={authBusy}
+                  className="shrink-0 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:bg-stone-300"
+                >
+                  {authBusy ? "Sending…" : "Email sign-in link"}
+                </button>
+              </form>
+            </div>
+          )}
+          {authError && (
+            <div className="mt-2 text-xs text-rose-600">{authError}</div>
+          )}
+        </div>
       )}
       {error && <div className="mt-2 text-xs text-rose-600">{error}</div>}
 
