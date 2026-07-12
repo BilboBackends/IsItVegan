@@ -230,7 +230,9 @@ export default function Comments({
             Join the conversation
           </div>
           <p className="mt-0.5 text-xs text-stone-500">
-            Sign in here to share a tip, review, or question about this restaurant.
+            {GOOGLE_AUTH_ENABLED
+              ? "Continue with Google, or use your email to get a secure sign-in link."
+              : "Use your email to get a secure sign-in link and join the conversation."}
           </p>
           {authSent ? (
             <div className="mt-3 rounded-lg bg-white px-3 py-2 text-xs text-stone-600">
@@ -247,10 +249,17 @@ export default function Comments({
                   type="button"
                   onClick={continueWithGoogle}
                   disabled={authBusy}
-                  className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white py-2 text-sm font-bold text-stone-700 hover:bg-stone-50 disabled:text-stone-300"
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white py-2 text-sm font-bold text-stone-700 hover:bg-stone-50 disabled:text-stone-300"
                 >
                   <span aria-hidden>G</span> Continue with Google
                 </button>
+              )}
+              {GOOGLE_AUTH_ENABLED && (
+                <div className="my-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-stone-400">
+                  <span className="h-px flex-1 bg-emerald-100" />
+                  or use your email
+                  <span className="h-px flex-1 bg-emerald-100" />
+                </div>
               )}
               <form
                 onSubmit={sendSignInLink}
