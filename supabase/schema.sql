@@ -16,8 +16,33 @@ create table if not exists public.profiles (
   id           uuid primary key references auth.users (id) on delete cascade,
   display_name text not null default 'vegan explorer'
                check (char_length(display_name) between 1 and 40),
+  username     text,
   created_at   timestamptz not null default now()
 );
+
+alter table public.profiles
+  add column if not exists username text;
+
+alter table public.profiles
+  drop constraint if exists profiles_username_valid;
+alter table public.profiles
+  add constraint profiles_username_valid check (
+    username is null or (
+      username ~ '^[a-z0-9][a-z0-9_]{2,19}$'
+      and username not in (
+        'admin', 'administrator', 'dishtune', 'moderator',
+        'official', 'staff', 'support'
+      )
+    )
+  );
+
+create unique index if not exists profiles_username_unique_ci
+  on public.profiles (lower(username))
+  where username is not null;
+
+create index if not exists profiles_username_prefix_search
+  on public.profiles (username text_pattern_ops)
+  where username is not null;
 
 alter table public.profiles enable row level security;
 
@@ -27,23 +52,19 @@ create policy "profiles are readable"
 
 drop policy if exists "own profile is editable" on public.profiles;
 create policy "own profile is editable"
-  on public.profiles for update using (auth.uid() = id);
+  on public.profiles for update
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
 
--- Auto-create a profile at signup; name from OAuth metadata or email prefix.
+-- Auto-create a private profile row at signup. Public names are opt-in;
+-- OAuth names and email prefixes must never be published implicitly.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql security definer set search_path = public
 as $$
 begin
-  insert into public.profiles (id, display_name)
-  values (
-    new.id,
-    left(coalesce(
-      nullif(new.raw_user_meta_data ->> 'full_name', ''),
-      nullif(split_part(coalesce(new.email, ''), '@', 1), ''),
-      'vegan explorer'
-    ), 40)
-  )
+  insert into public.profiles (id, display_name, username)
+  values (new.id, 'vegan explorer', null)
   on conflict (id) do nothing;
   return new;
 end;
@@ -107,20 +128,43 @@ create policy "own votes deletable"
   on public.votes for delete using (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------- comments
--- Per-restaurant threads; @dish mentions ride along as structured JSON
--- ([{dish_key, dish_name}]) so tips can deep-link to dishes even after ids
--- renumber. Signed-in users only (RLS insert), which kills drive-by spam.
+-- Per-restaurant threads; dish and user @mentions ride along as separate
+-- structured JSON arrays so dishes can deep-link and usernames can safely
+-- change later. Signed-in users only (RLS insert), which kills drive-by spam.
 create table if not exists public.comments (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null references public.profiles (id) on delete cascade,
   place_id   text not null check (char_length(place_id) <= 128),
   body       text not null check (char_length(body) between 1 and 1000),
   mentions   jsonb not null default '[]',
+  user_mentions jsonb not null default '[]',
   created_at timestamptz not null default now()
 );
 
+alter table public.comments
+  add column if not exists user_mentions jsonb not null default '[]';
+
+alter table public.comments
+  drop constraint if exists comments_mentions_are_arrays;
+alter table public.comments
+  add constraint comments_mentions_are_arrays check (
+    jsonb_typeof(mentions) = 'array'
+    and jsonb_typeof(user_mentions) = 'array'
+  );
+
+alter table public.comments
+  drop constraint if exists comments_user_mentions_shape;
+alter table public.comments
+  add constraint comments_user_mentions_shape check (
+    jsonb_typeof(user_mentions) = 'array'
+    and jsonb_array_length(user_mentions) <= 10
+  );
+
 create index if not exists comments_by_place
   on public.comments (place_id, created_at desc);
+
+create index if not exists comments_user_mentions_gin
+  on public.comments using gin (user_mentions jsonb_path_ops);
 
 alter table public.comments enable row level security;
 
@@ -135,6 +179,76 @@ create policy "signed-in users comment as themselves"
 drop policy if exists "own comments deletable" on public.comments;
 create policy "own comments deletable"
   on public.comments for delete using (auth.uid() = user_id);
+
+-- Canonicalize every @username against the profile table so clients cannot
+-- forge another user's id/name pairing. The username snapshot remains useful
+-- for rendering the original body after a later rename; user_id is durable.
+create or replace function public.canonicalize_comment_user_mentions()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  raw_mention jsonb;
+  mentioned_id uuid;
+  actual_username text;
+  canonical jsonb := '[]'::jsonb;
+  seen_ids uuid[] := '{}'::uuid[];
+begin
+  if jsonb_typeof(new.user_mentions) is distinct from 'array' then
+    raise exception using errcode = '22023', message = 'User mentions must be an array.';
+  end if;
+  if octet_length(new.user_mentions::text) > 4096
+     or jsonb_array_length(new.user_mentions) > 10 then
+    raise exception using errcode = '22023', message = 'Too many user mentions.';
+  end if;
+
+  for raw_mention in select value from jsonb_array_elements(new.user_mentions)
+  loop
+    if jsonb_typeof(raw_mention) <> 'object'
+       or raw_mention ->> 'user_id' is null then
+      raise exception using errcode = '22023', message = 'Invalid user mention.';
+    end if;
+    begin
+      mentioned_id := (raw_mention ->> 'user_id')::uuid;
+    exception when invalid_text_representation then
+      raise exception using errcode = '22023', message = 'Invalid user mention.';
+    end;
+
+    if mentioned_id = any(seen_ids) then
+      continue;
+    end if;
+
+    select p.username into actual_username
+    from public.profiles p
+    where p.id = mentioned_id and p.username is not null;
+    if actual_username is null then
+      raise exception using errcode = '22023', message = 'That username is no longer available.';
+    end if;
+
+    if not (new.body ~* (
+      '(^|[^a-z0-9_])@' || actual_username || '([^a-z0-9_]|$)'
+    )) then
+      raise exception using errcode = '22023', message = 'A user mention is missing from the note.';
+    end if;
+
+    canonical := canonical || jsonb_build_array(jsonb_build_object(
+      'user_id', mentioned_id::text,
+      'username', actual_username
+    ));
+    seen_ids := array_append(seen_ids, mentioned_id);
+  end loop;
+
+  new.user_mentions := canonical;
+  return new;
+end;
+$$;
+
+drop trigger if exists canonicalize_comment_user_mentions on public.comments;
+create trigger canonicalize_comment_user_mentions
+  before insert on public.comments
+  for each row execute function public.canonicalize_comment_user_mentions();
 
 -- Rate limit: RLS can't count, so a trigger holds the line (10/hour/user).
 create or replace function public.enforce_comment_rate_limit()
@@ -185,8 +299,8 @@ create policy "own reports readable"
 grant usage on schema public to anon, authenticated, service_role;
 
 revoke all on table public.profiles from anon, authenticated;
-grant select on table public.profiles to anon, authenticated;
-grant update on table public.profiles to authenticated;
+grant select (id, username) on table public.profiles to anon, authenticated;
+grant update (username) on table public.profiles to authenticated;
 
 revoke all on table public.favorites from anon, authenticated;
 grant select, insert, update, delete on table public.favorites to authenticated;
@@ -210,4 +324,6 @@ grant all on table public.profiles, public.favorites, public.votes,
 -- call them as RPC endpoints.
 revoke execute on function public.handle_new_user() from public, anon, authenticated;
 revoke execute on function public.enforce_comment_rate_limit()
+  from public, anon, authenticated;
+revoke execute on function public.canonicalize_comment_user_mentions()
   from public, anon, authenticated;

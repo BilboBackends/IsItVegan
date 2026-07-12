@@ -1,7 +1,8 @@
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CLOUD_ENABLED,
   GOOGLE_AUTH_ENABLED,
+  ProfileContext,
   SessionContext,
   deleteComment,
   dishKey,
@@ -9,15 +10,24 @@ import {
   postComment,
   rememberCommentAuthReturn,
   reportComment,
+  searchUsernames,
   signInWithGoogle,
   signInWithMagicLink,
 } from "./cloud.js";
+import {
+  escapeRegExp,
+  hasDishMentionToken,
+  hasUserMentionToken,
+  mentionTriggerAt,
+  replaceMentionTrigger,
+  resolveUserMention,
+} from "./mentionText.js";
+import { DEFAULT_PUBLIC_NAME } from "./username.js";
 
 // Per-restaurant discussion thread. Typing "@" in the composer suggests the
-// restaurant's dishes; accepted mentions are stored as structured
-// {dish_key, dish_name} pairs so notes deep-link to dishes and survive the
-// pipeline renumbering dish ids. Signed-in users only can post (RLS enforces
-// it server-side; this UI just mirrors that).
+// restaurant's dishes and public usernames. Dish and user mentions are stored
+// separately so dishes survive pipeline renumbering and people survive a
+// later username change. Signed-in users only can post (RLS enforces it).
 export default function Comments({
   restaurant,
   dishes,
@@ -28,14 +38,23 @@ export default function Comments({
   onCommentsChange,
   initialMention = null,
   filterDish = null,
+  usernameSearch = searchUsernames,
 }) {
   const session = useContext(SessionContext);
+  const profile = useContext(ProfileContext);
   const controlled = controlledComments !== undefined;
   const [ownComments, setOwnComments] = useState(null);
   const comments = controlled ? controlledComments : ownComments;
   const setComments = controlled ? onCommentsChange : setOwnComments;
   const [body, setBody] = useState("");
   const [mentions, setMentions] = useState([]); // [{dish_key, dish_name}]
+  const [userMentions, setUserMentions] = useState([]); // [{user_id, username}]
+  const [usernameSearchState, setUsernameSearchState] = useState({
+    query: null,
+    results: [],
+  });
+  const [mentionTrigger, setMentionTrigger] = useState(null);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState("");
@@ -44,6 +63,7 @@ export default function Comments({
   const [authError, setAuthError] = useState(null);
   const [activeDishFilter, setActiveDishFilter] = useState(filterDish);
   const textareaRef = useRef(null);
+  const mentionListId = useId();
 
   const placeId = restaurant?.place_id;
 
@@ -112,28 +132,151 @@ export default function Comments({
     return url.toString();
   }
 
-  // "@" suggestions: the token being typed after the last unaccepted "@".
-  const mentionQuery = useMemo(() => {
-    const match = /@([^@\n]{0,40})$/.exec(body);
-    return match ? match[1].toLowerCase() : null;
-  }, [body]);
+  // The active trigger follows the caret, so adding a mention in the middle
+  // of an existing note preserves everything after it.
+  const mentionQuery = mentionTrigger?.query.toLowerCase() ?? null;
+  const usernameQuery =
+    mentionQuery != null && /^[a-z0-9_]*$/.test(mentionQuery)
+      ? mentionQuery
+      : null;
+  const usernameResults =
+    usernameSearchState.query === usernameQuery
+      ? usernameSearchState.results
+      : [];
+
+  useEffect(() => {
+    if (!session?.user || usernameQuery == null) {
+      setUsernameSearchState({ query: null, results: [] });
+      return undefined;
+    }
+    let cancelled = false;
+    setUsernameSearchState({ query: usernameQuery, results: [] });
+    const timer = window.setTimeout(() => {
+      usernameSearch(usernameQuery)
+        .then(
+          (rows) =>
+            !cancelled &&
+            setUsernameSearchState({ query: usernameQuery, results: rows })
+        )
+        .catch(
+          () =>
+            !cancelled &&
+            setUsernameSearchState({ query: usernameQuery, results: [] })
+        );
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [session?.user, usernameQuery, usernameSearch]);
 
   const suggestions = useMemo(() => {
     if (mentionQuery == null) return [];
-    const names = [...new Set((dishes || []).map((d) => d.name))];
-    return names
-      .filter((name) => name.toLowerCase().includes(mentionQuery))
-      .slice(0, 6);
-  }, [mentionQuery, dishes]);
+    const people = usernameResults.slice(0, 4).map((item) => ({
+      kind: "user",
+      key: `user:${item.id}`,
+      user_id: item.id,
+      username: item.username,
+    }));
+    const dishNames = [...new Set((dishes || []).map((dish) => dish.name))];
+    const dishMatches = dishNames
+      .filter((name) => name.toLowerCase().includes(mentionQuery.trim()))
+      .slice(0, 4)
+      .map((name) => ({
+        kind: "dish",
+        key: `dish:${dishKey(name)}`,
+        dish_name: name,
+        dish_key: dishKey(name),
+      }));
+    return [...people, ...dishMatches].slice(0, 8);
+  }, [mentionQuery, usernameResults, dishes]);
 
-  function acceptMention(name) {
-    setBody((current) => current.replace(/@[^@\n]{0,40}$/, `@${name} `));
-    setMentions((current) =>
-      current.some((m) => m.dish_key === dishKey(name))
+  useEffect(() => {
+    setActiveSuggestion(0);
+  }, [mentionQuery, suggestions.length]);
+
+  function refreshMentionTrigger(value, caret) {
+    setMentionTrigger(mentionTriggerAt(value, caret));
+  }
+
+  function acceptSuggestion(suggestion) {
+    if (!suggestion || !mentionTrigger) return;
+    const label =
+      suggestion.kind === "user"
+        ? suggestion.username
+        : suggestion.dish_name;
+    const replaced = replaceMentionTrigger(body, mentionTrigger, label);
+    setBody(replaced.text);
+    if (suggestion.kind === "user") {
+      setUserMentions((current) =>
+        current.some((item) => item.user_id === suggestion.user_id)
+          ? current
+          : [
+              ...current,
+              {
+                user_id: suggestion.user_id,
+                username: suggestion.username,
+              },
+            ]
+      );
+    } else {
+      setMentions((current) =>
+        current.some((item) => item.dish_key === suggestion.dish_key)
+          ? current
+          : [
+              ...current,
+              {
+                dish_key: suggestion.dish_key,
+                dish_name: suggestion.dish_name,
+              },
+            ]
+      );
+    }
+    setMentionTrigger(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(replaced.caret, replaced.caret);
+    });
+  }
+
+  function mentionUser(userId, username) {
+    if (!session?.user || !userId || !username) return;
+    const token = `@${username}`;
+    const alreadyMentioned = hasUserMentionToken(body, username);
+    if (!alreadyMentioned) {
+      setBody(body ? `${token} ${body}` : `${token} `);
+    }
+    setUserMentions((current) =>
+      current.some((item) => item.user_id === userId)
         ? current
-        : [...current, { dish_key: dishKey(name), dish_name: name }]
+        : [...current, { user_id: userId, username }]
     );
-    textareaRef.current?.focus();
+    setMentionTrigger(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      if (!alreadyMentioned) {
+        textareaRef.current?.setSelectionRange(token.length + 1, token.length + 1);
+      }
+    });
+  }
+
+  function handleComposerKeyDown(event) {
+    if (!mentionTrigger || suggestions.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveSuggestion((current) => (current + 1) % suggestions.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveSuggestion(
+        (current) => (current - 1 + suggestions.length) % suggestions.length
+      );
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      acceptSuggestion(suggestions[activeSuggestion]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setMentionTrigger(null);
+    }
   }
 
   async function submit(event) {
@@ -144,11 +287,22 @@ export default function Comments({
     setError(null);
     try {
       // Keep only mentions still present in the final text.
-      const kept = mentions.filter((m) => body.includes(`@${m.dish_name}`));
-      const row = await postComment(placeId, text, kept, session.user.id);
+      const keptDishes = mentions.filter((mention) =>
+        hasDishMentionToken(text, mention.dish_name)
+      );
+      const keptUsers = userMentions.filter((mention) =>
+        hasUserMentionToken(text, mention.username)
+      );
+      const row = await postComment(placeId, text, {
+        dishMentions: keptDishes,
+        userMentions: keptUsers,
+        userId: session.user.id,
+      });
       setComments((current) => [row, ...(current || [])]);
       setBody("");
       setMentions([]);
+      setUserMentions([]);
+      setMentionTrigger(null);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -201,31 +355,97 @@ export default function Comments({
     }
   }
 
-  // Render @Dish Name tokens as chips that open the dish.
+  // Only structured selections become interactive. Raw @text stays plain,
+  // while legacy dish mentions continue to work unchanged.
   function renderBody(comment) {
-    const names = (comment.mentions || [])
-      .map((m) => m.dish_name)
-      .filter(Boolean)
-      .sort((a, b) => b.length - a.length);
-    if (names.length === 0) return comment.body;
+    const descriptors = [
+      ...(comment.user_mentions || [])
+        .filter((mention) => mention?.user_id && mention?.username)
+        .map((mention) => {
+          const resolved = resolveUserMention({
+            ...mention,
+            ...(profile?.id === mention.user_id
+              ? { current_username: profile.username || null }
+              : {}),
+          });
+          return {
+            kind: "user",
+            ...resolved,
+            user_id: mention.user_id,
+          };
+        }),
+      ...(comment.mentions || [])
+        .filter((mention) => mention?.dish_name)
+        .map((mention) => ({
+          kind: "dish",
+          token: `@${mention.dish_name}`,
+          dish_name: mention.dish_name,
+        })),
+    ].sort((a, b) => b.token.length - a.token.length);
+    if (descriptors.length === 0) return comment.body;
     const pattern = new RegExp(
-      `@(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
-      "g"
+      `(${descriptors.map((item) => escapeRegExp(item.token)).join("|")})`,
+      "gi"
     );
     const parts = comment.body.split(pattern);
     return parts.map((part, i) => {
-      if (!names.includes(part)) return part;
-      const dish = (dishes || []).find((d) => d.name === part);
+      const descriptor =
+        descriptors.find((item) => item.token === part) ||
+        descriptors.find(
+          (item) =>
+            item.kind === "user" &&
+            item.token.toLowerCase() === part.toLowerCase()
+        );
+      if (!descriptor) return part;
+      if (descriptor.kind === "user") {
+        if (!session?.user || !descriptor.mentionUsername) {
+          return (
+            <span
+              key={`${descriptor.token}-${i}`}
+              title={
+                descriptor.mentionUsername
+                  ? undefined
+                  : "This username is no longer active"
+              }
+              className="mx-0.5 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-xs font-bold text-sky-700"
+            >
+              @{descriptor.displayUsername}
+            </span>
+          );
+        }
+        return (
+          <button
+            type="button"
+            key={`${descriptor.token}-${i}`}
+            onClick={() =>
+              mentionUser(descriptor.user_id, descriptor.mentionUsername)
+            }
+            title={`Mention @${descriptor.mentionUsername}`}
+            className="mx-0.5 inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-xs font-bold text-sky-700 hover:bg-sky-100"
+          >
+            @{descriptor.displayUsername}
+          </button>
+        );
+      }
+      const dish = (dishes || []).find(
+        (item) => item.name === descriptor.dish_name
+      );
       return (
         <button
-          key={`${part}-${i}`}
+          type="button"
+          key={`${descriptor.token}-${i}`}
           onClick={() => dish && onOpenDish?.(dish)}
           className="mx-0.5 inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
         >
-          🍽 {part}
+          🍽 {descriptor.dish_name}
         </button>
       );
     });
+  }
+
+  function authorUsername(comment) {
+    if (profile?.id === comment.user_id) return profile.username || null;
+    return comment.profiles?.username || null;
   }
 
   if (!CLOUD_ENABLED || !placeId) return null;
@@ -274,32 +494,102 @@ export default function Comments({
 
       {session?.user ? (
         <form onSubmit={submit} className="relative mt-2">
-          <textarea
-            ref={textareaRef}
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={2}
-            maxLength={1000}
-            placeholder='Share a note, review, or thought — type "@" to point at a dish (e.g. "@Vegan Tacos ask for no crema")'
-            className="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-          />
-          {suggestions.length > 0 && (
-            <div className="absolute left-0 top-full z-30 mt-1 w-72 overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg">
-              {suggestions.map((name) => (
-                <button
-                  type="button"
-                  key={name}
-                  onClick={() => acceptMention(name)}
-                  className="block w-full truncate px-3 py-2 text-left text-sm text-stone-700 hover:bg-emerald-50"
-                >
-                  @{name}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="relative">
+            <textarea
+              ref={textareaRef}
+              value={body}
+              onChange={(event) => {
+                setBody(event.target.value);
+                refreshMentionTrigger(
+                  event.target.value,
+                  event.target.selectionStart
+                );
+              }}
+              onClick={(event) =>
+                refreshMentionTrigger(body, event.currentTarget.selectionStart)
+              }
+              onKeyUp={(event) => {
+                if (
+                  ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(
+                    event.key
+                  )
+                ) {
+                  return;
+                }
+                refreshMentionTrigger(body, event.currentTarget.selectionStart);
+              }}
+              onKeyDown={handleComposerKeyDown}
+              rows={2}
+              maxLength={1000}
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={Boolean(mentionTrigger && suggestions.length > 0)}
+              aria-controls={
+                mentionTrigger && suggestions.length > 0
+                  ? mentionListId
+                  : undefined
+              }
+              aria-activedescendant={
+                mentionTrigger && suggestions[activeSuggestion]
+                  ? `${mentionListId}-${activeSuggestion}`
+                  : undefined
+              }
+              placeholder='Share a note — type "@" to mention a person or dish'
+              className="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            />
+            {mentionTrigger && suggestions.length > 0 && (
+              <div
+                id={mentionListId}
+                role="listbox"
+                aria-label="Mention suggestions"
+                className="absolute left-0 top-full z-30 mt-1 w-80 max-w-full overflow-hidden rounded-xl border border-stone-200 bg-white shadow-lg"
+              >
+                {suggestions.map((suggestion, index) => (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeSuggestion}
+                    id={`${mentionListId}-${index}`}
+                    key={suggestion.key}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => acceptSuggestion(suggestion)}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm ${
+                      index === activeSuggestion
+                        ? "bg-emerald-50 text-stone-900"
+                        : "text-stone-700 hover:bg-stone-50"
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-extrabold ${
+                        suggestion.kind === "user"
+                          ? "bg-sky-100 text-sky-700"
+                          : "bg-emerald-100 text-emerald-700"
+                      }`}
+                    >
+                      {suggestion.kind === "user" ? "@" : "🍽"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-semibold">
+                      @{suggestion.kind === "user"
+                        ? suggestion.username
+                        : suggestion.dish_name}
+                    </span>
+                    <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-stone-400">
+                      {suggestion.kind === "user" ? "Person" : "Dish"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <span className="sr-only" aria-live="polite">
+              {mentionTrigger
+                ? `${suggestions.length} mention suggestion${suggestions.length === 1 ? "" : "s"}`
+                : ""}
+            </span>
+          </div>
           <div className="mt-1.5 flex items-center justify-between">
             <span className="text-[11px] text-stone-400">
-              Be kind; dish notes help everyone.
+              Use @ to mention a person or dish. Be kind.
             </span>
             <button
               type="submit"
@@ -403,9 +693,26 @@ export default function Comments({
         {visibleComments.map((comment) => (
           <div key={comment.id} className="rounded-xl bg-stone-50 px-3 py-2">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-xs font-bold text-stone-700">
-                {comment.profiles?.display_name || "vegan explorer"}
-              </span>
+              {authorUsername(comment) &&
+              session?.user &&
+              comment.user_id !== session.user.id ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    mentionUser(comment.user_id, authorUsername(comment))
+                  }
+                  title={`Mention @${authorUsername(comment)}`}
+                  className="text-xs font-bold text-sky-700 hover:underline"
+                >
+                  @{authorUsername(comment)}
+                </button>
+              ) : (
+                <span className="text-xs font-bold text-stone-700">
+                  {authorUsername(comment)
+                    ? `@${authorUsername(comment)}`
+                    : DEFAULT_PUBLIC_NAME}
+                </span>
+              )}
               <span className="shrink-0 text-[10px] text-stone-400">
                 {new Date(comment.created_at).toLocaleDateString([], {
                   month: "short",

@@ -65,6 +65,7 @@ export function clearCommentAuthReturn() {
 // The signed-in Supabase session (or null), provided from App so deep
 // components (thumbs, comments) don't need prop-drilling.
 export const SessionContext = createContext(null);
+export const ProfileContext = createContext(null);
 
 let clientPromise = null;
 
@@ -185,6 +186,62 @@ export async function signOut() {
   await client?.auth.signOut();
 }
 
+// --------------------------------------------------------------- profiles
+
+export async function fetchProfile(userId) {
+  if (!userId) return null;
+  const client = await getClient();
+  if (!client) return null;
+  const { data, error } = await client
+    .from("profiles")
+    .select("id, username")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data || null;
+}
+
+export async function searchUsernames(query = "") {
+  if (!CLOUD_ENABLED) return [];
+  const client = await getClient();
+  const prefix = String(query || "").toLowerCase();
+  let request = client
+    .from("profiles")
+    .select("id, username")
+    .not("username", "is", null)
+    .order("username");
+  if (prefix) {
+    request = request.gte("username", prefix).lt("username", `${prefix}\uffff`);
+  }
+  const { data, error } = await request.limit(6);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+export async function updateUsername(userId, username) {
+  const client = await getClient();
+  if (!client || !userId) throw new Error("Sign in before changing your username.");
+  const { data, error } = await client
+    .from("profiles")
+    .update({ username: username || null })
+    .eq("id", userId)
+    .select("id, username")
+    .single();
+  if (error) {
+    if (error.code === "23505" || /duplicate|unique/i.test(error.message)) {
+      throw new Error("That username is already taken.");
+    }
+    if (error.code === "23514") {
+      throw new Error("That username is not allowed.");
+    }
+    throw new Error(error.message);
+  }
+  window.dispatchEvent(
+    new CustomEvent("dishtune:profile-changed", { detail: data })
+  );
+  return data;
+}
+
 // --------------------------------------------------------------- favorites
 
 // Pull the account's favorites as {dishes: [ids], restaurants: [ids]},
@@ -303,22 +360,42 @@ export async function syncVote(kind, id, vote, userId) {
 
 // ---------------------------------------------------------------- comments
 
-// Display names are stitched in with a second query instead of a PostgREST
+// Usernames are stitched in with a second query instead of a PostgREST
 // relationship embed: duplicate FKs (schema.sql + migrations both applied)
 // make embeds ambiguous ("more than one relationship was found"), and the
 // stitch works regardless of the database's constraint history.
-async function attachDisplayNames(client, comments) {
-  const userIds = [...new Set(comments.map((c) => c.user_id))];
+async function attachUsernames(client, comments) {
+  const userIds = [
+    ...new Set(
+      comments.flatMap((comment) => [
+        comment.user_id,
+        ...(comment.user_mentions || []).map((mention) => mention?.user_id),
+      ])
+    ),
+  ].filter(Boolean);
   if (userIds.length === 0) return comments;
   const names = new Map();
-  const { data } = await client
-    .from("profiles")
-    .select("id, display_name")
-    .in("id", userIds);
-  for (const row of data || []) names.set(row.id, row.display_name);
+  // A thread can contain hundreds of distinct mentions. Keep each PostgREST
+  // URL bounded instead of placing every UUID in one very long `in` filter.
+  const chunks = [];
+  for (let index = 0; index < userIds.length; index += 100) {
+    chunks.push(userIds.slice(index, index + 100));
+  }
+  const responses = await Promise.all(
+    chunks.map((ids) =>
+      client.from("profiles").select("id, username").in("id", ids)
+    )
+  );
+  for (const { data } of responses) {
+    for (const row of data || []) names.set(row.id, row.username);
+  }
   return comments.map((c) => ({
     ...c,
-    profiles: { display_name: names.get(c.user_id) || "vegan explorer" },
+    profiles: { username: names.get(c.user_id) || null },
+    user_mentions: (c.user_mentions || []).map((mention) => ({
+      ...mention,
+      current_username: names.get(mention?.user_id) || null,
+    })),
   }));
 }
 
@@ -327,12 +404,12 @@ export async function fetchComments(placeId) {
   if (!client) return [];
   const { data, error } = await client
     .from("comments")
-    .select("id, user_id, body, mentions, created_at")
+    .select("id, user_id, body, mentions, user_mentions, created_at")
     .eq("place_id", placeId)
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw new Error(error.message);
-  return attachDisplayNames(client, data || []);
+  return attachUsernames(client, data || []);
 }
 
 // place_id -> comment count, for the note chips on restaurant cards. Counting
@@ -386,7 +463,12 @@ export async function fetchDishMentionCounts() {
   return map;
 }
 
-export async function postComment(placeId, body, mentions, userId) {
+export async function postComment(placeId, body, options) {
+  const {
+    dishMentions = [],
+    userMentions = [],
+    userId,
+  } = options || {};
   const client = await getClient();
   const { data, error } = await client
     .from("comments")
@@ -394,15 +476,16 @@ export async function postComment(placeId, body, mentions, userId) {
       user_id: userId,
       place_id: placeId,
       body,
-      mentions: mentions || [],
+      mentions: dishMentions,
+      user_mentions: userMentions,
     })
-    .select("id, user_id, body, mentions, created_at")
+    .select("id, user_id, body, mentions, user_mentions, created_at")
     .single();
   if (error) throw new Error(error.message);
   commentCountsCache.at = 0; // card chips refresh on next fetch
   dishMentionCountsCache.at = 0;
   window.dispatchEvent(new Event("dishtune:comments-changed"));
-  const [withName] = await attachDisplayNames(client, [data]);
+  const [withName] = await attachUsernames(client, [data]);
   return withName;
 }
 
