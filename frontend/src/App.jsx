@@ -31,7 +31,10 @@ export default function App() {
   return (
     <SessionContext.Provider value={session}>
     <div className="min-h-screen bg-[#faf8f4] text-stone-900">
-      <nav className="sticky top-0 z-20 border-b border-stone-200/80 bg-[#faf8f4]/90 backdrop-blur">
+      {/* z-30: the account dropdown lives inside this stacking context, so
+          the nav must sit above the z-20 sticky tab bar (equal z loses by
+          DOM order) while staying under the z-50+ modal overlays. */}
+      <nav className="sticky top-0 z-30 border-b border-stone-200/80 bg-[#faf8f4]/90 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
           <a href="#" className="flex items-center gap-2 text-lg font-extrabold tracking-tight text-emerald-800">
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-base text-white">
