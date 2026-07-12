@@ -1,4 +1,4 @@
-"""Scrape Doctor: agentic deep-dive on one failed menu scrape.
+"""Scrape Doctor: agentic deep-dive on one failed or incomplete menu scrape.
 
 Launches a headless Claude Code or Codex session (subscription-billed)
 in THIS repo, pointed at .claude/skills/scrape-doctor/SKILL.md — the encoded
@@ -8,7 +8,7 @@ with the real scraper, finds the root cause on the live site, fixes the
 scraper GENERICALLY, adds a regression test, verifies (pytest + live
 re-scrape), and commits. Its final line is machine-parseable:
 
-    SCRAPE-DOCTOR RESULT: <fixed|unscrapeable|failed> — <summary>
+    SCRAPE-DOCTOR RESULT: <fixed|recovered|unscrapeable|failed> — <summary>
 
 One job at a time; the Admin polls status() for a live log. Runnable in
 isolation per repo convention:
@@ -43,7 +43,7 @@ _CODEX_MODEL = os.environ.get("SCRAPE_DOCTOR_CODEX_MODEL")
 _AGENTS = frozenset({"claude", "codex"})
 
 _RESULT_RE = re.compile(
-    r"SCRAPE-DOCTOR RESULT:\s*(fixed|unscrapeable|failed)\s*[—-]?\s*(.*)",
+    r"SCRAPE-DOCTOR RESULT:\s*(fixed|recovered|unscrapeable|failed)\s*[—-]?\s*(.*)",
     re.IGNORECASE,
 )
 
@@ -57,7 +57,7 @@ _state: dict = {
     "agent": None,
     "started_at": None,
     "log": [],           # rolling tail of agent activity, newest last
-    "verdict": None,     # fixed | unscrapeable | failed | error
+    "verdict": None,     # fixed | recovered | unscrapeable | failed | error
     "summary": None,
     "error": None,
 }
@@ -103,6 +103,8 @@ def build_prompt(
         "",
         "Work autonomously; no one can answer questions mid-run. End with the",
         "SCRAPE-DOCTOR RESULT line the skill requires.",
+        "Use `recovered` only when the current generic scraper needs no code",
+        "change and a normal ingest has been verified to store the complete menu.",
     ]
     if agent == "codex":
         lines += [
@@ -335,6 +337,16 @@ def _codex_command(executable: str, output_path: Path) -> list[str]:
     return command
 
 
+def _recovered_worktree_error(verdict: str) -> str | None:
+    """A no-code recovery must actually leave the checkout unchanged."""
+    if verdict == "recovered" and not _worktree_is_clean():
+        return (
+            "Agent reported recovered but left uncommitted worktree changes; "
+            "the scrape/classify pipeline was not started."
+        )
+    return None
+
+
 def _run_job(
     restaurant: dict,
     profile: dict | None,
@@ -425,9 +437,13 @@ def _run_job(
             except Exception as exc:
                 verdict = "failed"
                 summary = f"Fix was not committed safely: {type(exc).__name__}: {exc}"
-        if verdict == "fixed" and on_fixed is not None:
+        recovery_error = _recovered_worktree_error(verdict)
+        if recovery_error:
+            verdict = "failed"
+            summary = recovery_error
+        if verdict in {"fixed", "recovered"} and on_fixed is not None:
             try:
-                _log("[pipeline] re-scraping repaired restaurant")
+                _log("[pipeline] re-scraping deep-dived restaurant")
                 pipeline_summary = on_fixed(int(restaurant["id"]))
                 _log(f"[pipeline] {pipeline_summary}")
                 summary = f"{summary or 'Scraper fix verified.'} {pipeline_summary}"
@@ -475,6 +491,10 @@ def start(
             ).fetchone()
         if row is None:
             raise LookupError(f"Restaurant {restaurant_id} not found.")
+        if not row["website_url"]:
+            raise ValueError(
+                f"Restaurant {restaurant_id} has no website to deep-dive."
+            )
         if not _worktree_is_clean():
             raise RuntimeError(
                 "Scrape Doctor requires a clean git worktree so it cannot "

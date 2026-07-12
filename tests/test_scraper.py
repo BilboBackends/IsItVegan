@@ -97,6 +97,57 @@ def test_find_menu_links_separates_third_party():
     assert not any("instagram" in u for u in tp_urls)
 
 
+def test_known_ordering_host_does_not_require_menu_words():
+    # Krungthep's Wix button only says "PICK UP" and its Toast URL ends /v3.
+    html = _menu_html(
+        [("PICK UP", "https://www.toasttab.com/krungthep-tea-time/v3")]
+    )
+
+    follow, hosts, tp_urls = _find_menu_links(html, "https://restaurant.test/")
+
+    assert follow == []
+    assert hosts == ["toasttab.com"]
+    assert tp_urls == ["https://www.toasttab.com/krungthep-tea-time/v3"]
+
+
+def test_ordering_host_match_requires_a_real_domain_boundary():
+    html = _menu_html(
+        [
+            ("Continue", "https://toasttab.com.evil.test/restaurant"),
+            ("Continue", "https://toasttab.com@evil.test/restaurant"),
+        ]
+    )
+
+    _follow, hosts, tp_urls = _find_menu_links(html, "https://restaurant.test/")
+
+    assert hosts == []
+    assert tp_urls == []
+
+
+def test_external_press_article_is_not_treated_as_a_menu():
+    # Broad local hints such as "eat" and "sandwich" must not turn an
+    # off-site press link into a menu candidate.
+    html = _menu_html(
+        [
+            (
+                "Eat This: Best Chicken Sandwich in Every State",
+                "https://press.test/best-chicken-sandwich/",
+            ),
+            (
+                "Restaurant opens a vegan kitchen",
+                "https://press.test/opens-for-takeout-and-delivery/",
+            ),
+            ("View menu", "https://ordering.test/current-menu"),
+        ]
+    )
+
+    _follow, _hosts, tp_urls = _find_menu_links(
+        html, "https://restaurant.test/"
+    )
+
+    assert tp_urls == ["https://ordering.test/current-menu"]
+
+
 def test_find_menu_links_reads_hostinger_serialized_buttons():
     # Clase Azul's Hostinger page stores "OUR MENU" / "ORDER ONLINE" buttons
     # inside escaped builder JSON, not normal anchors.
@@ -140,6 +191,110 @@ def test_finish_keeps_all_menu_pages_combined():
     assert "https://x.com/lunch" in kept_urls
     assert "https://x.com/dinner" in kept_urls
     assert "Dish number 3" in result.text and "Evening plate 3" in result.text
+
+
+def test_strong_menu_drops_weak_priceless_press_homepage():
+    # Krungthep's homepage press headlines barely crossed the menu threshold
+    # and contributed a bogus chicken-sandwich dish beside the real Toast menu.
+    press_homepage = """
+    top of page
+    START MY ORDER
+    KRUNGTHEP TEA TIME
+    THAI TWIST SANDWICH AND TEA BAR
+    START MY ORDER
+    OPEN DINE IN PICK UP AND DELIVERY
+    Visit Us
+    Winter Park, FL
+    OPENING HOURS
+    Sun - Thu 11AM - 9PM
+    Fri - Sat 11AM - 10PM
+    Introducing our SISTER!
+    PRESS AND REVIEW
+    KrungThep Tea Time to Open Vegan Kitchen
+    1/19/2021
+    EATER ATLANTA: 20 Must-Try Sandwiches in Atlanta
+    10/5/2020
+    EATER ATLANTA: Thai Sandwich and Tea Bar Krungthep Tea Time Opens in Berkeley Park
+    9/11/2020
+    Eat This, Not That: The Best Chicken Sandwich in Every State
+    01/10/2020
+    bottom of page
+    """.strip()
+    assert scraper.score_menu_text(press_homepage).is_menu
+    assert scraper.score_menu_text(press_homepage).score < 0.6
+
+    result = _finish(
+        "https://restaurant.test/",
+        [
+            ("https://restaurant.test/", press_homepage),
+            ("https://order.toasttab.com/online/restaurant", MENU_TEXT_A),
+        ],
+        ["toasttab.com"],
+        status_code=200,
+        crawl_method="headless",
+    )
+
+    assert result.ok
+    assert [url for url, _text in result.pages] == [
+        "https://order.toasttab.com/online/restaurant"
+    ]
+    assert "Best Chicken Sandwich" not in result.text
+
+
+def test_strong_menu_keeps_a_legitimate_priceless_section_page():
+    sweets = "Sweets\n" + "\n".join(
+        [
+            "Coconut mango pudding",
+            "Chocolate layer cake",
+            "Strawberry shortcake",
+            "Banana cream pie",
+            "Lemon berry tart",
+            "Peanut butter cookie",
+            "Vanilla bean ice cream",
+            "Caramel apple crisp",
+            "Silken seasonal special",
+            "House celebration selection",
+            "Chef rotating confection",
+            "Golden orchard favorite",
+        ]
+    )
+    score = scraper.score_menu_text(sweets)
+    assert score.is_menu and score.score < 0.6 and score.price_count == 0
+
+    result = _finish(
+        "https://restaurant.test/",
+        [
+            ("https://restaurant.test/", MENU_TEXT_A),
+            ("https://restaurant.test/sweets", sweets),
+        ],
+        [],
+        status_code=200,
+    )
+
+    assert result.ok
+    assert "https://restaurant.test/sweets" in [url for url, _ in result.pages]
+    assert "Coconut mango pudding" in result.text
+
+
+def test_multiple_ordering_platform_copies_keep_the_strongest_catalog():
+    toast_menu = MENU_TEXT_A + "\nChef special tofu platter $24.00"
+    delivery_copy = MENU_TEXT_A.replace("grilled tofu", "tofu")
+
+    result = _finish(
+        "https://restaurant.test/",
+        [
+            ("https://order.toasttab.com/online/restaurant", toast_menu),
+            ("https://www.ubereats.com/store/restaurant", delivery_copy),
+        ],
+        ["toasttab.com", "ubereats.com"],
+        status_code=200,
+        crawl_method="headless",
+    )
+
+    assert result.ok
+    assert [url for url, _text in result.pages] == [
+        "https://order.toasttab.com/online/restaurant"
+    ]
 
 
 def test_finish_dedupes_contained_pages():
@@ -561,6 +716,35 @@ def test_mediocre_learned_route_triggers_rediscovery():
     # _collect_known_http would need network; the gate must reject BEFORE
     # accepting a mediocre result — a None here means rediscovery runs.
     assert result is None
+
+
+def test_external_press_article_is_removed_from_learned_route(monkeypatch):
+    # A previously poisoned high-score profile must self-heal instead of
+    # walking the unrelated article forever.
+    captured = []
+
+    def fake_collect(urls, timeout, address=None):
+        captured.extend(urls)
+        return []
+
+    monkeypatch.setattr(scraper, "_collect_known_http", fake_collect)
+    result = _try_learned_context(
+        "https://restaurant.test/",
+        {
+            "menu_urls": [
+                "https://press.test/best-chicken-sandwich/",
+                "https://restaurant.test/",
+            ],
+            "crawl_method": "http",
+            "menu_score": 0.91,
+            "char_count": 44_652,
+        },
+        timeout=5.0,
+        use_headless=False,
+    )
+
+    assert result is None
+    assert captured == ["https://restaurant.test/"]
 
 
 def test_mediocre_pdf_learned_route_is_reused(monkeypatch):

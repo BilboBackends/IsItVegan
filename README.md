@@ -237,14 +237,17 @@ evidence stops changing, or at the pass limit. Failed attempts preserve the
 last validated menu. Repaired restaurant IDs are printed for change-aware
 reclassification.
 
-The Admin **Scrape failures** panel also offers `Claude fix` and `Codex fix`.
-Either launches the same bounded Scrape Doctor workflow for one restaurant:
+The Admin **Scrape failures** panel offers `Claude fix` and `Codex fix`, and
+every restaurant row has a compact Codex `deep dive` action for menus that
+look successful but are incomplete or wrong. Either launches the same bounded
+Scrape Doctor workflow for one restaurant:
 load stored evidence, reproduce with the real scraper, investigate the live
 site, make only a generic scraper fix, add a regression test, run the full
 suite plus live verification, and commit without pushing. Codex leaves `.git`
 protected; the trusted launcher validates that only Python source/tests changed
-before creating its commit. After a successful repair, the backend re-ingests
-that restaurant and starts a reconnectable DeepSeek classification job. Runs
+before creating its commit. A verified rediscovery that needs no code edit is
+reported as `recovered`. After either successful outcome, the backend
+re-ingests that restaurant and starts a reconnectable DeepSeek classification job. Runs
 require a clean git worktree and share a one-job lock. The backend disables Flask auto-reload
 so an agent editing Python cannot terminate its own job.
 

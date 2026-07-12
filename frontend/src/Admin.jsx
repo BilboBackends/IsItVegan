@@ -109,20 +109,55 @@ function changeDetail(change) {
   return change.old_price || "";
 }
 
+function ScrapeDoctorStatus({ doctor }) {
+  if (!doctor || (!doctor.running && !doctor.verdict)) return null;
+
+  return (
+    <section className="mb-6 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2 font-bold text-violet-900">
+        {doctor.running && (
+          <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+        )}
+        Scrape Doctor · {doctor.agent === "codex" ? "Codex" : "Claude"}
+        {doctor.restaurant_name && ` — ${doctor.restaurant_name}`}
+        {!doctor.running && doctor.verdict && (
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+              doctor.verdict === "fixed" || doctor.verdict === "recovered"
+                ? "bg-emerald-100 text-emerald-800"
+                : doctor.verdict === "unscrapeable"
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-rose-100 text-rose-800"
+            }`}
+          >
+            {doctor.verdict}
+          </span>
+        )}
+      </div>
+      {(doctor.summary || doctor.error) && (
+        <div className="mt-1 text-violet-900">
+          {doctor.summary || doctor.error}
+        </div>
+      )}
+      {doctor.running && (doctor.log?.length ?? 0) > 0 && (
+        <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-white/70 p-2 font-mono text-[10px] leading-4 text-slate-600">
+          {doctor.log.slice(-12).join("\n")}
+        </pre>
+      )}
+    </section>
+  );
+}
+
 // "Why did this menu fail?" — restaurants whose last scrape attempt failed,
 // each expandable to the scraper's per-URL trail: every URL it fetched, the
 // stage (http/headless), the menu score, and the keep/reject decision. The
 // evidence for deciding between a scraper fix, a manual URL, and the
 // photo-fallback queue. Self-contained: fetches /api/scrape-failures.
-function ScrapeFailuresPanel() {
+function ScrapeFailuresPanel({ doctor, onStartDoctor }) {
   const [failures, setFailures] = useState(null);
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [retrying, setRetrying] = useState(null); // restaurant id
-  // Scrape Doctor: the headless agent run that deep-dives one failure and
-  // fixes the scraper itself (see .claude/skills/scrape-doctor/SKILL.md).
-  const [doctor, setDoctor] = useState(null);
-  const doctorTimer = useRef(null);
 
   const load = () =>
     fetch("/api/scrape-failures")
@@ -130,29 +165,16 @@ function ScrapeFailuresPanel() {
       .then((data) => setFailures(data.failures || []))
       .catch(() => setFailures([]));
 
-  const pollDoctor = () => {
-    clearTimeout(doctorTimer.current);
-    fetch("/api/scrape-fix/status")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((state) => {
-        if (!state) return;
-        setDoctor(state);
-        if (state.running) {
-          doctorTimer.current = setTimeout(pollDoctor, 3000);
-        } else if (state.verdict) {
-          load(); // a fix may have unblocked this restaurant
-        }
-      })
-      .catch(() => {});
-  };
-
   useEffect(() => {
     load();
-    // Reconnect to an in-flight doctor run after a page reload.
-    pollDoctor();
-    return () => clearTimeout(doctorTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!doctor?.running && doctor?.verdict) load();
+    // A completed deep dive can turn a failure into a successful scrape.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doctor?.running, doctor?.verdict, doctor?.restaurant_id]);
 
   async function retry(failure) {
     setRetrying(failure.id);
@@ -166,22 +188,6 @@ function ScrapeFailuresPanel() {
     } finally {
       setRetrying(null);
     }
-  }
-
-  async function startDoctor(failure, agent) {
-    setOpen(true);
-    const res = await fetch("/api/scrape-fix", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurant_id: failure.id, agent }),
-    });
-    const state = await res.json();
-    if (!res.ok) {
-      setDoctor({ verdict: "error", error: state.error });
-      return;
-    }
-    setDoctor(state);
-    doctorTimer.current = setTimeout(pollDoctor, 3000);
   }
 
   if (!failures || failures.length === 0) return null;
@@ -211,40 +217,6 @@ function ScrapeFailuresPanel() {
       </button>
       {open && (
         <div className="mt-3 space-y-2">
-          {doctor && (doctor.running || doctor.verdict) && (
-            <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs">
-              <div className="flex items-center gap-2 font-bold text-violet-900">
-                {doctor.running && (
-                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
-                )}
-                Scrape Doctor · {doctor.agent === "codex" ? "Codex" : "Claude"}
-                {doctor.restaurant_name && ` — ${doctor.restaurant_name}`}
-                {!doctor.running && doctor.verdict && (
-                  <span
-                    className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
-                      doctor.verdict === "fixed"
-                        ? "bg-emerald-100 text-emerald-800"
-                        : doctor.verdict === "unscrapeable"
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-rose-100 text-rose-800"
-                    }`}
-                  >
-                    {doctor.verdict}
-                  </span>
-                )}
-              </div>
-              {(doctor.summary || doctor.error) && (
-                <div className="mt-1 text-violet-900">
-                  {doctor.summary || doctor.error}
-                </div>
-              )}
-              {doctor.running && (doctor.log?.length ?? 0) > 0 && (
-                <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-white/70 p-2 font-mono text-[10px] leading-4 text-slate-600">
-                  {doctor.log.slice(-12).join("\n")}
-                </pre>
-              )}
-            </div>
-          )}
           {failures.map((f) => (
             <div key={f.id} className="rounded-lg bg-white p-3 text-sm shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -285,13 +257,16 @@ function ScrapeFailuresPanel() {
                   )}
                   <button
                     onClick={() => retry(f)}
-                    disabled={retrying !== null}
+                    disabled={retrying !== null || Boolean(doctor?.running)}
                     className="rounded-lg border border-emerald-300 px-2.5 py-1 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
                   >
                     {retrying === f.id ? "Scraping…" : "Retry"}
                   </button>
                   <button
-                    onClick={() => startDoctor(f, "claude")}
+                    onClick={() => {
+                      setOpen(true);
+                      onStartDoctor(f, "claude");
+                    }}
                     disabled={Boolean(doctor?.running) || retrying !== null}
                     className="rounded-lg border border-violet-300 px-2.5 py-1 text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
                     title="Launch an agent (your Claude subscription) that deep-dives this site, fixes the scraper generically, verifies and commits it, then re-scrapes and classifies the menu with DeepSeek"
@@ -301,7 +276,10 @@ function ScrapeFailuresPanel() {
                       : "Claude fix"}
                   </button>
                   <button
-                    onClick={() => startDoctor(f, "codex")}
+                    onClick={() => {
+                      setOpen(true);
+                      onStartDoctor(f, "codex");
+                    }}
                     disabled={Boolean(doctor?.running) || retrying !== null}
                     className="rounded-lg border border-sky-300 px-2.5 py-1 text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-slate-400"
                     title="Launch Codex using your ChatGPT subscription to deep-dive this site, fix and safely commit the scraper, then re-scrape and classify the menu with DeepSeek"
@@ -1900,6 +1878,12 @@ export default function Admin() {
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [selectedIds, setSelectedIds] = useState([]);
   const [classifierProvider, setClassifierProvider] = useState("deepseek");
+  // Scrape Doctor is shared by the failures panel and every restaurant row.
+  // Keeping it here also preserves its live status when there are no failures.
+  const [doctor, setDoctor] = useState(null);
+  const doctorTimer = useRef(null);
+  const doctorCompletionRef = useRef(null);
+  const classifyPollRef = useRef(false);
 
   async function loadData() {
     setLoading(true);
@@ -1929,6 +1913,92 @@ export default function Admin() {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleDoctorCompletion(state) {
+    const completionKey = [
+      state.restaurant_id,
+      state.started_at,
+      state.verdict,
+      state.summary || state.error,
+    ].join(":");
+    if (doctorCompletionRef.current === completionKey) return;
+    doctorCompletionRef.current = completionKey;
+
+    // The Doctor's success pipeline may have replaced the stored menu and
+    // started a one-row DeepSeek job. Refresh the row immediately, then join
+    // that background classification so its progress and final dishes appear.
+    await loadData();
+    try {
+      const response = await fetch("/api/classify/status");
+      if (!response.ok) return;
+      const classification = await response.json();
+      if (classification.running) {
+        setClassifying(true);
+        setClassifyJob(classification);
+        void pollClassify();
+      }
+    } catch {
+      /* the next page refresh can reconnect to classification */
+    }
+  }
+
+  async function pollDoctor() {
+    clearTimeout(doctorTimer.current);
+    try {
+      const response = await fetch("/api/scrape-fix/status");
+      if (!response.ok) return;
+      const state = await response.json();
+      setDoctor(state);
+      if (state.running) {
+        doctorTimer.current = setTimeout(pollDoctor, 3000);
+      } else if (state.verdict) {
+        void handleDoctorCompletion(state);
+      }
+    } catch {
+      /* keep the last visible state through a transient backend outage */
+    }
+  }
+
+  async function startDoctor(restaurant, agent = "codex") {
+    clearTimeout(doctorTimer.current);
+    doctorCompletionRef.current = null;
+    setNotice(null);
+    setError(null);
+    try {
+      const response = await fetch("/api/scrape-fix", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restaurant_id: restaurant.id, agent }),
+      });
+      const state = await response.json();
+      if (!response.ok) {
+        setDoctor({
+          running: false,
+          verdict: "error",
+          error: state.error || `Deep dive failed to start (${response.status})`,
+          restaurant_id: restaurant.id,
+          restaurant_name: restaurant.name,
+          agent,
+        });
+        return;
+      }
+      setDoctor(state);
+      if (state.running) {
+        doctorTimer.current = setTimeout(pollDoctor, 3000);
+      } else if (state.verdict) {
+        void handleDoctorCompletion(state);
+      }
+    } catch (startError) {
+      setDoctor({
+        running: false,
+        verdict: "error",
+        error: startError.message || "Deep dive failed to start.",
+        restaurant_id: restaurant.id,
+        restaurant_name: restaurant.name,
+        agent,
+      });
     }
   }
 
@@ -1983,6 +2053,10 @@ export default function Admin() {
         /* backend not up yet; loadData surfaces that */
       }
     })();
+    // Reconnect to an in-flight Doctor run even when the failure panel is
+    // absent because its target had a superficially successful scrape.
+    pollDoctor();
+    return () => clearTimeout(doctorTimer.current);
   }, []);
 
   async function runDiscovery() {
@@ -2040,36 +2114,44 @@ export default function Admin() {
   }
 
   async function pollClassify() {
-    for (;;) {
-      let data;
-      try {
-        const res = await fetch("/api/classify/status");
-        data = await res.json();
-      } catch {
-        break;
-      }
-      setClassifyJob(data);
-      if (!data.running) {
-        if (data.error) setError(data.error);
-        else if (data.summary) {
-          const s = data.summary;
-          setNotice(
-            `${s.cancelled ? "Classification stopped" : "Classification"}: ` +
-              `${s.ok} restaurant(s), ${s.dishes} dishes, ` +
-              (s.billing === "api"
-                ? `~$${(s.cost ?? 0).toFixed(2)} API cost`
-                : `via ${PROVIDER_LABELS[s.provider] || "subscription"}`) +
-              (s.failed ? `, ${s.failed} failed` : "") +
-              "."
-          );
+    // The page-reconnect check and a finishing Doctor can notice the same
+    // DeepSeek job at once; only one polling loop should own it.
+    if (classifyPollRef.current) return;
+    classifyPollRef.current = true;
+    try {
+      for (;;) {
+        let data;
+        try {
+          const res = await fetch("/api/classify/status");
+          data = await res.json();
+        } catch {
+          break;
         }
-        setClassifyJob(null);
-        await loadData();
-        break;
+        setClassifyJob(data);
+        if (!data.running) {
+          if (data.error) setError(data.error);
+          else if (data.summary) {
+            const s = data.summary;
+            setNotice(
+              `${s.cancelled ? "Classification stopped" : "Classification"}: ` +
+                `${s.ok} restaurant(s), ${s.dishes} dishes, ` +
+                (s.billing === "api"
+                  ? `~$${(s.cost ?? 0).toFixed(2)} API cost`
+                  : `via ${PROVIDER_LABELS[s.provider] || "subscription"}`) +
+                (s.failed ? `, ${s.failed} failed` : "") +
+                "."
+            );
+          }
+          setClassifyJob(null);
+          await loadData();
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
       }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+    } finally {
+      classifyPollRef.current = false;
+      setClassifying(false);
     }
-    setClassifying(false);
   }
 
   async function runClassify() {
@@ -2844,7 +2926,7 @@ export default function Admin() {
           <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">
             <button
               onClick={runPublish}
-              disabled={publishing}
+              disabled={publishing || Boolean(doctor?.running)}
               className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               title="Export the current restaurants/dishes as static snapshots, commit, and push — the public site redeploys with your latest data in ~2 minutes"
             >
@@ -2857,14 +2939,15 @@ export default function Admin() {
                 setAddResolved(null);
                 setAddSelections({});
               }}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              disabled={Boolean(doctor?.running)}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
               title="Add restaurants by name — resolves via Google, then scrapes"
             >
               + Add restaurants
             </button>
             <button
               onClick={runEnrich}
-              disabled={enriching || !config?.has_api_key}
+              disabled={enriching || Boolean(doctor?.running) || !config?.has_api_key}
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
               title="Refresh ratings, current opening status, and Google food signals for every restaurant"
             >
@@ -2872,7 +2955,7 @@ export default function Admin() {
             </button>
             <button
               onClick={() => runIngest(true)}
-              disabled={ingesting || staleMenus === 0}
+              disabled={ingesting || classifying || Boolean(doctor?.running) || staleMenus === 0}
               className="rounded-lg border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-800 shadow-sm transition hover:bg-amber-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
               title="Re-scrape menus last checked more than 30 days ago"
             >
@@ -2919,7 +3002,7 @@ export default function Admin() {
             </select>
             <button
               onClick={runClassify}
-              disabled={classifying || unclassified === 0}
+              disabled={classifying || ingesting || Boolean(doctor?.running) || unclassified === 0}
               className="rounded-lg border border-violet-400 px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
               title={
                 classifierUsesApi
@@ -2937,7 +3020,7 @@ export default function Admin() {
             </button>
             <button
               onClick={() => runIngest(false)}
-              disabled={ingesting || discovering}
+              disabled={ingesting || classifying || discovering || Boolean(doctor?.running)}
               className="rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700 shadow-sm transition hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
               title="Scrapes menu text for restaurants that don't have it yet"
             >
@@ -2945,7 +3028,7 @@ export default function Admin() {
             </button>
             <button
               onClick={runDiscovery}
-              disabled={discovering || ingesting || !config?.has_api_key}
+              disabled={discovering || ingesting || Boolean(doctor?.running) || !config?.has_api_key}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
               title={
                 config && !config.has_api_key
@@ -3083,7 +3166,8 @@ export default function Admin() {
           </section>
         )}
 
-        <ScrapeFailuresPanel />
+        <ScrapeDoctorStatus doctor={doctor} />
+        <ScrapeFailuresPanel doctor={doctor} onStartDoctor={startDoctor} />
         <DishAuditPanel onDataChanged={loadData} />
 
         {menuQuality.length > 0 && (
@@ -3377,14 +3461,14 @@ export default function Admin() {
           </span>
           <button
             onClick={runSelectedIngest}
-            disabled={selectedScrapeIds.length === 0 || ingesting || classifying}
+            disabled={selectedScrapeIds.length === 0 || ingesting || classifying || Boolean(doctor?.running)}
             className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
           >
             Scrape menus ({selectedScrapeIds.length})
           </button>
           <button
             onClick={runSelectedClassify}
-            disabled={selectedClassifyIds.length === 0 || classifying || ingesting}
+            disabled={selectedClassifyIds.length === 0 || classifying || ingesting || Boolean(doctor?.running)}
             className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
             title={
               classifierUsesApi
@@ -3690,6 +3774,27 @@ export default function Admin() {
                             view menu
                           </button>
                           <button
+                            onClick={() => startDoctor(r)}
+                            disabled={
+                              !r.website_url ||
+                              Boolean(doctor?.running) ||
+                              rowBusy !== null ||
+                              ingesting ||
+                              classifying ||
+                              deleting
+                            }
+                            title={
+                              r.website_url
+                                ? "Deep-dive an incomplete or incorrect menu with Codex. It inspects the live site, may fix the scraper, then re-scrapes and classifies with DeepSeek."
+                                : "A website is required for a menu deep dive"
+                            }
+                            className="rounded border border-sky-200 px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {doctor?.running && doctor.restaurant_id === r.id
+                              ? "diving…"
+                              : "deep dive"}
+                          </button>
+                          <button
                             onClick={() => setHistoryFor(r)}
                             title="Menu versions over time and the dish-change log (added/removed dishes, price moves)"
                             className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
@@ -3730,7 +3835,7 @@ export default function Admin() {
                               setDeleteFor(r);
                               setDeleteConfirm("");
                             }}
-                            disabled={rowBusy !== null || ingesting || classifying || deleting}
+                            disabled={rowBusy !== null || ingesting || classifying || deleting || Boolean(doctor?.running)}
                             title="Permanently delete this restaurant and all related data"
                             className="rounded border border-rose-200 px-2 py-0.5 text-xs text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-40"
                           >
@@ -3738,7 +3843,7 @@ export default function Admin() {
                           </button>
                           <button
                             onClick={() => runRowAction(r, "ingest")}
-                            disabled={rowBusy !== null || !r.website_url}
+                            disabled={rowBusy !== null || classifying || Boolean(doctor?.running) || !r.website_url}
                             title={
                               r.website_url
                                 ? "Re-run the menu scraper for this restaurant"
@@ -3752,7 +3857,7 @@ export default function Admin() {
                           </button>
                           <button
                             onClick={() => runRowAction(r, "classify")}
-                            disabled={classifying || rowBusy !== null || !r.has_menu_text}
+                            disabled={classifying || ingesting || rowBusy !== null || Boolean(doctor?.running) || !r.has_menu_text}
                             title={
                               r.has_menu_text
                                 ? (classifierUsesApi

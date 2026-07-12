@@ -26,6 +26,9 @@ follow the order; the shortcuts are traps we already fell into.
   (verification re-scrapes go through `ingest.run`, which persists normally).
 - Read `MEMORY.md` / project memories if available — several scraper gotchas
   are recorded there.
+- If the current generic scraper already recovers the full menu without a code
+  change, verify a normal `ingest.run` persists it and report `recovered`.
+  Do not invent a code edit merely to satisfy the usual `fixed` path.
 
 ## Step 1 — Load the stored evidence (no network yet)
 
@@ -116,11 +119,13 @@ validates the changed paths and creates the commit after a `fixed` result.
 End your FINAL message with exactly one line so the caller can parse it:
 
 ```
-SCRAPE-DOCTOR RESULT: <fixed|unscrapeable|failed> — <one-sentence summary>
+SCRAPE-DOCTOR RESULT: <fixed|recovered|unscrapeable|failed> — <one-sentence summary>
 ```
 
 - `fixed` — scraper changed and verified; committed directly by Claude or by
   the trusted Codex launcher handoff.
+- `recovered` — no scraper edit was needed; the current generic scraper and a
+  normal ingest were verified to replace the incomplete/wrong stored menu.
 - `unscrapeable` — no generic fix exists; name the reason (photo-only,
   social-only, bot wall) so the restaurant goes to the photo-fallback queue.
 - `failed` — you could not complete the diagnosis/fix; say what you learned

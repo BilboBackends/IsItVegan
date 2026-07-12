@@ -74,6 +74,17 @@ def _write_restaurant_dish_shards(
             stale_path.unlink()
 
 
+def _write_restaurant_dish_shard(
+    restaurant_id: int, dishes: list[dict], published_at: str
+) -> None:
+    """Update one existing consumer menu without touching other shards."""
+    RESTAURANT_DISH_DIR.mkdir(parents=True, exist_ok=True)
+    _write_json_snapshot(
+        RESTAURANT_DISH_DIR / f"{restaurant_id}.json",
+        {"count": len(dishes), "dishes": dishes, "published_at": published_at},
+    )
+
+
 def _json_bytes(payload: dict) -> bytes:
     """Compact UTF-8 JSON shared by plain and pre-compressed snapshots."""
     return json.dumps(
@@ -96,6 +107,27 @@ def _write_json_snapshot(path: Path, payload: dict, *, gzip_copy: bool = False) 
         _write_gzip_snapshot(path.with_suffix(path.suffix + ".gz"), payload)
 
 
+def _consumer_restaurant_row(restaurant: dict, counts: dict | None) -> dict:
+    row = {field: restaurant.get(field) for field in _RESTAURANT_FIELDS}
+    row["dish_count"] = counts["total"] if counts else 0
+    row["vegan_options"] = counts["vegan_meals"] if counts else 0
+    row["vegan_sides"] = counts["vegan_sides"] if counts else 0
+    menu_source = db.get_menu_text(restaurant["id"])
+    score = compute_vegan_score(
+        vegan_meals=counts["vegan_meals"] if counts else 0,
+        vegan_sides=counts["vegan_sides"] if counts else 0,
+        substance_points=counts.get("vegan_substance_points", 0.0) if counts else 0.0,
+        google_rating=restaurant.get("rating"),
+        dessert_venue=restaurant.get("primary_type") in db.DESSERT_VENUE_TYPES,
+        plant_protein_menu=menu_offers_plant_protein(
+            menu_source["content"] if menu_source else None
+        ),
+    )
+    row["vegan_score"] = score["score"]
+    row["vegan_score_parts"] = score
+    return row
+
+
 def export() -> dict:
     db.init_db()
     counts = db.verdict_counts_by_restaurant()
@@ -104,24 +136,7 @@ def export() -> dict:
         c = counts.get(r["id"])
         if not is_consumer_ready(r, c["total"] if c else 0):
             continue
-        row = {field: r.get(field) for field in _RESTAURANT_FIELDS}
-        row["dish_count"] = c["total"] if c else 0
-        row["vegan_options"] = c["vegan_meals"] if c else 0
-        row["vegan_sides"] = c["vegan_sides"] if c else 0
-        menu_source = db.get_menu_text(r["id"])
-        score = compute_vegan_score(
-            vegan_meals=c["vegan_meals"] if c else 0,
-            vegan_sides=c["vegan_sides"] if c else 0,
-            substance_points=c.get("vegan_substance_points", 0.0) if c else 0.0,
-            google_rating=r.get("rating"),
-            dessert_venue=r.get("primary_type") in db.DESSERT_VENUE_TYPES,
-            plant_protein_menu=menu_offers_plant_protein(
-                menu_source["content"] if menu_source else None
-            ),
-        )
-        row["vegan_score"] = score["score"]
-        row["vegan_score_parts"] = score
-        restaurants.append(row)
+        restaurants.append(_consumer_restaurant_row(r, c))
 
     dishes = [
         d
@@ -148,6 +163,96 @@ def export() -> dict:
     # index (currently tens of megabytes on the public site).
     _write_restaurant_dish_shards(dishes, published_at)
     return {"restaurants": len(restaurants), "dishes": len(dishes)}
+
+
+def export_restaurant(restaurant_id: int) -> dict:
+    """Refresh one already-published restaurant without exporting local backlog.
+
+    Deep-dive repairs often need to reach production immediately while other
+    newly scraped restaurants are still awaiting review. This preserves the
+    published restaurant set and replaces only the selected row and dishes.
+    """
+    db.init_db()
+    restaurants_path = DATA_DIR / "restaurants.json"
+    dishes_path = DATA_DIR / "dishes.json"
+    if not restaurants_path.exists() or not dishes_path.exists():
+        raise RuntimeError("Static snapshots do not exist; run a full export first.")
+
+    restaurant_snapshot = json.loads(restaurants_path.read_text(encoding="utf-8"))
+    dish_snapshot = json.loads(dishes_path.read_text(encoding="utf-8"))
+    published_rows = restaurant_snapshot.get("restaurants") or []
+    if not any(row.get("id") == restaurant_id for row in published_rows):
+        raise RuntimeError(
+            f"Restaurant {restaurant_id} is not already published; use a full export."
+        )
+
+    restaurant = next(
+        (row for row in db.list_restaurants() if row["id"] == restaurant_id),
+        None,
+    )
+    if restaurant is None:
+        raise RuntimeError(f"Restaurant {restaurant_id} was not found locally.")
+    counts = db.verdict_counts_by_restaurant().get(restaurant_id)
+    if not is_consumer_ready(restaurant, counts["total"] if counts else 0):
+        raise RuntimeError(f"Restaurant {restaurant_id} is not consumer-ready.")
+
+    replacement = _consumer_restaurant_row(restaurant, counts)
+    published_rows = [
+        replacement if row.get("id") == restaurant_id else row
+        for row in published_rows
+    ]
+    target_dishes = [
+        dish
+        for dish in db.list_all_dishes()
+        if dish.get("restaurant_id") == restaurant_id
+        and is_consumer_food_venue(dish)
+        and dish.get("verdict")
+    ]
+    previous_dishes = dish_snapshot.get("dishes") or []
+    target_indexes = [
+        index
+        for index, dish in enumerate(previous_dishes)
+        if dish.get("restaurant_id") == restaurant_id
+    ]
+    insert_at = target_indexes[0] if target_indexes else len(previous_dishes)
+    published_dishes = [
+        dish
+        for dish in previous_dishes
+        if dish.get("restaurant_id") != restaurant_id
+    ]
+    target_dishes.sort(
+        key=lambda dish: (
+            str(dish.get("name") or "").casefold(),
+            str(dish.get("restaurant_name") or "").casefold(),
+        )
+    )
+    published_dishes[insert_at:insert_at] = target_dishes
+
+    published_at = datetime.now(timezone.utc).isoformat()
+    _write_json_snapshot(
+        restaurants_path,
+        {
+            "count": len(published_rows),
+            "restaurants": published_rows,
+            "published_at": published_at,
+        },
+    )
+    _write_json_snapshot(
+        dishes_path,
+        {
+            "count": len(published_dishes),
+            "dishes": published_dishes,
+            "published_at": published_at,
+        },
+        gzip_copy=True,
+    )
+    _write_restaurant_dish_shard(restaurant_id, target_dishes, published_at)
+    return {
+        "restaurants": len(published_rows),
+        "dishes": len(published_dishes),
+        "restaurant_id": restaurant_id,
+        "restaurant_dishes": len(target_dishes),
+    }
 
 
 def publish(push: bool = False) -> dict:

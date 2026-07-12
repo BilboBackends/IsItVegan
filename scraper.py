@@ -102,6 +102,17 @@ _MENU_HINTS = (
     "specials",
 )
 
+# Cross-domain links need stronger intent than links inside the restaurant's
+# own site. Broad section words such as "eat" and "sandwiches" are useful for
+# local navigation, but on an external URL they commonly point to press
+# coverage. Known ordering platforms remain trusted even when their button
+# text is vague (Krungthep's Toast link is labeled only "PICK UP").
+_EXTERNAL_MENU_URL_HINTS = ("menu", "menus", "order", "ordering")
+_EXTERNAL_MENU_LABEL_HINTS = (
+    *_EXTERNAL_MENU_URL_HINTS,
+    "order online", "pick up", "pickup", "delivery",
+)
+
 # Visible labels of menu-section TABS to click in the headless browser when a
 # rendered menu page is sparse (tabbed widgets keep only the active section in
 # the DOM). Deliberately excludes "menu"/"order" — those are nav links, and
@@ -728,6 +739,39 @@ def _looks_menu_like(text: str, href: str) -> bool:
     )
 
 
+def _known_third_party_host(host: str) -> str | None:
+    host = (host or "").lower().rstrip(".")
+    return next(
+        (
+            known
+            for known in _THIRD_PARTY_HOSTS
+            if host == known or host.endswith("." + known)
+        ),
+        None,
+    )
+
+
+def _looks_external_menu_like(text: str, href: str) -> bool:
+    """Conservative menu test for links leaving the restaurant's domain."""
+    blob = f"{text} {href}".lower()
+    if any(skip in blob for skip in _SKIP_HINTS):
+        return False
+    if _known_third_party_host(urlparse(href).hostname or ""):
+        return True
+    # "delivery" in an article URL ("opens-for-takeout-and-delivery") is not
+    # ordering intent. Accept those weaker words only when the visible button
+    # itself uses them; URL-only evidence must say menu/order explicitly.
+    label = (text or "").lower()
+    path = urlparse(href).path.lower()
+    return any(
+        re.search(rf"(?<![a-z]){re.escape(hint)}(?![a-z])", label)
+        for hint in _EXTERNAL_MENU_LABEL_HINTS
+    ) or any(
+        re.search(rf"(?<![a-z]){re.escape(hint)}(?![a-z])", path)
+        for hint in _EXTERNAL_MENU_URL_HINTS
+    )
+
+
 def _is_single_section_url(url: str) -> bool:
     """True when a URL path names one menu section (e.g. /breakfast).
 
@@ -851,8 +895,6 @@ def _find_menu_links(
         href = href.strip()
         if not href or href.startswith("#"):
             return
-        if not _looks_menu_like(label, href):
-            return
 
         absolute = urljoin(base_url, href)
         host = urlparse(absolute).netloc.lower()
@@ -863,11 +905,13 @@ def _find_menu_links(
         # are still named in third_party for failure messages.
         base_bare = base_host.replace("www.", "")
         if host.replace("www.", "") != base_bare:
+            if not _looks_external_menu_like(label, absolute):
+                return
             # PDFs are downloaded/extracted by the PDF path. Sending them to
             # headless just opens a browser PDF viewer with little useful text.
             if _is_pdf_url(absolute):
                 return
-            tp = next((h for h in _THIRD_PARTY_HOSTS if h in host), None)
+            tp = _known_third_party_host(urlparse(absolute).hostname or "")
             if tp and tp not in third_party:
                 third_party.append(tp)
             # Keep the SPA fragment (#/main routes matter on ordering apps);
@@ -878,6 +922,8 @@ def _find_menu_links(
             return
 
         # Same-domain: dedup, and don't refetch the landing page itself.
+        if not _looks_menu_like(label, absolute):
+            return
         norm = absolute.split("#")[0].rstrip("/")
         if norm in seen or norm == base_url.split("#")[0].rstrip("/"):
             return
@@ -1253,6 +1299,19 @@ def _try_learned_context(
 ) -> ScrapeResult | None:
     """Try the last successful route; return None when rediscovery is needed."""
     urls = _profile_urls(crawl_context)
+    # Older profiles can contain an unrelated high-scoring press article.
+    # Keep restaurant-owned routes, known ordering platforms, and explicit
+    # external menu/order URLs; discard broad off-site food links so the
+    # normal discovery pass can replace a poisoned route.
+    home_host = urlparse(home_url).netloc.lower().replace("www.", "")
+    urls = [
+        saved_url
+        for saved_url in urls
+        if (
+            urlparse(saved_url).netloc.lower().replace("www.", "") == home_host
+            or _looks_external_menu_like("", saved_url)
+        )
+    ]
     # Profiles learned before location filtering existed can carry OTHER
     # locations' menu pages (the Pizza Bruno bug) — a high score would then
     # re-walk the contaminated route forever. Filtering here self-heals the
@@ -1609,10 +1668,55 @@ def _finish(
     # Keep every menu-like page, best first, deduped (identical or contained
     # text — e.g. a landing page that embeds the same menu as /menu), capped
     # so a sprawling site can't blow up classification cost.
+    ordering_pages = [
+        (page_url, score)
+        for page_url, _text, score in scored
+        if _known_third_party_host(urlparse(page_url).hostname or "")
+        and score.is_menu
+        and score.price_count >= 8
+    ]
+    preferred_ordering_host = None
+    if ordering_pages:
+        preferred_ordering_url, _preferred_score = max(
+            ordering_pages,
+            key=lambda candidate: (
+                candidate[1].score,
+                candidate[1].price_count,
+            ),
+        )
+        preferred_ordering_host = _known_third_party_host(
+            urlparse(preferred_ordering_url).hostname or ""
+        )
+
     kept: list[tuple[str, str]] = []
     total = 0
     for page_url, text, s in sorted(scored, key=lambda t: t[2].score, reverse=True):
         if not s.is_menu or len(text) < _MIN_USEFUL_CHARS:
+            continue
+        ordering_host = _known_third_party_host(
+            urlparse(page_url).hostname or ""
+        )
+        if (
+            ordering_host
+            and preferred_ordering_host
+            and ordering_host != preferred_ordering_host
+        ):
+            # Restaurants often link pickup and delivery copies of the same
+            # catalog (Toast + Uber Eats + DoorDash). Sending all of them to
+            # classification creates duplicate dishes; retain the strongest
+            # platform while still keeping separate pages on that platform.
+            continue
+        # Once a strong menu is present, do not append a weak, price-less
+        # homepage that only scored through press headlines and food words.
+        # Krungthep's real Toast catalog otherwise carried its "Best Chicken
+        # Sandwich" press teaser into classification as a bogus dish.
+        if (
+            best.score >= 0.75
+            and _norm_url(page_url) == _norm_url(url)
+            and s.score < 0.6
+            and s.price_count == 0
+            and s.section_hits < 2
+        ):
             continue
         if any(text in kept_text or kept_text in text for _, kept_text in kept):
             continue

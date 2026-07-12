@@ -217,10 +217,20 @@ _ingest_state: dict = {
     "chained_classify": None,
 }
 _ingest_lock = threading.Lock()
+# Atomically coordinates entry into ingest, classify, and Scrape Doctor jobs.
+# Each job still owns its detailed state lock; this lock only closes the gap
+# between "is another pipeline active?" and marking the new one active.
+_pipeline_start_lock = threading.Lock()
 # Set to request a graceful stop before the next restaurant. A scrape
 # already in flight (a hung headless browser) is unstuck separately by
 # terminating the orphaned browser processes — see stop_ingest.
 _ingest_cancel = threading.Event()
+
+
+def _scrape_doctor_running() -> bool:
+    import scrape_doctor
+
+    return bool(scrape_doctor.status().get("running"))
 
 
 def _ingest_worker(
@@ -293,12 +303,22 @@ def run_ingest() -> object:
 
     restaurant_id = payload.get("restaurant_id")
     if restaurant_id is not None:
-        try:
-            result = ingest.run(restaurant_id=restaurant_id)
-        except SystemExit as exc:  # e.g. restaurant has no website
-            return jsonify({"error": str(exc)}), 400
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 502
+        with _pipeline_start_lock:
+            if _scrape_doctor_running():
+                return jsonify(
+                    {"error": "Wait for the active deep dive before scraping menus."}
+                ), 409
+            with _classify_lock:
+                if _classify_state["running"]:
+                    return jsonify(
+                        {"error": "Wait for the active classification before scraping menus."}
+                    ), 409
+            try:
+                result = ingest.run(restaurant_id=restaurant_id)
+            except SystemExit as exc:  # e.g. restaurant has no website
+                return jsonify({"error": str(exc)}), 400
+            except Exception as exc:
+                return jsonify({"error": str(exc)}), 502
         return jsonify(
             {
                 "succeeded": result["succeeded"],
@@ -345,20 +365,30 @@ def run_ingest() -> object:
         if then_classify.get("mode", "auto") not in ("auto", "full"):
             return jsonify({"error": "then_classify.mode must be auto or full."}), 400
 
-    with _ingest_lock:
-        if _ingest_state["running"]:
-            return jsonify({"error": "A menu scrape is already running."}), 409
-        _ingest_state.update(
-            running=True, total=None, done=0, succeeded=0, failed=0,
-            current=None, recent=[], summary=None, error=None,
-            cancel_requested=False, chained_classify=None,
-        )
-        _ingest_cancel.clear()
-    threading.Thread(
-        target=_ingest_worker,
-        args=(bool(payload.get("all")), stale_days, restaurant_ids, then_classify),
-        daemon=True,
-    ).start()
+    with _pipeline_start_lock:
+        if _scrape_doctor_running():
+            return jsonify(
+                {"error": "Wait for the active deep dive before scraping menus."}
+            ), 409
+        with _classify_lock:
+            if _classify_state["running"]:
+                return jsonify(
+                    {"error": "Wait for the active classification before scraping menus."}
+                ), 409
+        with _ingest_lock:
+            if _ingest_state["running"]:
+                return jsonify({"error": "A menu scrape is already running."}), 409
+            _ingest_state.update(
+                running=True, total=None, done=0, succeeded=0, failed=0,
+                current=None, recent=[], summary=None, error=None,
+                cancel_requested=False, chained_classify=None,
+            )
+            _ingest_cancel.clear()
+        threading.Thread(
+            target=_ingest_worker,
+            args=(bool(payload.get("all")), stale_days, restaurant_ids, then_classify),
+            daemon=True,
+        ).start()
     return jsonify({"started": True}), 202
 
 
@@ -429,9 +459,10 @@ def ingest_status() -> object:
 def scrape_fix_endpoint() -> object:
     """Launch the Scrape Doctor through Claude Code or Codex.
 
-    The selected subscription agent deep-dives one failed scrape, fixes the
-    scraper generically, verifies, and commits but never pushes. A fixed
-    result is then ingested and handed to DeepSeek classification server-side.
+    The selected subscription agent deep-dives one failed, incomplete, or
+    incorrect scrape, fixes the scraper generically when needed, verifies,
+    and commits code repairs but never pushes. A fixed or recovered result is
+    then ingested and handed to DeepSeek classification server-side.
     One shared job at a time; poll /api/scrape-fix/status for the live log.
     """
     import scrape_doctor
@@ -439,23 +470,36 @@ def scrape_fix_endpoint() -> object:
     db.init_db()
     payload = request.get_json(silent=True) or {}
     restaurant_id = payload.get("restaurant_id")
-    if not isinstance(restaurant_id, int):
+    if not isinstance(restaurant_id, int) or isinstance(restaurant_id, bool):
         return jsonify({"error": "restaurant_id must be an integer."}), 400
     agent = payload.get("agent", "claude")
     if agent not in ("claude", "codex"):
         return jsonify({"error": "agent must be claude or codex."}), 400
-    try:
-        return jsonify(
-            scrape_doctor.start(
-                restaurant_id,
-                agent=agent,
-                on_fixed=_finish_scrape_doctor_pipeline,
+    with _pipeline_start_lock:
+        with _ingest_lock:
+            if _ingest_state["running"]:
+                return jsonify(
+                    {"error": "Wait for the active menu scrape before starting a deep dive."}
+                ), 409
+        with _classify_lock:
+            if _classify_state["running"]:
+                return jsonify(
+                    {"error": "Wait for the active classification before starting a deep dive."}
+                ), 409
+        try:
+            return jsonify(
+                scrape_doctor.start(
+                    restaurant_id,
+                    agent=agent,
+                    on_fixed=_finish_scrape_doctor_pipeline,
+                )
             )
-        )
-    except LookupError as exc:
-        return jsonify({"error": str(exc)}), 404
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
+        except LookupError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
 
 
 def _finish_scrape_doctor_pipeline(restaurant_id: int) -> str:
@@ -1275,14 +1319,24 @@ def run_classify() -> object:
     if mode not in ("auto", "full"):
         return jsonify({"error": "mode must be auto or full."}), 400
 
-    error, provider = _start_classify_job(
-        requested_provider=requested_provider,
-        restaurant_ids=restaurant_ids,
-        parallel=parallel,
-        mode=mode,
-        do_all=bool(payload.get("all")),
-        restaurant_id=restaurant_id,
-    )
+    with _pipeline_start_lock:
+        if _scrape_doctor_running():
+            return jsonify(
+                {"error": "Wait for the active deep dive before classifying menus."}
+            ), 409
+        with _ingest_lock:
+            if _ingest_state["running"]:
+                return jsonify(
+                    {"error": "Wait for the active menu scrape before classifying menus."}
+                ), 409
+        error, provider = _start_classify_job(
+            requested_provider=requested_provider,
+            restaurant_ids=restaurant_ids,
+            parallel=parallel,
+            mode=mode,
+            do_all=bool(payload.get("all")),
+            restaurant_id=restaurant_id,
+        )
     if error:
         return jsonify({"error": error}), (
             409 if "already running" in error else 400

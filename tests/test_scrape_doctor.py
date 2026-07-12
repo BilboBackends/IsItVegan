@@ -102,12 +102,21 @@ def test_codex_commit_handoff_creates_commit_in_trusted_parent(tmp_path, monkeyp
 
 
 def test_result_line_parses_all_verdicts():
-    for verdict in ("fixed", "unscrapeable", "failed"):
+    for verdict in ("fixed", "recovered", "unscrapeable", "failed"):
         match = scrape_doctor._RESULT_RE.search(
             f"...analysis...\nSCRAPE-DOCTOR RESULT: {verdict} — menu was behind a JS wall"
         )
         assert match and match.group(1).lower() == verdict
         assert "JS wall" in match.group(2)
+
+
+def test_recovered_requires_an_unchanged_worktree(monkeypatch):
+    monkeypatch.setattr(scrape_doctor, "_worktree_is_clean", lambda: False)
+
+    error = scrape_doctor._recovered_worktree_error("recovered")
+
+    assert error and "uncommitted worktree changes" in error
+    assert scrape_doctor._recovered_worktree_error("fixed") is None
 
 
 def test_start_rejects_concurrent_runs():
@@ -144,6 +153,9 @@ def test_api_validation():
     client = app.test_client()
     assert client.post("/api/scrape-fix", json={}).status_code == 400
     assert client.post(
+        "/api/scrape-fix", json={"restaurant_id": True}
+    ).status_code == 400
+    assert client.post(
         "/api/scrape-fix", json={"restaurant_id": 1, "agent": "other"}
     ).status_code == 400
     assert (
@@ -151,6 +163,108 @@ def test_api_validation():
         == 404
     )
     assert client.get("/api/scrape-fix/status").status_code == 200
+
+
+def test_api_rejects_pipeline_job_conflicts():
+    import api
+
+    client = api.app.test_client()
+    previous_ingest = api._ingest_state["running"]
+    previous_classify = api._classify_state["running"]
+    try:
+        api._ingest_state["running"] = True
+        assert client.post(
+            "/api/scrape-fix", json={"restaurant_id": 1}
+        ).status_code == 409
+        api._ingest_state["running"] = False
+        api._classify_state["running"] = True
+        assert client.post(
+            "/api/scrape-fix", json={"restaurant_id": 1}
+        ).status_code == 409
+    finally:
+        api._ingest_state["running"] = previous_ingest
+        api._classify_state["running"] = previous_classify
+
+
+def test_pipeline_endpoints_reject_an_active_deep_dive(monkeypatch):
+    import api
+
+    with scrape_doctor._state_lock:
+        previous = dict(scrape_doctor._state)
+        scrape_doctor._state["running"] = True
+    monkeypatch.setattr(
+        api.ingest,
+        "run",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ingest must not start during a deep dive")
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_classify_job",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("classification must not start during a deep dive")
+        ),
+    )
+    try:
+        client = api.app.test_client()
+        assert client.post(
+            "/api/ingest", json={"restaurant_id": 1}
+        ).status_code == 409
+        assert client.post(
+            "/api/classify", json={"restaurant_id": 1, "provider": "deepseek"}
+        ).status_code == 409
+    finally:
+        with scrape_doctor._state_lock:
+            scrape_doctor._state.update(previous)
+
+
+def test_ingest_and_classification_jobs_are_mutually_exclusive(monkeypatch):
+    import api
+
+    client = api.app.test_client()
+    previous_ingest = api._ingest_state["running"]
+    previous_classify = api._classify_state["running"]
+    monkeypatch.setattr(
+        api.ingest,
+        "run",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ingest must not start during classification")
+        ),
+    )
+    try:
+        api._classify_state["running"] = True
+        assert client.post(
+            "/api/ingest", json={"restaurant_id": 1}
+        ).status_code == 409
+
+        api._classify_state["running"] = False
+        api._ingest_state["running"] = True
+        assert client.post(
+            "/api/classify", json={"restaurant_id": 1, "provider": "deepseek"}
+        ).status_code == 409
+    finally:
+        api._ingest_state["running"] = previous_ingest
+        api._classify_state["running"] = previous_classify
+
+
+def test_api_surfaces_missing_website_as_bad_request(monkeypatch):
+    import api
+
+    monkeypatch.setattr(
+        scrape_doctor,
+        "start",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("Restaurant 42 has no website to deep-dive.")
+        ),
+    )
+
+    response = api.app.test_client().post(
+        "/api/scrape-fix", json={"restaurant_id": 42}
+    )
+
+    assert response.status_code == 400
+    assert "no website" in response.get_json()["error"]
 
 
 def test_api_passes_success_pipeline_to_scrape_doctor(monkeypatch):
