@@ -1151,7 +1151,9 @@ export default function DishExplore({
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
         onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className="fixed bottom-5 right-4 z-30 w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
+        className={`fixed bottom-5 right-4 z-30 w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden ${
+          expandedIds.size > 0 ? "hidden" : ""
+        }`}
       >
         {mobileView === "list" ? "🗺 Map" : "☰ List"}
       </button>
@@ -1362,8 +1364,8 @@ export default function DishExplore({
                         </div>
                       )}
 
-                      <div className="mt-3 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
+                      <div className="mt-3 border-t border-stone-200 pt-3">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
                           <FreshnessBadge fetchedAt={dish.menu_fetched_at} compact />
                           {dish.distance != null && dish.lat != null && dish.lng != null && (
                             <button
@@ -1374,12 +1376,13 @@ export default function DishExplore({
                             </button>
                           )}
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+                        <div className="mt-2.5 flex items-center justify-between gap-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs">
                           {CLOUD_ENABLED && dish.place_id && (
                             <button
                               type="button"
                               onClick={() => openDishComments(dish, "add")}
-                              className="font-bold text-sky-700 hover:underline"
+                              className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1.5 font-bold text-sky-700 transition hover:border-sky-400 hover:bg-sky-100"
                             >
                               Add tip
                             </button>
@@ -1388,14 +1391,14 @@ export default function DishExplore({
                             <button
                               type="button"
                               onClick={() => openDishComments(dish, "view")}
-                              className="font-bold text-sky-700 hover:underline"
+                              className="rounded-full border border-sky-200 bg-white px-2.5 py-1.5 font-bold text-sky-700 transition hover:border-sky-400"
                             >
                               View {tipCountForDish(dish)} tip{tipCountForDish(dish) === 1 ? "" : "s"}
                             </button>
                           )}
                           <button
                             onClick={() => toggleRestaurantFilter(dish.restaurant_id)}
-                            className="font-semibold text-emerald-700 hover:underline"
+                            className="rounded-full border border-stone-200 bg-white px-2.5 py-1.5 font-semibold text-stone-600 transition hover:border-emerald-300 hover:text-emerald-700"
                             title={
                               restaurant === String(dish.restaurant_id)
                                 ? "Remove the restaurant filter"
@@ -1406,9 +1409,10 @@ export default function DishExplore({
                               ? "Clear filter"
                               : "All dishes"}
                           </button>
+                          </div>
                           <button
                             onClick={() => openDish(dish)}
-                            className="rounded-full bg-emerald-700 px-3 py-1.5 font-bold text-white transition hover:bg-emerald-800"
+                            className="shrink-0 rounded-full bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-emerald-800"
                           >
                             Full details →
                           </button>
