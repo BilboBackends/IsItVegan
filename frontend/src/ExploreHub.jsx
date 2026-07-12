@@ -89,17 +89,28 @@ export default function ExploreHub({ view = "restaurants" }) {
     <div>
       <div className="mx-auto max-w-7xl px-4 pt-8">
         <div className="mb-5">
-          <div className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-700">
-            <span>Currently Serving Greater Orlando</span>
-          </div>
           <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
             Tune your search to find <span className="text-emerald-700">vegan food</span> you&rsquo;ll love
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-stone-500">
-            DishTune searches analyzed menus across Greater Orlando. Customize your search
-            by location, distance, cuisine, price, and what&rsquo;s open—or look for a specific
-            dish. Every verdict is backed by menu evidence.
+            DishTune searches analyzed restaurant menus. Customize your search by location,
+            distance, cuisine, price, and what&rsquo;s open—or look for a specific dish. Every
+            verdict is backed by menu evidence.
           </p>
+          <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-stone-500">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className="h-3.5 w-3.5 text-emerald-700"
+              aria-hidden="true"
+            >
+              <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" />
+              <circle cx="12" cy="10" r="2.5" />
+            </svg>
+            <span>Currently serving Greater Orlando</span>
+          </div>
         </div>
       </div>
 
