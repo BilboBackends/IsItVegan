@@ -65,7 +65,12 @@ Signed-in users may choose a unique username from the account menu. It is
 shown publicly with their notes and lets other users mention them with
 `@username`, but it is not used to sign in. Leaving it blank keeps their
 Google/email identity private and shows `Dish Explorer` on public notes
-instead. Apply migrations before publishing frontend changes:
+instead.
+
+Replies do not require a username. Each reply stores the original note's
+`parent_comment_id`, so a user displayed as `Dish Explorer` can still take
+part in a directed conversation. Apply migrations before publishing frontend
+changes:
 
     npx supabase db push
 

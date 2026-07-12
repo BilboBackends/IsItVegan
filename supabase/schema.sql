@@ -138,11 +138,22 @@ create table if not exists public.comments (
   body       text not null check (char_length(body) between 1 and 1000),
   mentions   jsonb not null default '[]',
   user_mentions jsonb not null default '[]',
+  parent_comment_id uuid,
   created_at timestamptz not null default now()
 );
 
 alter table public.comments
   add column if not exists user_mentions jsonb not null default '[]';
+
+alter table public.comments
+  add column if not exists parent_comment_id uuid;
+
+alter table public.comments
+  drop constraint if exists comments_parent_is_not_self;
+alter table public.comments
+  add constraint comments_parent_is_not_self check (
+    parent_comment_id is null or parent_comment_id <> id
+  );
 
 alter table public.comments
   drop constraint if exists comments_mentions_are_arrays;
@@ -165,6 +176,10 @@ create index if not exists comments_by_place
 
 create index if not exists comments_user_mentions_gin
   on public.comments using gin (user_mentions jsonb_path_ops);
+
+create index if not exists comments_by_parent
+  on public.comments (parent_comment_id, created_at)
+  where parent_comment_id is not null;
 
 alter table public.comments enable row level security;
 
@@ -250,6 +265,43 @@ create trigger canonicalize_comment_user_mentions
   before insert on public.comments
   for each row execute function public.canonicalize_comment_user_mentions();
 
+-- Replies use the parent note's durable UUID, independent of whether its
+-- author chose a username. Validate the relationship at insert time and keep
+-- the UUID after a hard delete so the reply remains visibly a reply whose
+-- original note is no longer available.
+create or replace function public.validate_comment_reply()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  parent_place_id text;
+begin
+  if new.parent_comment_id is null then
+    return new;
+  end if;
+
+  select c.place_id into parent_place_id
+  from public.comments c
+  where c.id = new.parent_comment_id;
+
+  if parent_place_id is null then
+    raise exception using errcode = '23503', message = 'The original note is no longer available.';
+  end if;
+  if parent_place_id <> new.place_id then
+    raise exception using errcode = '23514', message = 'Replies must stay in the same restaurant.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists validate_comment_reply on public.comments;
+create trigger validate_comment_reply
+  before insert or update of parent_comment_id, place_id on public.comments
+  for each row execute function public.validate_comment_reply();
+
 -- Rate limit: RLS can't count, so a trigger holds the line (10/hour/user).
 create or replace function public.enforce_comment_rate_limit()
 returns trigger
@@ -326,4 +378,6 @@ revoke execute on function public.handle_new_user() from public, anon, authentic
 revoke execute on function public.enforce_comment_rate_limit()
   from public, anon, authenticated;
 revoke execute on function public.canonicalize_comment_user_mentions()
+  from public, anon, authenticated;
+revoke execute on function public.validate_comment_reply()
   from public, anon, authenticated;

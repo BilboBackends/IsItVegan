@@ -12,6 +12,7 @@
 // before the datasets load.
 
 import { createContext } from "react";
+import { attachReplyTargets } from "./commentReplies.js";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -404,12 +405,36 @@ export async function fetchComments(placeId) {
   if (!client) return [];
   const { data, error } = await client
     .from("comments")
-    .select("id, user_id, body, mentions, user_mentions, created_at")
+    .select(
+      "id, user_id, body, mentions, user_mentions, parent_comment_id, created_at"
+    )
     .eq("place_id", placeId)
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw new Error(error.message);
-  return attachUsernames(client, data || []);
+  const comments = await attachUsernames(client, data || []);
+  const commentIds = new Set(comments.map((comment) => comment.id));
+  const missingParentIds = [
+    ...new Set(
+      comments
+        .map((comment) => comment.parent_comment_id)
+        .filter((id) => id && !commentIds.has(id))
+    ),
+  ];
+  let extraParents = [];
+  if (missingParentIds.length > 0) {
+    const { data: parentRows, error: parentError } = await client
+      .from("comments")
+      .select("id, user_id, body, mentions, created_at")
+      .eq("place_id", placeId)
+      .in("id", missingParentIds);
+    if (parentError) {
+      console.warn("Could not load reply context:", parentError.message);
+    } else {
+      extraParents = await attachUsernames(client, parentRows || []);
+    }
+  }
+  return attachReplyTargets(comments, extraParents);
 }
 
 // place_id -> comment count, for the note chips on restaurant cards. Counting
@@ -468,6 +493,7 @@ export async function postComment(placeId, body, options) {
     dishMentions = [],
     userMentions = [],
     userId,
+    parentCommentId = null,
   } = options || {};
   const client = await getClient();
   const { data, error } = await client
@@ -478,8 +504,11 @@ export async function postComment(placeId, body, options) {
       body,
       mentions: dishMentions,
       user_mentions: userMentions,
+      parent_comment_id: parentCommentId,
     })
-    .select("id, user_id, body, mentions, user_mentions, created_at")
+    .select(
+      "id, user_id, body, mentions, user_mentions, parent_comment_id, created_at"
+    )
     .single();
   if (error) throw new Error(error.message);
   commentCountsCache.at = 0; // card chips refresh on next fetch

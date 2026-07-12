@@ -22,6 +22,7 @@ import {
   replaceMentionTrigger,
   resolveUserMention,
 } from "./mentionText.js";
+import { replyPreview } from "./commentReplies.js";
 import { DEFAULT_PUBLIC_NAME } from "./username.js";
 
 // Per-restaurant discussion thread. Typing "@" in the composer suggests the
@@ -49,6 +50,7 @@ export default function Comments({
   const [body, setBody] = useState("");
   const [mentions, setMentions] = useState([]); // [{dish_key, dish_name}]
   const [userMentions, setUserMentions] = useState([]); // [{user_id, username}]
+  const [replyTarget, setReplyTarget] = useState(null);
   const [usernameSearchState, setUsernameSearchState] = useState({
     query: null,
     results: [],
@@ -87,6 +89,10 @@ export default function Comments({
   useEffect(() => {
     setActiveDishFilter(filterDish || null);
   }, [filterDish]);
+
+  useEffect(() => {
+    setReplyTarget(null);
+  }, [placeId]);
 
   useEffect(() => {
     const name =
@@ -260,6 +266,26 @@ export default function Comments({
     });
   }
 
+  function startReply(comment) {
+    if (!session?.user || !comment?.id) return;
+    setReplyTarget(comment);
+    setMentionTrigger(null);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    });
+  }
+
+  function scrollToComment(commentId) {
+    const commentElement = document.getElementById(`note-${commentId}`);
+    if (!commentElement) return;
+    commentElement.scrollIntoView({ behavior: "smooth", block: "center" });
+    commentElement.focus({ preventScroll: true });
+  }
+
   function handleComposerKeyDown(event) {
     if (!mentionTrigger || suggestions.length === 0) return;
     if (event.key === "ArrowDown") {
@@ -285,6 +311,7 @@ export default function Comments({
     if (!text || busy || !session?.user) return;
     setBusy(true);
     setError(null);
+    const parent = replyTarget;
     try {
       // Keep only mentions still present in the final text.
       const keptDishes = mentions.filter((mention) =>
@@ -297,11 +324,14 @@ export default function Comments({
         dishMentions: keptDishes,
         userMentions: keptUsers,
         userId: session.user.id,
+        parentCommentId: parent?.id || null,
       });
-      setComments((current) => [row, ...(current || [])]);
+      const completedRow = parent ? { ...row, reply_to: parent } : row;
+      setComments((current) => [completedRow, ...(current || [])]);
       setBody("");
       setMentions([]);
       setUserMentions([]);
+      setReplyTarget(null);
       setMentionTrigger(null);
     } catch (e) {
       setError(e.message);
@@ -313,7 +343,16 @@ export default function Comments({
   async function remove(id) {
     try {
       await deleteComment(id);
-      setComments((current) => current.filter((c) => c.id !== id));
+      setComments((current) =>
+        (current || [])
+          .filter((comment) => comment.id !== id)
+          .map((comment) =>
+            comment.parent_comment_id === id
+              ? { ...comment, reply_to: null }
+              : comment
+          )
+      );
+      setReplyTarget((current) => (current?.id === id ? null : current));
     } catch (e) {
       setError(e.message);
     }
@@ -448,6 +487,49 @@ export default function Comments({
     return comment.profiles?.username || null;
   }
 
+  function authorLabel(comment) {
+    const username = authorUsername(comment);
+    return username ? `@${username}` : DEFAULT_PUBLIC_NAME;
+  }
+
+  function renderReplyContext(comment) {
+    if (!comment.parent_comment_id) return null;
+    if (!comment.reply_to) {
+      return (
+        <div className="mb-1.5 text-[11px] font-semibold text-stone-400">
+          ↪ Original note unavailable
+        </div>
+      );
+    }
+    const context = (
+      <>
+        <span className="font-bold text-sky-700">
+          ↪ Replying to {authorLabel(comment.reply_to)}
+        </span>
+        <span className="min-w-0 truncate text-stone-500">
+          “{replyPreview(comment.reply_to.body)}”
+        </span>
+      </>
+    );
+    const parentIsVisible = visibleComments.some(
+      (candidate) => candidate.id === comment.parent_comment_id
+    );
+    return parentIsVisible ? (
+      <button
+        type="button"
+        onClick={() => scrollToComment(comment.parent_comment_id)}
+        className="mb-1.5 flex max-w-full items-center gap-1.5 text-left text-[11px] hover:underline"
+        title="Go to the original note"
+      >
+        {context}
+      </button>
+    ) : (
+      <div className="mb-1.5 flex max-w-full items-center gap-1.5 text-[11px]">
+        {context}
+      </div>
+    );
+  }
+
   if (!CLOUD_ENABLED || !placeId) return null;
 
   const filterName =
@@ -455,12 +537,28 @@ export default function Comments({
       ? activeDishFilter
       : activeDishFilter?.name;
   const filterKey = filterName ? dishKey(filterName) : null;
-  const visibleComments = filterKey
-    ? (comments || []).filter((comment) =>
-        (comment.mentions || []).some(
-          (mention) => mention.dish_key === filterKey
-        )
+  const commentsById = new Map(
+    (comments || []).map((comment) => [comment.id, comment])
+  );
+  function threadMentionsDish(comment, seen = new Set()) {
+    if (
+      (comment?.mentions || []).some(
+        (mention) => mention.dish_key === filterKey
       )
+    ) {
+      return true;
+    }
+    if (!comment?.parent_comment_id || seen.has(comment.parent_comment_id)) {
+      return false;
+    }
+    seen.add(comment.parent_comment_id);
+    return threadMentionsDish(
+      comment.reply_to || commentsById.get(comment.parent_comment_id),
+      seen
+    );
+  }
+  const visibleComments = filterKey
+    ? (comments || []).filter((comment) => threadMentionsDish(comment))
     : comments || [];
 
   return (
@@ -494,6 +592,26 @@ export default function Comments({
 
       {session?.user ? (
         <form onSubmit={submit} className="relative mt-2">
+          {replyTarget && (
+            <div className="mb-2 flex items-start justify-between gap-3 rounded-xl border border-sky-100 bg-sky-50 px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-sky-800">
+                  Replying to {authorLabel(replyTarget)}
+                </div>
+                <div className="mt-0.5 truncate text-[11px] text-stone-500">
+                  “{replyPreview(replyTarget.body)}”
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReplyTarget(null)}
+                aria-label="Cancel reply"
+                className="shrink-0 rounded-full px-1.5 text-sm font-bold text-stone-400 hover:bg-white hover:text-stone-700"
+              >
+                ×
+              </button>
+            </div>
+          )}
           <div className="relative">
             <textarea
               ref={textareaRef}
@@ -691,7 +809,15 @@ export default function Comments({
           </div>
         )}
         {visibleComments.map((comment) => (
-          <div key={comment.id} className="rounded-xl bg-stone-50 px-3 py-2">
+          <div
+            id={`note-${comment.id}`}
+            key={comment.id}
+            tabIndex={-1}
+            className={`rounded-xl bg-stone-50 px-3 py-2 outline-none transition focus:ring-2 focus:ring-sky-200 ${
+              comment.parent_comment_id ? "ml-3 border-l-2 border-sky-100" : ""
+            }`}
+          >
+            {renderReplyContext(comment)}
             <div className="flex items-baseline justify-between gap-2">
               {authorUsername(comment) &&
               session?.user &&
@@ -726,8 +852,17 @@ export default function Comments({
             </div>
             {session?.user && (
               <div className="mt-1 flex gap-3 text-[10px] font-semibold">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => startReply(comment)}
+                  className="text-sky-600 hover:text-sky-800 disabled:text-stone-300"
+                >
+                  Reply
+                </button>
                 {comment.user_id === session.user.id ? (
                   <button
+                    type="button"
                     onClick={() => remove(comment.id)}
                     className="text-stone-400 hover:text-rose-600"
                   >
@@ -735,6 +870,7 @@ export default function Comments({
                   </button>
                 ) : (
                   <button
+                    type="button"
                     onClick={() => report(comment.id)}
                     className="text-stone-300 hover:text-amber-600"
                     title="Flag as spam or abuse"
