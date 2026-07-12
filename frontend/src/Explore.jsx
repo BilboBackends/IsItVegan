@@ -842,7 +842,7 @@ export default function Explore({
                   setDishesTab("comments");
                   setDishesFor(r);
                 }}
-                className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
+                className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-1.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
                 title={
                   (commentCounts?.get(r.place_id) || 0) > 0
                     ? `${commentCounts.get(r.place_id)} post${
@@ -860,7 +860,7 @@ export default function Explore({
               </button>
             )}
           </div>
-          <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
+          <div className="flex min-w-0 shrink-0 items-center justify-end gap-1.5">
             {r.website_url && (
               <a
                 href={r.website_url}
@@ -884,9 +884,9 @@ export default function Explore({
                   setDishesTab(null);
                   setDishesFor(r);
                 }}
-                className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
+                className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
               >
-                View dishes →
+                Dishes →
               </button>
             )}
           </div>
