@@ -1151,8 +1151,12 @@ export default function DishExplore({
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
       <button
+        type="button"
+        aria-label={
+          mobileView === "list" ? "Show dishes on the map" : "Show dish list"
+        }
         onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className={`fixed bottom-5 right-4 z-30 w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden ${
+        className={`fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden ${
           expandedIds.size > 0 ? "hidden" : ""
         }`}
       >
