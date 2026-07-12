@@ -29,6 +29,80 @@
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
 }
 
+/* Restaurant maps carry two independent signals: the icon on the left is
+   venue type, while the colored number remains the useful option count. */
+.vf-place-pin {
+  --vf-pin-color: #78716c;
+  display: inline-flex;
+  align-items: stretch;
+  min-width: 44px;
+  height: 28px;
+  overflow: hidden;
+  border: 2px solid #fff;
+  border-radius: 9999px;
+  background: var(--vf-pin-color);
+  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.38);
+  cursor: pointer;
+  font-family: "Outfit", system-ui, sans-serif;
+}
+
+.vf-place-pin__type,
+.vf-venue-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vf-place-pin__type {
+  width: 20px;
+  flex: 0 0 20px;
+}
+
+.vf-place-pin__type--restaurant {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.vf-place-pin__type--coffee {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.vf-place-pin__type--dessert {
+  background: #fdf2f8;
+  color: #be185d;
+}
+
+.vf-place-pin__count {
+  display: inline-flex;
+  min-width: 20px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+}
+
+.vf-venue-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.vf-venue-key {
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(120, 113, 108, 0.16);
+  border-radius: 9999px;
+}
+
+.vf-venue-key .vf-venue-icon {
+  width: 11px;
+  height: 11px;
+}
+
 .leaflet-tooltip.vf-tooltip {
   border-radius: 8px;
   border: 1px solid #e7e5e4;

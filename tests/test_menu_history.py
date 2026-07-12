@@ -239,7 +239,15 @@ def test_dessert_venues_count_vegan_desserts_as_headline_options(test_db):
             "INSERT INTO restaurants (id, name, place_id, primary_type) "
             "VALUES (2, 'Scoops', 'p2', 'ice_cream_shop')"
         )
-        for rid, name in ((1, "Vegan Brownie"), (2, "Vegan Oat Ube")):
+        conn.execute(
+            "INSERT INTO restaurants (id, name, place_id, primary_type) "
+            "VALUES (3, 'Cake Counter', 'p3', 'cake_shop')"
+        )
+        for rid, name in (
+            (1, "Vegan Brownie"),
+            (2, "Vegan Oat Ube"),
+            (3, "Vegan Cake Slice"),
+        ):
             dish = conn.execute(
                 "INSERT INTO dishes (restaurant_id, name, category) "
                 "VALUES (?, ?, 'dessert') RETURNING id",
@@ -257,6 +265,7 @@ def test_dessert_venues_count_vegan_desserts_as_headline_options(test_db):
     counts = db.verdict_counts_by_restaurant(db_path=test_db)
     assert counts[1]["vegan_meals"] == 0  # plain restaurant: dessert excluded
     assert counts[2]["vegan_meals"] == 1  # ice cream shop: dessert counts
+    assert counts[3]["vegan_meals"] == 1  # cake shop: dessert counts
 
 
 def test_scrape_failures_keep_the_diagnostics_trail(test_db):

@@ -14,10 +14,22 @@ import {
   relativeDate,
   todayOpeningHours,
 } from "./RestaurantMeta.jsx";
-import { cuisineLabel, cuisineOptions, isDessertVenue } from "./cuisine.js";
+import {
+  cuisineLabel,
+  cuisineOptions,
+  isDessertVenue,
+  venueKind,
+  venueKindLabel,
+} from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
 import NoteIcon from "./NoteIcon.jsx";
+import VenueTypeLegend from "./VenueTypeLegend.jsx";
+import {
+  VENUE_MARKER_ANCHOR,
+  VENUE_MARKER_SIZE,
+  venueMarkerHtml,
+} from "./venueMarkers.js";
 import {
   CLOUD_ENABLED,
   clearCommentAuthReturn,
@@ -252,11 +264,11 @@ const RANGES = [
   { miles: 10, label: "Within 10 mi" },
 ];
 
-const LEGEND = [
-  { color: "#047857", label: "3+ vegan meals" },
-  { color: "#65a30d", label: "1–2 vegan meals" },
-  { color: "#78716c", label: "No vegan meals found" },
-  { color: "#a8a29e", label: "Menu not analyzed" },
+const OPTION_LEGEND = [
+  { color: "#047857", label: "3+" },
+  { color: "#65a30d", label: "1–2" },
+  { color: "#78716c", label: "None" },
+  { color: "#a8a29e", label: "Not analyzed" },
 ];
 
 export default function Explore({
@@ -515,13 +527,17 @@ export default function Explore({
       if (r.lat == null || r.lng == null) return;
       const color = pinColor(r);
       const analyzed = r.dish_count > 0;
+      const kind = venueKind(r.primary_type);
       const icon = L.divIcon({
         className: "",
-        html: analyzed
-          ? `<div class="vf-pin" style="background:${color}">${r.vegan_options || 0}</div>`
-          : `<div class="vf-pin vf-pin--dot" style="background:${color}"></div>`,
-        iconSize: analyzed ? [26, 26] : [12, 12],
-        iconAnchor: analyzed ? [13, 13] : [6, 6],
+        html: venueMarkerHtml({
+          kind,
+          count: r.vegan_options || 0,
+          color,
+          analyzed,
+        }),
+        iconSize: VENUE_MARKER_SIZE,
+        iconAnchor: VENUE_MARKER_ANCHOR,
       });
       const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
       markersRef.current[r.place_id] = marker;
@@ -533,11 +549,13 @@ export default function Explore({
       // Tooltip and popup content built as DOM nodes with textContent —
       // never innerHTML with API-sourced strings.
       const tipEl = document.createElement("span");
-      tipEl.textContent = r.name || "";
+      tipEl.textContent =
+        `${r.name || ""} · ${venueKindLabel(kind)} · ` +
+        veganOptionSummary(r);
       marker.bindTooltip(tipEl, {
         className: "vf-tooltip",
         direction: "top",
-        offset: [0, -10],
+        offset: [0, -12],
       });
 
       // Popup: three tidy sections (identity / status / vegan) plus an
@@ -1172,18 +1190,27 @@ export default function Explore({
               className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm lg:h-[calc(100vh-11rem)]"
             />
             {/* Legend */}
-            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 shadow-md">
-              {LEGEND.map((l) => (
-                <div key={l.label} className="flex items-center gap-2 py-0.5">
-                  <span
-                    className="inline-block h-3 w-3 rounded-full border border-white shadow"
-                    style={{ background: l.color }}
-                  />
-                  <span className="text-xs font-medium text-stone-600">
-                    {l.label}
-                  </span>
-                </div>
-              ))}
+            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] w-[13.5rem] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 shadow-md">
+              <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                Place type
+              </div>
+              <VenueTypeLegend />
+              <div className="mb-1 mt-2 border-t border-stone-100 pt-1.5 text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                Number &amp; color = vegan options
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                {OPTION_LEGEND.map((item) => (
+                  <div key={item.label} className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full border border-white shadow"
+                      style={{ background: item.color }}
+                    />
+                    <span className="text-[11px] font-medium text-stone-600">
+                      {item.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>

@@ -17,10 +17,21 @@ import {
   relativeDate,
   todayOpeningHours,
 } from "./RestaurantMeta.jsx";
-import { cuisineLabel, cuisineOptions } from "./cuisine.js";
+import {
+  cuisineLabel,
+  cuisineOptions,
+  venueKind,
+  venueKindLabel,
+} from "./cuisine.js";
 import { calorieLabel } from "./calories.js";
 import { parsePriceValue, priceLevelSymbol } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
+import VenueTypeLegend from "./VenueTypeLegend.jsx";
+import {
+  VENUE_MARKER_ANCHOR,
+  VENUE_MARKER_SIZE,
+  venueMarkerHtml,
+} from "./venueMarkers.js";
 import {
   buildDishSearchIndex,
   dishMatchesQuery,
@@ -538,22 +549,29 @@ export default function DishExplore({
       .bindTooltip(originLabel, { className: "vf-tooltip", direction: "top" });
 
     for (const item of mappedRestaurants) {
+      const kind = venueKind(item.primaryType);
       const icon = L.divIcon({
         className: "",
-        html: `<div class="vf-pin" style="background:#047857">${item.count}</div>`,
-        iconSize: [26, 26],
-        iconAnchor: [13, 13],
+        html: venueMarkerHtml({
+          kind,
+          count: item.count,
+          color: "#047857",
+        }),
+        iconSize: VENUE_MARKER_SIZE,
+        iconAnchor: VENUE_MARKER_ANCHOR,
       });
       const marker = L.marker([item.lat, item.lng], { icon }).addTo(map);
       markersRef.current[item.id] = marker;
       bounds.push([item.lat, item.lng]);
 
       const tip = document.createElement("span");
-      tip.textContent = `${item.name} · ${item.count} matching item${item.count === 1 ? "" : "s"}`;
+      tip.textContent =
+        `${item.name} · ${venueKindLabel(kind)} · ${item.count} matching item` +
+        (item.count === 1 ? "" : "s");
       marker.bindTooltip(tip, {
         className: "vf-tooltip",
         direction: "top",
-        offset: [0, -10],
+        offset: [0, -12],
       });
 
       // Popup mirrors the Restaurants map popup: tidy sections separated by
@@ -1448,8 +1466,14 @@ export default function DishExplore({
               ref={mapEl}
               className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm xl:h-[calc(100vh-11rem)]"
             />
-            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 text-xs font-medium text-stone-600 shadow-md">
-              Pin numbers show matching menu items
+            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] w-[13.5rem] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 shadow-md">
+              <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                Place type
+              </div>
+              <VenueTypeLegend />
+              <div className="mt-2 border-t border-stone-100 pt-1.5 text-[11px] font-semibold text-stone-600">
+                Number = matching menu items
+              </div>
             </div>
           </div>
         </div>

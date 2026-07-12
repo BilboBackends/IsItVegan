@@ -1919,8 +1919,9 @@ STRICT_LIKELY_VEGAN_MIN_CONFIDENCE = 0.75
 # frontend/src/cuisine.js (isDessertVenue) for the "vegan treats" label.
 DESSERT_VENUE_TYPES = frozenset({
     "ice_cream_shop", "dessert_shop", "dessert_restaurant", "bakery",
-    "donut_shop", "bagel_shop", "chocolate_shop", "chocolate_factory",
-    "candy_store", "confectionery", "frozen_yogurt_shop", "acai_shop",
+    "donut_shop", "bagel_shop", "cake_shop", "pastry_shop",
+    "chocolate_shop", "chocolate_factory", "candy_store", "confectionery",
+    "frozen_yogurt_shop", "acai_shop",
 })
 
 

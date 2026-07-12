@@ -38,12 +38,83 @@ export function cuisineLabel(primaryType) {
 // and the UI labels those counts "vegan treats" instead of "vegan meals".
 const DESSERT_VENUE_TYPES = new Set([
   "ice_cream_shop", "dessert_shop", "dessert_restaurant", "bakery",
-  "donut_shop", "bagel_shop", "chocolate_shop", "chocolate_factory",
-  "candy_store", "confectionery", "frozen_yogurt_shop", "acai_shop",
+  "donut_shop", "bagel_shop", "cake_shop", "pastry_shop",
+  "chocolate_shop", "chocolate_factory", "candy_store", "confectionery",
+  "frozen_yogurt_shop", "acai_shop",
 ]);
 
 export function isDessertVenue(primaryType) {
   return DESSERT_VENUE_TYPES.has((primaryType || "").toLowerCase());
+}
+
+// Menu opening behavior is intentionally narrower than dessert scoring.
+// Bagel/acai shops count their signature items correctly in headline totals,
+// but their Food tab is usually the meaningful place to start. Bakeries are
+// mixed, so their actual classified menu balance decides.
+const DESSERT_FIRST_TYPES = new Set([
+  "ice_cream_shop",
+  "dessert_shop",
+  "dessert_restaurant",
+  "donut_shop",
+  "cake_shop",
+  "pastry_shop",
+  "chocolate_shop",
+  "chocolate_factory",
+  "candy_store",
+  "confectionery",
+  "frozen_yogurt_shop",
+]);
+
+export function preferredMenuCategory(primaryType, counts = {}) {
+  const food = Number(counts.food) || 0;
+  const dessert = Number(counts.dessert) || 0;
+  const drink = Number(counts.drink) || 0;
+  const type = (primaryType || "").toLowerCase();
+  if (
+    dessert > 0 &&
+    (DESSERT_FIRST_TYPES.has(type) ||
+      (type === "bakery" && dessert >= food))
+  ) {
+    return "dessert";
+  }
+  if (food > 0) return "food";
+  if (dessert > 0) return "dessert";
+  if (drink > 0) return "drink";
+  return "food";
+}
+
+const DESSERT_MAP_TYPES = new Set([
+  ...DESSERT_FIRST_TYPES,
+  "bakery",
+  "acai_shop",
+]);
+
+const COFFEE_MAP_TYPES = new Set([
+  "coffee_shop",
+  "coffee_roastery",
+  "coffee_stand",
+  "cafe",
+  "tea_house",
+]);
+
+export const VENUE_KIND_OPTIONS = Object.freeze([
+  { key: "restaurant", label: "Restaurant", shortLabel: "Restaurant" },
+  { key: "coffee", label: "Coffee / cafe", shortLabel: "Coffee" },
+  { key: "dessert", label: "Dessert / treats", shortLabel: "Dessert" },
+]);
+
+export function venueKind(primaryType) {
+  const type = (primaryType || "").toLowerCase();
+  if (DESSERT_MAP_TYPES.has(type)) return "dessert";
+  if (COFFEE_MAP_TYPES.has(type)) return "coffee";
+  return "restaurant";
+}
+
+export function venueKindLabel(kind) {
+  return (
+    VENUE_KIND_OPTIONS.find((option) => option.key === kind)?.label ||
+    "Restaurant"
+  );
 }
 
 export function cuisineOptions(items) {

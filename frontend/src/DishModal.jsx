@@ -3,7 +3,7 @@ import DietaryBadges from "./DietaryBadges.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge, TodayHours } from "./RestaurantMeta.jsx";
 import { calorieLabel } from "./calories.js";
-import { isDessertVenue } from "./cuisine.js";
+import { isDessertVenue, preferredMenuCategory } from "./cuisine.js";
 import { isCountedVegan } from "./verdicts.js";
 import { fetchRestaurantDishes } from "./staticData.js";
 import {
@@ -147,14 +147,16 @@ export default function DishModal({
         // dish name, not the renumber-prone numeric ids).
         registerRestaurants([restaurant]);
         registerDishes(list);
-        // Open on the first category that actually has items — unless the
-        // caller asked for the Notes tab directly (card's note chip).
-        const first = CATEGORIES.find((c) =>
-          list.some((d) => dishCategory(d) === c.key)
+        // Dessert-focused venues open where their meaningful menu lives;
+        // mixed bakeries use their actual category balance. Notes still win
+        // when the caller explicitly requested the discussion tab.
+        const categoryCounts = { food: 0, dessert: 0, drink: 0 };
+        for (const dish of list) categoryCounts[dishCategory(dish)] += 1;
+        const preferred = preferredMenuCategory(
+          restaurant.primary_type,
+          categoryCounts
         );
-        setTab(
-          initialTab === "comments" ? "comments" : first ? first.key : "food"
-        );
+        setTab(initialTab === "comments" ? "comments" : preferred);
       })
       .catch(() => setDishes([]))
       .finally(() => setLoading(false));
