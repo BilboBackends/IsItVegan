@@ -829,10 +829,10 @@ export default function Explore({
       {(r.website_url ||
         r.dish_count > 0 ||
         CLOUD_ENABLED) && (
-        <div className="mt-auto flex items-center justify-between gap-2 border-t border-stone-100 pt-3 text-xs font-semibold">
+        <div className="mt-auto grid grid-cols-[1fr_auto_1fr] items-center gap-1.5 border-t border-stone-100 pt-3 text-xs font-semibold">
           {/* Community is always discoverable at bottom-left and opens the
-              modal directly on its comments tab. Restaurant actions stay
-              paired at bottom-right. */}
+              modal directly on its comments tab. Website remains centered
+              between it and the dishes action. */}
           <div className="flex min-w-0 justify-start">
             {CLOUD_ENABLED && (
               <button
@@ -849,18 +849,18 @@ export default function Explore({
                         commentCounts.get(r.place_id) === 1 ? "" : "s"
                       } from visitors — tips, reviews, and chat about this place`
                     : "Start the conversation about this restaurant"
-              }
-              aria-label={`Open restaurant comments: ${
-                commentCounts?.get(r.place_id) || 0
-              } review${
-                (commentCounts?.get(r.place_id) || 0) === 1 ? "" : "s"
-              }`}
-            >
+                }
+                aria-label={`Open restaurant comments: ${
+                  commentCounts?.get(r.place_id) || 0
+                } review${
+                  (commentCounts?.get(r.place_id) || 0) === 1 ? "" : "s"
+                }`}
+              >
                 💬 {commentCounts?.get(r.place_id) || 0}
               </button>
             )}
           </div>
-          <div className="flex min-w-0 shrink-0 items-center justify-end gap-1.5">
+          <div className="flex min-w-0 justify-center">
             {r.website_url && (
               <a
                 href={r.website_url}
@@ -872,6 +872,8 @@ export default function Explore({
                 Website ↗
               </a>
             )}
+          </div>
+          <div className="flex min-w-0 justify-end">
             {r.dish_count > 0 && (
               <button
                 onClick={(e) => {
