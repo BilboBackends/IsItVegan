@@ -829,7 +829,7 @@ export default function Explore({
       {(r.website_url ||
         r.dish_count > 0 ||
         CLOUD_ENABLED) && (
-        <div className="mt-auto grid grid-cols-[1fr_auto_1fr] items-center gap-1.5 border-t border-stone-100 pt-3 text-xs font-semibold">
+        <div className="mt-auto flex items-center justify-between border-t border-stone-100 pt-3 text-xs font-semibold">
           {/* Community is always discoverable at bottom-left and opens the
               modal directly on its comments tab. Website remains centered
               between it and the dishes action. */}
