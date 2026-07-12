@@ -826,8 +826,31 @@ export default function Explore({
           <FreshnessBadge fetchedAt={r.menu_fetched_at} compact />
         </div>
       )}
-      {(r.website_url || r.dish_count > 0) && (
+      {(r.website_url ||
+        r.dish_count > 0 ||
+        (commentCounts?.get(r.place_id) || 0) > 0) && (
         <div className="mt-auto flex flex-nowrap items-center justify-between gap-1.5 border-t border-stone-100 pt-3">
+          {/* Bottom-left: the community buzz chip; Website + View dishes
+              stay paired on the right. The empty span keeps justify-between
+              honest when there's no thread yet. */}
+          {(commentCounts?.get(r.place_id) || 0) > 0 ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDishesFilter("all");
+                setDishesTab("comments");
+                setDishesFor(r);
+              }}
+              className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
+              title={`${commentCounts.get(r.place_id)} post${
+                commentCounts.get(r.place_id) === 1 ? "" : "s"
+              } from visitors — tips, reviews, and chat about this place`}
+            >
+              💬 {commentCounts.get(r.place_id)}
+            </button>
+          ) : (
+            <span />
+          )}
           <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
             {r.website_url && (
               <a
@@ -840,40 +863,24 @@ export default function Explore({
                 Website ↗
               </a>
             )}
+            {r.dish_count > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDishesFilter(
+                    r.vegan_options > 0 || (r.vegan_sides || 0) > 0
+                      ? "veganish"
+                      : "all"
+                  );
+                  setDishesTab(null);
+                  setDishesFor(r);
+                }}
+                className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
+              >
+                View dishes →
+              </button>
+            )}
           </div>
-          {(commentCounts?.get(r.place_id) || 0) > 0 && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setDishesFilter("all");
-                setDishesTab("comments");
-                setDishesFor(r);
-              }}
-              className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
-              title={`${commentCounts.get(r.place_id)} visitor tip${
-                commentCounts.get(r.place_id) === 1 ? "" : "s"
-              } — read what people say about this place`}
-            >
-              💬 {commentCounts.get(r.place_id)}
-            </button>
-          )}
-          {r.dish_count > 0 && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setDishesFilter(
-                  r.vegan_options > 0 || (r.vegan_sides || 0) > 0
-                    ? "veganish"
-                    : "all"
-                );
-                setDishesTab(null);
-                setDishesFor(r);
-              }}
-              className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
-            >
-              View dishes →
-            </button>
-          )}
         </div>
       )}
     </div>

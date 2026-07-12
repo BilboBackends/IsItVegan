@@ -344,7 +344,7 @@ export default function DishModal({
                   : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
             >
-              💬<span className="max-sm:hidden"> Tips</span>
+              💬<span className="max-sm:hidden"> Buzz</span>
               {(comments?.length ?? 0) > 0 && (
                 <span className="ml-1 rounded-full bg-sky-100 px-1.5 text-xs font-semibold text-sky-700 sm:ml-1.5">
                   {comments.length}

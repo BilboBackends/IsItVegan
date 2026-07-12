@@ -141,12 +141,15 @@ export default function Comments({
   return (
     <section>
       <h3 className="text-sm font-bold text-stone-800">
-        Tips & comments
+        The buzz
         {comments?.length > 0 && (
           <span className="ml-1.5 text-xs font-medium text-stone-400">
             {comments.length}
           </span>
         )}
+        <span className="ml-2 text-xs font-normal text-stone-400">
+          tips · reviews · chat
+        </span>
       </h3>
 
       {session?.user ? (
@@ -157,7 +160,7 @@ export default function Comments({
             onChange={(e) => setBody(e.target.value)}
             rows={2}
             maxLength={1000}
-            placeholder='Share a tip — type "@" to point at a dish (e.g. "@Vegan Tacos ask for no crema")'
+            placeholder='Share a tip, review, or thought — type "@" to point at a dish (e.g. "@Vegan Tacos ask for no crema")'
             className="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
           {suggestions.length > 0 && (
