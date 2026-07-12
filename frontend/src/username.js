@@ -1,6 +1,6 @@
 export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 20;
-export const DEFAULT_PUBLIC_NAME = "Vegan Explorer";
+export const DEFAULT_PUBLIC_NAME = "Dish Explorer";
 
 const RESERVED_USERNAMES = new Set([
   "admin",

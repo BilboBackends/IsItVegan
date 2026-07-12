@@ -64,7 +64,7 @@ later).
 Signed-in users may choose a unique username from the account menu. It is
 shown publicly with their notes and lets other users mention them with
 `@username`, but it is not used to sign in. Leaving it blank keeps their
-Google/email identity private and shows `Vegan Explorer` on public notes
+Google/email identity private and shows `Dish Explorer` on public notes
 instead. Apply migrations before publishing frontend changes:
 
     npx supabase db push

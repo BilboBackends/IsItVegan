@@ -14,7 +14,7 @@
 -- ---------------------------------------------------------------- profiles
 create table if not exists public.profiles (
   id           uuid primary key references auth.users (id) on delete cascade,
-  display_name text not null default 'vegan explorer'
+  display_name text not null default 'dish explorer'
                check (char_length(display_name) between 1 and 40),
   username     text,
   created_at   timestamptz not null default now()
@@ -64,7 +64,7 @@ language plpgsql security definer set search_path = public
 as $$
 begin
   insert into public.profiles (id, display_name, username)
-  values (new.id, 'vegan explorer', null)
+  values (new.id, 'dish explorer', null)
   on conflict (id) do nothing;
   return new;
 end;

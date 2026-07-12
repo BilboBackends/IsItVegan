@@ -25,6 +25,7 @@ test("uses private auth identity only as the signed-in account fallback", () => 
 });
 
 test("normalizes an optional username", () => {
+  assert.equal(DEFAULT_PUBLIC_NAME, "Dish Explorer");
   assert.equal(normalizeUsername("  @Green_Pal "), "green_pal");
   assert.deepEqual(validateUsername("   "), { value: null, error: null });
   assert.equal(usernameLabel(null), DEFAULT_PUBLIC_NAME);
