@@ -850,9 +850,13 @@ export default function Explore({
                       } from visitors — tips, reviews, and chat about this place`
                     : "Start the conversation about this restaurant"
               }
-              aria-label="Open restaurant comments"
+              aria-label={`Open restaurant comments: ${
+                commentCounts?.get(r.place_id) || 0
+              } review${
+                (commentCounts?.get(r.place_id) || 0) === 1 ? "" : "s"
+              }`}
             >
-                💬
+                💬 {commentCounts?.get(r.place_id) || 0}
               </button>
             )}
           </div>
