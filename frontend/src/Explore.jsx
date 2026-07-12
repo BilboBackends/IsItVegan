@@ -17,7 +17,12 @@ import {
 import { cuisineLabel, cuisineOptions, isDessertVenue } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
-import { CLOUD_ENABLED, fetchCommentCounts } from "./cloud.js";
+import {
+  CLOUD_ENABLED,
+  clearCommentAuthReturn,
+  fetchCommentCounts,
+  pendingCommentAuthReturn,
+} from "./cloud.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
 // distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
@@ -334,13 +339,18 @@ export default function Explore({
   useEffect(() => {
     if (commentsReturnHandledRef.current || restaurants.length === 0) return;
     const url = new URL(window.location.href);
-    const returnPlaceId = url.searchParams.get("comments");
+    const returnPlaceId =
+      url.searchParams.get("comments") || pendingCommentAuthReturn();
     if (!returnPlaceId) return;
     const target = restaurants.find(
       (restaurant) => restaurant.place_id === returnPlaceId
     );
-    if (!target) return;
+    if (!target) {
+      clearCommentAuthReturn();
+      return;
+    }
     commentsReturnHandledRef.current = true;
+    clearCommentAuthReturn();
     setDishesFilter("all");
     setDishesTab("comments");
     setDishesFor(target);

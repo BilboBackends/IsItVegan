@@ -7,6 +7,7 @@ import {
   dishKey,
   fetchComments,
   postComment,
+  rememberCommentAuthReturn,
   reportComment,
   signInWithGoogle,
   signInWithMagicLink,
@@ -61,9 +62,14 @@ export default function Comments({
   }, [session?.user]);
 
   function returnToCommentsUrl() {
+    rememberCommentAuthReturn(placeId);
     const url = new URL(window.location.href);
     url.searchParams.set("comments", placeId);
-    url.hash = "restaurants";
+    // Supabase's browser OAuth flow uses the fragment for session tokens.
+    // Keep our return state in the query string and leave the hash empty so
+    // Google sign-in can establish the session before Explore reopens this
+    // restaurant's comments tab.
+    url.hash = "";
     return url.toString();
   }
 

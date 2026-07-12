@@ -20,6 +20,48 @@ export const CLOUD_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 export const GOOGLE_AUTH_ENABLED =
   import.meta.env.VITE_SUPABASE_GOOGLE_ENABLED === "true";
 
+const COMMENT_AUTH_RETURN_KEY = "dishtune:commentAuthReturn";
+const COMMENT_AUTH_RETURN_MAX_AGE = 60 * 60 * 1000;
+
+export function rememberCommentAuthReturn(placeId) {
+  if (!placeId) return;
+  try {
+    window.localStorage.setItem(
+      COMMENT_AUTH_RETURN_KEY,
+      JSON.stringify({ placeId, createdAt: Date.now() })
+    );
+  } catch {
+    // The query-string fallback still works when storage is unavailable.
+  }
+}
+
+export function pendingCommentAuthReturn() {
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(COMMENT_AUTH_RETURN_KEY) || "null"
+    );
+    if (
+      !value?.placeId ||
+      !value?.createdAt ||
+      Date.now() - value.createdAt > COMMENT_AUTH_RETURN_MAX_AGE
+    ) {
+      window.localStorage.removeItem(COMMENT_AUTH_RETURN_KEY);
+      return null;
+    }
+    return value.placeId;
+  } catch {
+    return null;
+  }
+}
+
+export function clearCommentAuthReturn() {
+  try {
+    window.localStorage.removeItem(COMMENT_AUTH_RETURN_KEY);
+  } catch {
+    // Nothing else to clear when storage is unavailable.
+  }
+}
+
 // The signed-in Supabase session (or null), provided from App so deep
 // components (thumbs, comments) don't need prop-drilling.
 export const SessionContext = createContext(null);
