@@ -251,17 +251,36 @@ export async function syncVote(kind, id, vote, userId) {
 
 // ---------------------------------------------------------------- comments
 
+// Display names are stitched in with a second query instead of a PostgREST
+// relationship embed: duplicate FKs (schema.sql + migrations both applied)
+// make embeds ambiguous ("more than one relationship was found"), and the
+// stitch works regardless of the database's constraint history.
+async function attachDisplayNames(client, comments) {
+  const userIds = [...new Set(comments.map((c) => c.user_id))];
+  if (userIds.length === 0) return comments;
+  const names = new Map();
+  const { data } = await client
+    .from("profiles")
+    .select("id, display_name")
+    .in("id", userIds);
+  for (const row of data || []) names.set(row.id, row.display_name);
+  return comments.map((c) => ({
+    ...c,
+    profiles: { display_name: names.get(c.user_id) || "vegan explorer" },
+  }));
+}
+
 export async function fetchComments(placeId) {
   const client = await getClient();
   if (!client) return [];
   const { data, error } = await client
     .from("comments")
-    .select("id, user_id, body, mentions, created_at, profiles(display_name)")
+    .select("id, user_id, body, mentions, created_at")
     .eq("place_id", placeId)
     .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw new Error(error.message);
-  return data || [];
+  return attachDisplayNames(client, data || []);
 }
 
 export async function postComment(placeId, body, mentions, userId) {
@@ -274,10 +293,11 @@ export async function postComment(placeId, body, mentions, userId) {
       body,
       mentions: mentions || [],
     })
-    .select("id, user_id, body, mentions, created_at, profiles(display_name)")
+    .select("id, user_id, body, mentions, created_at")
     .single();
   if (error) throw new Error(error.message);
-  return data;
+  const [withName] = await attachDisplayNames(client, [data]);
+  return withName;
 }
 
 export async function deleteComment(commentId) {
