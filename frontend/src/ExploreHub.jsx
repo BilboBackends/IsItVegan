@@ -90,9 +90,7 @@ export default function ExploreHub({ view = "restaurants" }) {
       <div className="mx-auto max-w-7xl px-4 pt-8">
         <div className="mb-5">
           <div className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-700">
-            <span>Made for vegans</span>
-            <span className="h-1 w-1 rounded-full bg-emerald-300" />
-            <span>Greater Orlando</span>
+            <span>Currently Serving Greater Orlando</span>
           </div>
           <h1 className="text-2xl font-extrabold tracking-tight text-stone-900 sm:text-4xl">
             Tune your search to find <span className="text-emerald-700">vegan food</span> you&rsquo;ll love
