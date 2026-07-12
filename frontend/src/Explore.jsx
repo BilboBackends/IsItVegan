@@ -849,11 +849,10 @@ export default function Explore({
                         commentCounts.get(r.place_id) === 1 ? "" : "s"
                       } from visitors — tips, reviews, and chat about this place`
                     : "Start the conversation about this restaurant"
-                }
-              >
-                💬 Buzz
-                {(commentCounts?.get(r.place_id) || 0) > 0 &&
-                  ` · ${commentCounts.get(r.place_id)}`}
+              }
+              aria-label="Open restaurant comments"
+            >
+                💬
               </button>
             )}
           </div>
