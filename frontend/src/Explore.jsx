@@ -829,24 +829,11 @@ export default function Explore({
       {(r.website_url ||
         r.dish_count > 0 ||
         CLOUD_ENABLED) && (
-        <div className="mt-auto grid grid-cols-[1fr_auto_1fr] items-center gap-1.5 border-t border-stone-100 pt-3 text-xs font-semibold">
-          {/* Keep all three actions anchored: Website left, community thread
-              centered, and View dishes right. Nothing shifts when the first
-              comment arrives or when an action is unavailable. */}
+        <div className="mt-auto flex items-center justify-between gap-2 border-t border-stone-100 pt-3 text-xs font-semibold">
+          {/* Community is always discoverable at bottom-left and opens the
+              modal directly on its comments tab. Restaurant actions stay
+              paired at bottom-right. */}
           <div className="flex min-w-0 justify-start">
-            {r.website_url && (
-              <a
-                href={r.website_url}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(e) => e.stopPropagation()}
-                className="whitespace-nowrap text-stone-500 hover:text-emerald-700 hover:underline"
-              >
-                Website ↗
-              </a>
-            )}
-          </div>
-          <div className="flex justify-center">
             {CLOUD_ENABLED && (
               <button
                 onClick={(e) => {
@@ -870,7 +857,18 @@ export default function Explore({
               </button>
             )}
           </div>
-          <div className="flex min-w-0 justify-end">
+          <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
+            {r.website_url && (
+              <a
+                href={r.website_url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="whitespace-nowrap text-stone-500 hover:text-emerald-700 hover:underline"
+              >
+                Website ↗
+              </a>
+            )}
             {r.dish_count > 0 && (
               <button
                 onClick={(e) => {
