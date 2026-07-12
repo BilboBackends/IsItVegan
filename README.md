@@ -243,8 +243,9 @@ load stored evidence, reproduce with the real scraper, investigate the live
 site, make only a generic scraper fix, add a regression test, run the full
 suite plus live verification, and commit without pushing. Codex leaves `.git`
 protected; the trusted launcher validates that only Python source/tests changed
-before creating its commit. Runs require a clean git worktree and share a
-one-job lock. The backend disables Flask auto-reload
+before creating its commit. After a successful repair, the backend re-ingests
+that restaurant and starts a reconnectable DeepSeek classification job. Runs
+require a clean git worktree and share a one-job lock. The backend disables Flask auto-reload
 so an agent editing Python cannot terminate its own job.
 
 When keyword matching finds no menu link, a cheap LLM navigator (Claude Haiku)

@@ -151,3 +151,87 @@ def test_api_validation():
         == 404
     )
     assert client.get("/api/scrape-fix/status").status_code == 200
+
+
+def test_api_passes_success_pipeline_to_scrape_doctor(monkeypatch):
+    import api
+
+    captured = {}
+
+    def fake_start(restaurant_id, agent, on_fixed):
+        captured.update(
+            restaurant_id=restaurant_id, agent=agent, on_fixed=on_fixed
+        )
+        return {"running": True}
+
+    monkeypatch.setattr(scrape_doctor, "start", fake_start)
+    response = api.app.test_client().post(
+        "/api/scrape-fix", json={"restaurant_id": 42, "agent": "codex"}
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "restaurant_id": 42,
+        "agent": "codex",
+        "on_fixed": api._finish_scrape_doctor_pipeline,
+    }
+
+
+def test_success_pipeline_ingests_then_starts_deepseek(monkeypatch):
+    import api
+
+    calls = []
+    monkeypatch.setattr(
+        api.ingest,
+        "run",
+        lambda **kwargs: calls.append(("ingest", kwargs))
+        or {"succeeded": 1, "failed": 0, "failures": []},
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_classify_job",
+        lambda **kwargs: calls.append(("classify", kwargs)) or (None, "deepseek"),
+    )
+
+    result = api._finish_scrape_doctor_pipeline(42)
+
+    assert calls == [
+        ("ingest", {"restaurant_id": 42}),
+        (
+            "classify",
+            {
+                "requested_provider": "deepseek",
+                "restaurant_id": 42,
+                "parallel": 1,
+                "mode": "auto",
+            },
+        ),
+    ]
+    assert "DeepSeek classification started" in result
+
+
+def test_success_pipeline_does_not_classify_a_failed_rescrape(monkeypatch):
+    import api
+
+    monkeypatch.setattr(
+        api.ingest,
+        "run",
+        lambda **_kwargs: {
+            "succeeded": 0,
+            "failed": 1,
+            "failures": [("Cafe X", "still blocked")],
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "_start_classify_job",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("classification must not start")
+        ),
+    )
+
+    try:
+        api._finish_scrape_doctor_pipeline(42)
+        assert False, "expected a failed re-scrape"
+    except RuntimeError as exc:
+        assert "re-scrape failed" in str(exc)

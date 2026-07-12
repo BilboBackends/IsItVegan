@@ -430,8 +430,9 @@ def scrape_fix_endpoint() -> object:
     """Launch the Scrape Doctor through Claude Code or Codex.
 
     The selected subscription agent deep-dives one failed scrape, fixes the
-    scraper generically, verifies, and commits but never pushes. One shared
-    job at a time; poll /api/scrape-fix/status for the live log.
+    scraper generically, verifies, and commits but never pushes. A fixed
+    result is then ingested and handed to DeepSeek classification server-side.
+    One shared job at a time; poll /api/scrape-fix/status for the live log.
     """
     import scrape_doctor
 
@@ -444,11 +445,36 @@ def scrape_fix_endpoint() -> object:
     if agent not in ("claude", "codex"):
         return jsonify({"error": "agent must be claude or codex."}), 400
     try:
-        return jsonify(scrape_doctor.start(restaurant_id, agent=agent))
+        return jsonify(
+            scrape_doctor.start(
+                restaurant_id,
+                agent=agent,
+                on_fixed=_finish_scrape_doctor_pipeline,
+            )
+        )
     except LookupError as exc:
         return jsonify({"error": str(exc)}), 404
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
+
+
+def _finish_scrape_doctor_pipeline(restaurant_id: int) -> str:
+    """Persist the repaired menu, then start reconnectable DeepSeek work."""
+    result = ingest.run(restaurant_id=restaurant_id)
+    if result["succeeded"] != 1 or result["failed"]:
+        detail = result.get("failures") or "scrape still failed"
+        raise RuntimeError(f"re-scrape failed: {detail}")
+
+    error, provider = _start_classify_job(
+        requested_provider="deepseek",
+        restaurant_id=restaurant_id,
+        parallel=1,
+        mode="auto",
+    )
+    if error:
+        raise RuntimeError(f"DeepSeek classification was not started: {error}")
+    provider_label = "DeepSeek" if provider == "deepseek" else (provider or "DeepSeek")
+    return f"Menu stored successfully; {provider_label} classification started."
 
 
 @app.get("/api/scrape-fix/status")

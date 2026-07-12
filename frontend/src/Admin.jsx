@@ -294,7 +294,7 @@ function ScrapeFailuresPanel() {
                     onClick={() => startDoctor(f, "claude")}
                     disabled={Boolean(doctor?.running) || retrying !== null}
                     className="rounded-lg border border-violet-300 px-2.5 py-1 text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                    title="Launch an agent (your Claude subscription) that deep-dives this site, fixes the scraper generically, verifies with tests + a live re-scrape, and commits the change"
+                    title="Launch an agent (your Claude subscription) that deep-dives this site, fixes the scraper generically, verifies and commits it, then re-scrapes and classifies the menu with DeepSeek"
                   >
                     {doctor?.running && doctor.restaurant_id === f.id && doctor.agent === "claude"
                       ? "Diagnosing…"
@@ -304,7 +304,7 @@ function ScrapeFailuresPanel() {
                     onClick={() => startDoctor(f, "codex")}
                     disabled={Boolean(doctor?.running) || retrying !== null}
                     className="rounded-lg border border-sky-300 px-2.5 py-1 text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-slate-400"
-                    title="Launch Codex using your ChatGPT subscription to deep-dive this site, fix the scraper generically, verify with tests + live re-scrapes, and commit the change"
+                    title="Launch Codex using your ChatGPT subscription to deep-dive this site, fix and safely commit the scraper, then re-scrape and classify the menu with DeepSeek"
                   >
                     {doctor?.running && doctor.restaurant_id === f.id && doctor.agent === "codex"
                       ? "Diagnosing…"

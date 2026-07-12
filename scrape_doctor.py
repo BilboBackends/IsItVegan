@@ -27,6 +27,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 import db
 
@@ -334,7 +335,12 @@ def _codex_command(executable: str, output_path: Path) -> list[str]:
     return command
 
 
-def _run_job(restaurant: dict, profile: dict | None, agent: str) -> None:
+def _run_job(
+    restaurant: dict,
+    profile: dict | None,
+    agent: str,
+    on_fixed: Callable[[int], str] | None = None,
+) -> None:
     if agent == "claude":
         executable = shutil.which("claude")
     else:
@@ -419,6 +425,18 @@ def _run_job(restaurant: dict, profile: dict | None, agent: str) -> None:
             except Exception as exc:
                 verdict = "failed"
                 summary = f"Fix was not committed safely: {type(exc).__name__}: {exc}"
+        if verdict == "fixed" and on_fixed is not None:
+            try:
+                _log("[pipeline] re-scraping repaired restaurant")
+                pipeline_summary = on_fixed(int(restaurant["id"]))
+                _log(f"[pipeline] {pipeline_summary}")
+                summary = f"{summary or 'Scraper fix verified.'} {pipeline_summary}"
+            except Exception as exc:
+                verdict = "failed"
+                summary = (
+                    f"Scraper repair completed, but its scrape/classify pipeline "
+                    f"failed: {type(exc).__name__}: {exc}"
+                )
         with _state_lock:
             _state.update(running=False, verdict=verdict, summary=summary)
     except Exception as exc:  # never leave the job wedged in "running"
@@ -434,7 +452,11 @@ def _run_job(restaurant: dict, profile: dict | None, agent: str) -> None:
             )
 
 
-def start(restaurant_id: int, agent: str = "claude") -> dict:
+def start(
+    restaurant_id: int,
+    agent: str = "claude",
+    on_fixed: Callable[[int], str] | None = None,
+) -> dict:
     """Kick off a fix job. Returns the initial state; raises on conflicts."""
     agent = (agent or "").strip().lower()
     if agent not in _AGENTS:
@@ -472,7 +494,9 @@ def start(restaurant_id: int, agent: str = "claude") -> dict:
             error=None,
         )
     thread = threading.Thread(
-        target=_run_job, args=(restaurant, profile, agent), daemon=True
+        target=_run_job,
+        args=(restaurant, profile, agent, on_fixed),
+        daemon=True,
     )
     thread.start()
     return status()
