@@ -886,10 +886,9 @@ export default function Explore({
       {(r.website_url ||
         r.dish_count > 0 ||
         CLOUD_ENABLED) && (
-        <div className="mt-auto grid grid-cols-3 items-center border-t border-stone-100 pt-3 text-xs font-semibold">
-          {/* Community is always discoverable at bottom-left and opens the
-              modal directly on its comments tab. Website remains centered
-              between it and the dishes action. */}
+        <div className="mt-auto flex items-center justify-between border-t border-stone-100 pt-3 text-xs font-semibold">
+          {/* Notes and Dishes anchor the outer edges. justify-between gives
+              Website equal empty space on either side. */}
           <div className="flex min-w-0 justify-start">
             {CLOUD_ENABLED && (
               <button
