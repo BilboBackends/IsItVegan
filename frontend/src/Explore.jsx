@@ -17,6 +17,7 @@ import {
 import { cuisineLabel, cuisineOptions, isDessertVenue } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
+import { CLOUD_ENABLED, fetchCommentCounts } from "./cloud.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
 // distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
@@ -280,6 +281,18 @@ export default function Explore({
   // "all" | "veganish" — clicking a card's vegan-count text opens the menu
   // pre-filtered to the vegan-friendly items.
   const [dishesFilter, setDishesFilter] = useState("all");
+  // "comments" opens the menu modal straight on its Tips tab (💬 chip).
+  const [dishesTab, setDishesTab] = useState(null);
+  // place_id -> comment count for the card chips; empty map when the
+  // account backend isn't configured.
+  const [commentCounts, setCommentCounts] = useState(null);
+
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    fetchCommentCounts()
+      .then(setCommentCounts)
+      .catch(() => {});
+  }, []);
   // place_id of the card whose score popover is open (that card gets a
   // higher z-index so the popover isn't painted under the map).
   const [scoreOpenFor, setScoreOpenFor] = useState(null);
@@ -598,6 +611,7 @@ export default function Explore({
             "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
           btn.onclick = () => {
             setDishesFilter("all");
+            setDishesTab(null);
             setDishesFor(r);
           };
           row.append(btn);
@@ -827,6 +841,22 @@ export default function Explore({
               </a>
             )}
           </div>
+          {(commentCounts?.get(r.place_id) || 0) > 0 && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setDishesFilter("all");
+                setDishesTab("comments");
+                setDishesFor(r);
+              }}
+              className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
+              title={`${commentCounts.get(r.place_id)} visitor tip${
+                commentCounts.get(r.place_id) === 1 ? "" : "s"
+              } — read what people say about this place`}
+            >
+              💬 {commentCounts.get(r.place_id)}
+            </button>
+          )}
           {r.dish_count > 0 && (
             <button
               onClick={(e) => {
@@ -836,6 +866,7 @@ export default function Explore({
                     ? "veganish"
                     : "all"
                 );
+                setDishesTab(null);
                 setDishesFor(r);
               }}
               className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
@@ -1084,8 +1115,12 @@ export default function Explore({
       {dishesFor && (
         <DishModal
           restaurant={dishesFor}
-          onClose={() => setDishesFor(null)}
+          onClose={() => {
+            setDishesFor(null);
+            setDishesTab(null);
+          }}
           initialFilter={dishesFilter}
+          initialTab={dishesTab}
           onOpenDish={(d) =>
             setDetailDish({
               ...d,

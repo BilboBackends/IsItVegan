@@ -6,7 +6,12 @@ import { calorieLabel } from "./calories.js";
 import { isDessertVenue } from "./cuisine.js";
 import { isCountedVegan } from "./verdicts.js";
 import { fetchRestaurantDishes } from "./staticData.js";
-import { registerDishes, registerRestaurants } from "./cloud.js";
+import {
+  CLOUD_ENABLED,
+  fetchComments,
+  registerDishes,
+  registerRestaurants,
+} from "./cloud.js";
 import Comments from "./Comments.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 
@@ -85,10 +90,15 @@ export default function DishModal({
   // "veganish" opens the menu pre-filtered to vegan-friendly items — the
   // card's vegan-count text uses this as a direct shortcut.
   initialFilter = "all",
+  // "comments" jumps straight to the Tips tab (the card's 💬 chip).
+  initialTab = null,
 }) {
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("food");
+  // The restaurant's comment thread lives up here so the Tips tab can show
+  // its count before the pane is opened.
+  const [comments, setComments] = useState(null);
   const [filter, setFilter] = useState("all");
   const [servingFilter, setServingFilter] = useState("all");
   // Phones only: the two filter rows start collapsed behind a "Filters"
@@ -124,15 +134,31 @@ export default function DishModal({
         // dish name, not the renumber-prone numeric ids).
         registerRestaurants([restaurant]);
         registerDishes(list);
-        // Open on the first category that actually has items.
+        // Open on the first category that actually has items — unless the
+        // caller asked for the Tips tab directly (card's 💬 chip).
         const first = CATEGORIES.find((c) =>
           list.some((d) => dishCategory(d) === c.key)
         );
-        setTab(first ? first.key : "food");
+        setTab(
+          initialTab === "comments" ? "comments" : first ? first.key : "food"
+        );
       })
       .catch(() => setDishes([]))
       .finally(() => setLoading(false));
-  }, [restaurant, initialFilter]);
+  }, [restaurant, initialFilter, initialTab]);
+
+  // Load the thread alongside the dishes so the Tips tab shows its count.
+  useEffect(() => {
+    setComments(null);
+    if (!CLOUD_ENABLED || !restaurant?.place_id) return;
+    let cancelled = false;
+    fetchComments(restaurant.place_id)
+      .then((rows) => !cancelled && setComments(rows))
+      .catch(() => !cancelled && setComments([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurant]);
 
   useEffect(() => {
     if (!restaurant) return;
@@ -309,10 +335,28 @@ export default function DishModal({
               </button>
             );
           })}
+          {CLOUD_ENABLED && restaurant.place_id && (
+            <button
+              onClick={() => setTab("comments")}
+              className={`relative -mb-px shrink-0 whitespace-nowrap rounded-t-lg border px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
+                tab === "comments"
+                  ? "border-slate-200 border-b-white bg-white text-slate-900"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
+              }`}
+            >
+              💬<span className="max-sm:hidden"> Tips</span>
+              {(comments?.length ?? 0) > 0 && (
+                <span className="ml-1 rounded-full bg-sky-100 px-1.5 text-xs font-semibold text-sky-700 sm:ml-1.5">
+                  {comments.length}
+                </span>
+              )}
+            </button>
+          )}
         </div>
 
         {/* Mobile-only disclosure for the filter rows; the active count
             keeps collapsed filters from being forgotten. */}
+        {tab !== "comments" && (
         <button
           onClick={() => setFiltersOpen((v) => !v)}
           className="flex w-full items-center justify-between border-b border-slate-100 px-4 py-2 text-xs font-semibold text-slate-600 sm:hidden"
@@ -329,8 +373,10 @@ export default function DishModal({
           </span>
           <span className="text-slate-400">{filtersOpen ? "hide ▴" : "show ▾"}</span>
         </button>
+        )}
 
         {/* Verdict filter */}
+        {tab !== "comments" && (
         <div className={`flex gap-2 border-b border-slate-100 px-4 py-2 ${filtersOpen ? "" : "max-sm:hidden"}`}>
           {FILTERS.map((f) => (
             <button
@@ -346,6 +392,7 @@ export default function DishModal({
             </button>
           ))}
         </div>
+        )}
 
         {tab === "food" && (
           <div className={`flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-2 ${filtersOpen ? "" : "max-sm:hidden"}`}>
@@ -373,7 +420,15 @@ export default function DishModal({
         )}
 
         <div className="overflow-y-auto p-4">
-          {loading ? (
+          {tab === "comments" ? (
+            <Comments
+              restaurant={restaurant}
+              dishes={dishes}
+              onOpenDish={onOpenDish}
+              comments={comments}
+              onCommentsChange={setComments}
+            />
+          ) : loading ? (
             <div className="text-slate-400">Loading…</div>
           ) : dishes.length === 0 ? (
             <div className="text-slate-400">No dishes classified yet.</div>
@@ -488,11 +543,6 @@ export default function DishModal({
               })}
             </div>
           )}
-          <Comments
-            restaurant={restaurant}
-            dishes={dishes}
-            onOpenDish={onOpenDish}
-          />
         </div>
         <div className="border-t border-slate-200 px-4 py-2 text-xs text-slate-400">
           Verdicts are inferred from the restaurant's menu text — evidence shown

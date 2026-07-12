@@ -283,6 +283,27 @@ export async function fetchComments(placeId) {
   return attachDisplayNames(client, data || []);
 }
 
+// place_id -> comment count, for the 💬 chips on restaurant cards. Counting
+// client-side over a bare place_id column is fine at MVP scale (PostgREST
+// caps the response at 1000 rows); switch to a count() aggregate or a view
+// when threads outgrow that.
+let commentCountsCache = { at: 0, map: null };
+
+export async function fetchCommentCounts() {
+  if (!CLOUD_ENABLED) return new Map();
+  if (commentCountsCache.map && Date.now() - commentCountsCache.at < 60_000) {
+    return commentCountsCache.map;
+  }
+  const client = await getClient();
+  const { data } = await client.from("comments").select("place_id").limit(1000);
+  const map = new Map();
+  for (const row of data || []) {
+    map.set(row.place_id, (map.get(row.place_id) || 0) + 1);
+  }
+  commentCountsCache = { at: Date.now(), map };
+  return map;
+}
+
 export async function postComment(placeId, body, mentions, userId) {
   const client = await getClient();
   const { data, error } = await client
@@ -296,6 +317,7 @@ export async function postComment(placeId, body, mentions, userId) {
     .select("id, user_id, body, mentions, created_at")
     .single();
   if (error) throw new Error(error.message);
+  commentCountsCache.at = 0; // card chips refresh on next fetch
   const [withName] = await attachDisplayNames(client, [data]);
   return withName;
 }
@@ -304,6 +326,7 @@ export async function deleteComment(commentId) {
   const client = await getClient();
   const { error } = await client.from("comments").delete().eq("id", commentId);
   if (error) throw new Error(error.message);
+  commentCountsCache.at = 0;
 }
 
 export async function reportComment(commentId, userId) {

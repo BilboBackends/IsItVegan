@@ -14,9 +14,20 @@ import {
 // {dish_key, dish_name} pairs so tips deep-link to dishes and survive the
 // pipeline renumbering dish ids. Signed-in users only can post (RLS enforces
 // it server-side; this UI just mirrors that).
-export default function Comments({ restaurant, dishes, onOpenDish }) {
+export default function Comments({
+  restaurant,
+  dishes,
+  onOpenDish,
+  // Controlled mode: a parent that needs the thread for its own UI (the
+  // modal's tab badge) owns the state and passes both down.
+  comments: controlledComments,
+  onCommentsChange,
+}) {
   const session = useContext(SessionContext);
-  const [comments, setComments] = useState(null);
+  const controlled = controlledComments !== undefined;
+  const [ownComments, setOwnComments] = useState(null);
+  const comments = controlled ? controlledComments : ownComments;
+  const setComments = controlled ? onCommentsChange : setOwnComments;
   const [body, setBody] = useState("");
   const [mentions, setMentions] = useState([]); // [{dish_key, dish_name}]
   const [error, setError] = useState(null);
@@ -26,15 +37,15 @@ export default function Comments({ restaurant, dishes, onOpenDish }) {
   const placeId = restaurant?.place_id;
 
   useEffect(() => {
-    if (!CLOUD_ENABLED || !placeId) return;
+    if (controlled || !CLOUD_ENABLED || !placeId) return;
     let cancelled = false;
     fetchComments(placeId)
-      .then((rows) => !cancelled && setComments(rows))
-      .catch(() => !cancelled && setComments([]));
+      .then((rows) => !cancelled && setOwnComments(rows))
+      .catch(() => !cancelled && setOwnComments([]));
     return () => {
       cancelled = true;
     };
-  }, [placeId]);
+  }, [placeId, controlled]);
 
   // "@" suggestions: the token being typed after the last unaccepted "@".
   const mentionQuery = useMemo(() => {
@@ -128,7 +139,7 @@ export default function Comments({ restaurant, dishes, onOpenDish }) {
   if (!CLOUD_ENABLED || !placeId) return null;
 
   return (
-    <section className="border-t border-stone-200 px-4 py-4 sm:px-6">
+    <section>
       <h3 className="text-sm font-bold text-stone-800">
         Tips & comments
         {comments?.length > 0 && (
