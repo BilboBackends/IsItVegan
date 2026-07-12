@@ -830,9 +830,9 @@ export default function Explore({
         r.dish_count > 0 ||
         (commentCounts?.get(r.place_id) || 0) > 0) && (
         <div className="mt-auto flex flex-nowrap items-center justify-between gap-1.5 border-t border-stone-100 pt-3">
-          {/* No thread: the normal layout (Website left, View dishes
-              right). With a thread: the buzz chip takes the bottom-left
-              and Website slides over next to View dishes. */}
+          {/* Bottom-left: the community buzz chip; Website + View dishes
+              stay paired on the right. The empty span keeps justify-between
+              honest when there's no thread yet. */}
           {(commentCounts?.get(r.place_id) || 0) > 0 ? (
             <button
               onClick={(e) => {
@@ -849,22 +849,10 @@ export default function Explore({
               💬 {commentCounts.get(r.place_id)}
             </button>
           ) : (
-            <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
-              {r.website_url && (
-                <a
-                  href={r.website_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  className="whitespace-nowrap text-stone-500 hover:text-emerald-700 hover:underline"
-                >
-                  Website ↗
-                </a>
-              )}
-            </div>
+            <span />
           )}
           <div className="flex shrink-0 items-center gap-2 text-xs font-semibold">
-            {(commentCounts?.get(r.place_id) || 0) > 0 && r.website_url && (
+            {r.website_url && (
               <a
                 href={r.website_url}
                 target="_blank"
