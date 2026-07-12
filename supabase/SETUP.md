@@ -26,7 +26,7 @@ Authentication → Providers:
   on the Google provider screen. Paste client id + secret back into Supabase.
 
 Authentication → URL Configuration:
-- Site URL: `https://www.dishfind.com/`
+- Site URL: `https://www.dishtune.com/`
 - Additional redirect URLs: `http://localhost:5173/` (local dev) and, if the
   github.io URL should keep working, `https://<username>.github.io/IsItVegan/`.
 

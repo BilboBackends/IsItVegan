@@ -34,7 +34,12 @@ jobs:
         working-directory: frontend
         env:
           VITE_STATIC_DATA: "1"
-          VITE_BASE: /IsItVegan/
+          # Custom domain (www.dishtune.com, via public/CNAME) serves the
+          # site at the domain root, so the Vite base stays "/". The old
+          # /IsItVegan/ base only applied to the github.io project URL.
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_GOOGLE_ENABLED: ${{ vars.VITE_SUPABASE_GOOGLE_ENABLED }}
       - uses: actions/configure-pages@v5
         with:
           enablement: true
