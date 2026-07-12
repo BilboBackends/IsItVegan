@@ -335,7 +335,7 @@ export async function fetchComments(placeId) {
   return attachDisplayNames(client, data || []);
 }
 
-// place_id -> comment count, for the 💬 chips on restaurant cards. Counting
+// place_id -> comment count, for the ♪ note chips on restaurant cards. Counting
 // client-side over a bare place_id column is fine at MVP scale (PostgREST
 // caps the response at 1000 rows); switch to a count() aggregate or a view
 // when threads outgrow that.

@@ -14,6 +14,7 @@ import {
   registerRestaurants,
 } from "./cloud.js";
 import Comments from "./Comments.jsx";
+import DishCommentBadge from "./DishCommentBadge.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
@@ -91,7 +92,7 @@ export default function DishModal({
   // "veganish" opens the menu pre-filtered to vegan-friendly items — the
   // card's vegan-count text uses this as a direct shortcut.
   initialFilter = "all",
-  // "comments" jumps straight to the Tips tab (the card's 💬 chip).
+  // "comments" jumps straight to the Notes tab (the card's ♪ chip).
   initialTab = null,
   initialMention = null,
   initialCommentFilter = null,
@@ -99,7 +100,7 @@ export default function DishModal({
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("food");
-  // The restaurant's comment thread lives up here so the Tips tab can show
+  // The restaurant's comment thread lives up here so the Notes tab can show
   // its count before the pane is opened.
   const [comments, setComments] = useState(null);
   const [commentTarget, setCommentTarget] = useState(null);
@@ -146,7 +147,7 @@ export default function DishModal({
         registerRestaurants([restaurant]);
         registerDishes(list);
         // Open on the first category that actually has items — unless the
-        // caller asked for the Tips tab directly (card's 💬 chip).
+        // caller asked for the Notes tab directly (card's ♪ chip).
         const first = CATEGORIES.find((c) =>
           list.some((d) => dishCategory(d) === c.key)
         );
@@ -164,7 +165,7 @@ export default function DishModal({
     initialCommentFilter,
   ]);
 
-  // Load the thread alongside the dishes so the Tips tab shows its count.
+  // Load the thread alongside the dishes so the Notes tab shows its count.
   useEffect(() => {
     setComments(null);
     if (!CLOUD_ENABLED || !restaurant?.place_id) return;
@@ -196,7 +197,7 @@ export default function DishModal({
   // Tab badges use the strict standard so they agree with the card counts.
   const veganishIn = (items) => items.filter(isCountedVegan).length;
 
-  function tipCountForDish(dish) {
+  function noteCountForDish(dish) {
     const key = dishKey(dish.name);
     return (comments || []).filter((comment) =>
       (comment.mentions || []).some((mention) => mention.dish_key === key)
@@ -366,6 +367,7 @@ export default function DishModal({
           })}
           {CLOUD_ENABLED && restaurant.place_id && (
             <button
+              aria-label={`Community notes: ${comments?.length ?? 0}`}
               onClick={() => {
                 setCommentTarget(null);
                 setTab("comments");
@@ -376,7 +378,7 @@ export default function DishModal({
                   : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
             >
-              💬<span className="max-sm:hidden"> Buzz</span>
+              ♪<span className="max-sm:hidden"> Notes</span>
               {(comments?.length ?? 0) > 0 && (
                 <span className="ml-1 rounded-full bg-sky-100 px-1.5 text-xs font-semibold text-sky-700 sm:ml-1.5">
                   {comments.length}
@@ -517,6 +519,12 @@ export default function DishModal({
                           {calorieLabel(d.calories)}
                         </span>
                       )}
+                      <DishCommentBadge
+                        count={noteCountForDish(d)}
+                        dishName={d.name}
+                        onClick={() => openDishComments(d, "view")}
+                        className="ml-2 align-middle"
+                      />
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <VerdictChip verdict={d.verdict} />
@@ -548,18 +556,9 @@ export default function DishModal({
                       <button
                         type="button"
                         onClick={() => openDishComments(d, "add")}
-                        className="font-bold text-sky-700 hover:underline"
+                        className="min-h-7 rounded-md px-2 py-1 font-bold text-sky-700 hover:bg-sky-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
                       >
-                        Add tip
-                      </button>
-                    )}
-                    {tipCountForDish(d) > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => openDishComments(d, "view")}
-                        className="font-bold text-sky-700 hover:underline"
-                      >
-                        View {tipCountForDish(d)} tip{tipCountForDish(d) === 1 ? "" : "s"}
+                        Add a note
                       </button>
                     )}
                     {onOpenDish ? (

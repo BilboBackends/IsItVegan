@@ -71,7 +71,7 @@ export default function AccountButton({ session, onSession }) {
             ? "border-emerald-200 bg-emerald-50 text-emerald-800"
             : "border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:text-emerald-700"
         }`}
-        title={user ? `Signed in as ${name}` : "Sign in to keep your saves and comment"}
+        title={user ? `Signed in as ${name}` : "Sign in to keep your saves and add notes"}
       >
         {user ? (
           <>
@@ -94,7 +94,7 @@ export default function AccountButton({ session, onSession }) {
                 <div className="mt-0.5 truncate text-xs text-stone-400">{user.email}</div>
               )}
               <p className="mt-2 text-xs text-stone-500">
-                Your saves, likes, and comments follow this account on any device.
+                Your saves, likes, and notes follow this account on any device.
               </p>
               <button
                 onClick={() => {

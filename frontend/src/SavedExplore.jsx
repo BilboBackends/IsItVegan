@@ -7,11 +7,18 @@ import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 import { VerdictChip } from "./DishModal.jsx";
 import { loadDishes } from "./dishData.js";
+import DishCommentBadge from "./DishCommentBadge.jsx";
+import {
+  CLOUD_ENABLED,
+  dishKey,
+  fetchDishMentionCounts,
+} from "./cloud.js";
 
 export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }) {
   const [restaurants, setRestaurants] = useState([]);
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dishMentionCounts, setDishMentionCounts] = useState(() => new Map());
   const mapEl = useRef(null);
   const mapRef = useRef(null);
 
@@ -27,6 +34,19 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    const refresh = () => {
+      fetchDishMentionCounts()
+        .then(setDishMentionCounts)
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener("dishtune:comments-changed", refresh);
+    return () =>
+      window.removeEventListener("dishtune:comments-changed", refresh);
+  }, []);
+
   const savedRestaurants = useMemo(
     () => restaurants.filter((item) => favorites.restaurants.includes(item.id)),
     [restaurants, favorites.restaurants]
@@ -35,6 +55,27 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
     () => dishes.filter((item) => favorites.dishes.includes(item.id)),
     [dishes, favorites.dishes]
   );
+  const restaurantById = useMemo(
+    () => new Map(restaurants.map((item) => [item.id, item])),
+    [restaurants]
+  );
+
+  function commentCountForDish(dish) {
+    const placeId = restaurantById.get(dish.restaurant_id)?.place_id;
+    return placeId
+      ? dishMentionCounts.get(`${placeId}:${dishKey(dish.name)}`) || 0
+      : 0;
+  }
+
+  function openDishComments(dish) {
+    const placeId = restaurantById.get(dish.restaurant_id)?.place_id;
+    if (!placeId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("comments", placeId);
+    url.searchParams.set("note", dish.name);
+    url.hash = "restaurants";
+    window.location.assign(url.toString());
+  }
 
   // Saved map: emerald count-pins where the saved dishes are, stone pins
   // for saved restaurants with no saved dish. Rebuilt on every change —
@@ -185,9 +226,16 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
                 {savedDishes.map((dish) => (
                   <div key={dish.id} className="flex items-start justify-between gap-4 p-4">
                     <div className="min-w-0">
-                      <a href={`#dishes?dish=${dish.id}`} className="font-bold text-stone-900 hover:text-emerald-700 hover:underline">
-                        {dish.name}
-                      </a>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <a href={`#dishes?dish=${dish.id}`} className="font-bold text-stone-900 hover:text-emerald-700 hover:underline">
+                          {dish.name}
+                        </a>
+                        <DishCommentBadge
+                          count={commentCountForDish(dish)}
+                          dishName={dish.name}
+                          onClick={() => openDishComments(dish)}
+                        />
+                      </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
                         <span>
                           <span className="font-medium text-stone-400">Restaurant:</span>{" "}

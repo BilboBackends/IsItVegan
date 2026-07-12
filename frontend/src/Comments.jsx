@@ -15,7 +15,7 @@ import {
 
 // Per-restaurant discussion thread. Typing "@" in the composer suggests the
 // restaurant's dishes; accepted mentions are stored as structured
-// {dish_key, dish_name} pairs so tips deep-link to dishes and survive the
+// {dish_key, dish_name} pairs so notes deep-link to dishes and survive the
 // pipeline renumbering dish ids. Signed-in users only can post (RLS enforces
 // it server-side; this UI just mirrors that).
 export default function Comments({
@@ -92,13 +92,22 @@ export default function Comments({
       typeof initialMention === "string"
         ? initialMention
         : initialMention?.name;
+    const filteredDishName =
+      typeof activeDishFilter === "string"
+        ? activeDishFilter
+        : activeDishFilter?.name;
     rememberCommentAuthReturn(placeId, mentionName);
     const url = new URL(window.location.href);
     url.searchParams.set("comments", placeId);
+    if (!mentionName && filteredDishName) {
+      url.searchParams.set("note", filteredDishName);
+    } else {
+      url.searchParams.delete("note");
+    }
     // Supabase's browser OAuth flow uses the fragment for session tokens.
     // Keep our return state in the query string and leave the hash empty so
     // Google sign-in can establish the session before Explore reopens this
-    // restaurant's comments tab.
+    // restaurant's Notes tab.
     url.hash = "";
     return url.toString();
   }
@@ -237,28 +246,28 @@ export default function Comments({
   return (
     <section>
       <h3 className="text-sm font-bold text-stone-800">
-        The buzz
+        Community notes
         {comments?.length > 0 && (
           <span className="ml-1.5 text-xs font-medium text-stone-400">
             {comments.length}
           </span>
         )}
         <span className="ml-2 text-xs font-normal text-stone-400">
-          tips · reviews · chat
+          comments · reviews · chat
         </span>
       </h3>
 
       {filterKey && (
         <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-800">
           <span className="min-w-0 truncate font-semibold">
-            Tips mentioning @{filterName}
+            Notes mentioning @{filterName}
           </span>
           <button
             type="button"
             onClick={() => setActiveDishFilter(null)}
             className="shrink-0 font-bold hover:underline"
           >
-            Show all buzz
+            Show all notes
           </button>
         </div>
       )}
@@ -271,7 +280,7 @@ export default function Comments({
             onChange={(e) => setBody(e.target.value)}
             rows={2}
             maxLength={1000}
-            placeholder='Share a tip, review, or thought — type "@" to point at a dish (e.g. "@Vegan Tacos ask for no crema")'
+            placeholder='Share a note, review, or thought — type "@" to point at a dish (e.g. "@Vegan Tacos ask for no crema")'
             className="w-full rounded-xl border border-stone-300 px-3 py-2 text-sm outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
           {suggestions.length > 0 && (
@@ -290,7 +299,7 @@ export default function Comments({
           )}
           <div className="mt-1.5 flex items-center justify-between">
             <span className="text-[11px] text-stone-400">
-              Be kind; dish tips help everyone.
+              Be kind; dish notes help everyone.
             </span>
             <button
               type="submit"
@@ -313,7 +322,7 @@ export default function Comments({
           </p>
           {initialMention && (
             <p className="mt-1 text-xs font-semibold text-sky-700">
-              After signing in, your tip will mention @{
+              After signing in, your note will mention @{
                 typeof initialMention === "string"
                   ? initialMention
                   : initialMention.name
@@ -379,16 +388,16 @@ export default function Comments({
 
       <div className="mt-3 space-y-3">
         {comments === null && (
-          <div className="text-xs text-stone-400">Loading comments…</div>
+          <div className="text-xs text-stone-400">Loading notes…</div>
         )}
         {comments?.length === 0 && (
           <div className="text-xs text-stone-400">
-            No tips yet — be the first.
+            No notes yet — be the first.
           </div>
         )}
         {filterKey && comments?.length > 0 && visibleComments.length === 0 && (
           <div className="text-xs text-stone-400">
-            No tips mention this dish yet.
+            No notes mention this dish yet.
           </div>
         )}
         {visibleComments.map((comment) => (

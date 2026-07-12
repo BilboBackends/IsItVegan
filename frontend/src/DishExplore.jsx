@@ -2,6 +2,7 @@ import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import DishDetail from "./DishDetail.jsx";
+import DishCommentBadge from "./DishCommentBadge.jsx";
 import DietaryBadges from "./DietaryBadges.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
@@ -765,7 +766,7 @@ export default function DishExplore({
     window.location.hash = `dishes?dish=${dish.id}`;
   }
 
-  function tipCountForDish(dish) {
+  function noteCountForDish(dish) {
     return (
       dishMentionCounts.get(`${dish.place_id}:${dishKey(dish.name)}`) || 0
     );
@@ -1214,6 +1215,7 @@ export default function DishExplore({
                     tabIndex={0}
                     onClick={() => toggleExpanded(dish.id)}
                     onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return;
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
                         toggleExpanded(dish.id);
@@ -1284,6 +1286,14 @@ export default function DishExplore({
                         })()}
                       </div>
                     </div>
+                    <DishCommentBadge
+                      count={noteCountForDish(dish)}
+                      dishName={dish.name}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openDishComments(dish, "view");
+                      }}
+                    />
                     <VerdictChip verdict={dish.verdict} />
                     <span
                       aria-hidden="true"
@@ -1384,16 +1394,7 @@ export default function DishExplore({
                               onClick={() => openDishComments(dish, "add")}
                               className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1.5 font-bold text-sky-700 transition hover:border-sky-400 hover:bg-sky-100"
                             >
-                              Add tip
-                            </button>
-                          )}
-                          {tipCountForDish(dish) > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => openDishComments(dish, "view")}
-                              className="rounded-full border border-sky-200 bg-white px-2.5 py-1.5 font-bold text-sky-700 transition hover:border-sky-400"
-                            >
-                              View {tipCountForDish(dish)} tip{tipCountForDish(dish) === 1 ? "" : "s"}
+                              Add a note
                             </button>
                           )}
                           <button
@@ -1465,9 +1466,9 @@ export default function DishExplore({
           onToggleFavorite={() => toggleDish(selectedDish.id)}
           restaurantFavorite={favorites.restaurants.includes(selectedDish.restaurant_id)}
           onToggleRestaurant={() => toggleRestaurant(selectedDish.restaurant_id)}
-          onAddTip={() => openDishComments(selectedDish, "add")}
-          onViewTips={() => openDishComments(selectedDish, "view")}
-          tipCount={tipCountForDish(selectedDish)}
+          onAddComment={() => openDishComments(selectedDish, "add")}
+          onViewComments={() => openDishComments(selectedDish, "view")}
+          commentCount={noteCountForDish(selectedDish)}
         />
       )}
 

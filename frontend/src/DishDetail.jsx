@@ -6,6 +6,7 @@ import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 import { VerdictChip } from "./DishModal.jsx";
 import { calorieLabel } from "./calories.js";
+import DishCommentBadge from "./DishCommentBadge.jsx";
 
 const ISSUES = [
   ["animal_ingredient", "Contains an animal ingredient"],
@@ -33,9 +34,9 @@ export default function DishDetail({
   onToggleFavorite,
   restaurantFavorite,
   onToggleRestaurant,
-  onAddTip,
-  onViewTips,
-  tipCount = 0,
+  onAddComment,
+  onViewComments,
+  commentCount = 0,
   // Canonical link for sharing. Hosts that open this panel WITHOUT a dish
   // deep-link in the address bar (the Restaurants tab) pass the #dishes
   // deep-link so recipients still land on the dish.
@@ -102,6 +103,11 @@ export default function DishDetail({
                   {calorieLabel(dish.calories)}
                 </span>
               )}
+              <DishCommentBadge
+                count={commentCount}
+                dishName={dish.name}
+                onClick={onViewComments}
+              />
             </div>
             <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-emerald-800">
               {dish.restaurant_name}
@@ -227,20 +233,12 @@ export default function DishDetail({
           </section>
 
           <div className="flex flex-wrap gap-2">
-            {onAddTip && (
+            {onAddComment && (
               <button
-                onClick={onAddTip}
+                onClick={onAddComment}
                 className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:border-sky-400"
               >
-                Add tip
-              </button>
-            )}
-            {onViewTips && tipCount > 0 && (
-              <button
-                onClick={onViewTips}
-                className="rounded-full border border-sky-200 bg-white px-4 py-2 text-sm font-bold text-sky-700 hover:border-sky-400"
-              >
-                View {tipCount} tip{tipCount === 1 ? "" : "s"}
+                Add a note
               </button>
             )}
             <button onClick={share} className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-bold text-stone-700 hover:border-emerald-600">

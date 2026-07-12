@@ -20,7 +20,9 @@ import { apiUrl } from "./staticData.js";
 import {
   CLOUD_ENABLED,
   clearCommentAuthReturn,
+  dishKey,
   fetchCommentCounts,
+  fetchDishMentionCounts,
   pendingCommentAuthReturn,
 } from "./cloud.js";
 
@@ -286,18 +288,29 @@ export default function Explore({
   // "all" | "veganish" — clicking a card's vegan-count text opens the menu
   // pre-filtered to the vegan-friendly items.
   const [dishesFilter, setDishesFilter] = useState("all");
-  // "comments" opens the menu modal straight on its Tips tab (💬 chip).
+  // "comments" opens the menu modal straight on its Notes tab (♪ chip).
   const [dishesTab, setDishesTab] = useState(null);
   const [dishesMention, setDishesMention] = useState(null);
+  const [dishesCommentFilter, setDishesCommentFilter] = useState(null);
   // place_id -> comment count for the card chips; empty map when the
   // account backend isn't configured.
   const [commentCounts, setCommentCounts] = useState(null);
+  const [dishMentionCounts, setDishMentionCounts] = useState(() => new Map());
 
   useEffect(() => {
     if (!CLOUD_ENABLED) return;
-    fetchCommentCounts()
-      .then(setCommentCounts)
-      .catch(() => {});
+    const refresh = () => {
+      fetchCommentCounts()
+        .then(setCommentCounts)
+        .catch(() => {});
+      fetchDishMentionCounts()
+        .then(setDishMentionCounts)
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener("dishtune:comments-changed", refresh);
+    return () =>
+      window.removeEventListener("dishtune:comments-changed", refresh);
   }, []);
   // place_id of the card whose score popover is open (that card gets a
   // higher z-index so the popover isn't painted under the map).
@@ -343,6 +356,11 @@ export default function Explore({
     const storedReturn = pendingCommentAuthReturn();
     const returnPlaceId =
       url.searchParams.get("comments") || storedReturn?.placeId;
+    const linkedDishName = url.searchParams.get("note");
+    const storedDishName =
+      storedReturn && storedReturn.placeId === returnPlaceId
+        ? storedReturn.dishName
+        : null;
     if (!returnPlaceId) return;
     const target = restaurants.find(
       (restaurant) => restaurant.place_id === returnPlaceId
@@ -355,9 +373,11 @@ export default function Explore({
     clearCommentAuthReturn();
     setDishesFilter("all");
     setDishesTab("comments");
-    setDishesMention(storedReturn?.dishName || null);
+    setDishesMention(linkedDishName ? null : storedDishName || null);
+    setDishesCommentFilter(linkedDishName || null);
     setDishesFor(target);
     url.searchParams.delete("comments");
+    url.searchParams.delete("note");
     window.history.replaceState(null, "", url.toString());
   }, [restaurants]);
 
@@ -646,6 +666,8 @@ export default function Explore({
           btn.onclick = () => {
             setDishesFilter("all");
             setDishesTab(null);
+            setDishesMention(null);
+            setDishesCommentFilter(null);
             setDishesFor(r);
           };
           row.append(btn);
@@ -874,23 +896,25 @@ export default function Explore({
                   e.stopPropagation();
                   setDishesFilter("all");
                   setDishesTab("comments");
+                  setDishesMention(null);
+                  setDishesCommentFilter(null);
                   setDishesFor(r);
                 }}
                 className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-1.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
                 title={
                   (commentCounts?.get(r.place_id) || 0) > 0
-                    ? `${commentCounts.get(r.place_id)} post${
+                    ? `${commentCounts.get(r.place_id)} community note${
                         commentCounts.get(r.place_id) === 1 ? "" : "s"
-                      } from visitors — tips, reviews, and chat about this place`
-                    : "Start the conversation about this restaurant"
+                      } — comments, reviews, and chat about this place`
+                    : "Add the first community note about this restaurant"
                 }
-                aria-label={`Open restaurant comments: ${
+                aria-label={`Open restaurant notes: ${
                   commentCounts?.get(r.place_id) || 0
-                } review${
+                } note${
                   (commentCounts?.get(r.place_id) || 0) === 1 ? "" : "s"
                 }`}
               >
-                💬 {commentCounts?.get(r.place_id) || 0}
+                ♪ {commentCounts?.get(r.place_id) || 0}
               </button>
             )}
           </div>
@@ -918,6 +942,8 @@ export default function Explore({
                       : "all"
                   );
                   setDishesTab(null);
+                  setDishesMention(null);
+                  setDishesCommentFilter(null);
                   setDishesFor(r);
                 }}
                 className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 transition hover:border-emerald-300 hover:bg-emerald-100"
@@ -1171,10 +1197,12 @@ export default function Explore({
             setDishesFor(null);
             setDishesTab(null);
             setDishesMention(null);
+            setDishesCommentFilter(null);
           }}
           initialFilter={dishesFilter}
           initialTab={dishesTab}
           initialMention={dishesMention}
+          initialCommentFilter={dishesCommentFilter}
           onOpenDish={(d) =>
             setDetailDish({
               ...d,
@@ -1209,10 +1237,30 @@ export default function Explore({
             detailDish.restaurant_id
           )}
           onToggleRestaurant={() => toggleRestaurant(detailDish.restaurant_id)}
+          onAddComment={() => {
+            setDetailDish(null);
+            setDishesMention(detailDish);
+            setDishesCommentFilter(null);
+            setDishesTab("comments");
+          }}
+          onViewComments={() => {
+            setDetailDish(null);
+            setDishesMention(null);
+            setDishesCommentFilter(detailDish);
+            setDishesTab("comments");
+          }}
+          commentCount={
+            dishMentionCounts.get(
+              `${detailDish.place_id}:${dishKey(detailDish.name)}`
+            ) || 0
+          }
           onShowMap={() => {
             const placeId = detailDish.place_id;
             setDetailDish(null);
             setDishesFor(null);
+            setDishesTab(null);
+            setDishesMention(null);
+            setDishesCommentFilter(null);
             if (!isDesktop) setView("map");
             if (placeId) setFocus({ id: placeId, ts: Date.now(), source: "card" });
           }}
