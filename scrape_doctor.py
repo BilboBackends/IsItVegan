@@ -207,6 +207,9 @@ def _codex_command(executable: str, output_path: Path) -> list[str]:
         "--ignore-user-config",
         "--ignore-rules",
         "--sandbox", "workspace-write",
+        # With user config ignored, Windows otherwise falls back to a policy
+        # that rejects every shell command (including reads and tests).
+        "-c", 'windows.sandbox="unelevated"',
         "-c", "sandbox_workspace_write.network_access=true",
         "--color", "never",
         "--json",

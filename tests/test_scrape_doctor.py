@@ -44,6 +44,7 @@ def test_codex_prompt_and_command_use_bounded_workspace_access():
     command = scrape_doctor._codex_command("codex", Path("result.txt"))
     assert command[:2] == ["codex", "exec"]
     assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert 'windows.sandbox="unelevated"' in command
     assert "sandbox_workspace_write.network_access=true" in command
     assert "--json" in command and "--output-last-message" in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
