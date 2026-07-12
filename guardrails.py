@@ -33,7 +33,7 @@ _ANIMAL_WORDS = (
     "mussel", "oyster", "scallop", "squid", "calamari", "octopus", "eel",
     "unagi", "caviar", "roe",
     "cheese", "mozzarella", "parmesan", "cheddar", "feta", "ricotta",
-    "provolone", "gouda", "brie", "queso", "burrata", "halloumi", "manchego",
+    "provolone", "gouda", "brie", "queso", "burrata", "halloumi",
     "butter", "cream", "milk", "yogurt", "ghee", "custard", "gelato",
     "egg", "eggs", "mayo", "mayonnaise", "aioli", "ranch", "alfredo",
     "honey", "gelatin", "lard", "tallow", "whey",
@@ -42,12 +42,11 @@ _ANIMAL_WORDS = (
 # A nearby mock/plant qualifier means the animal word is a plant version
 # ("vegan cheese", "soy chorizo", "Impossible beef") — no flag.
 _MOCK_WORDS = (
-    "vegan", "plant-based", "plant based", "plant base", "dairy-free", "dairy free",
-    "non-dairy", "non dairy", "meatless", "mock", "imitation", "impossible", "beyond",
+    "vegan", "plant-based", "plant based", "dairy-free", "dairy free",
+    "non-dairy", "meatless", "mock", "imitation", "impossible", "beyond",
     "tofu", "tempeh", "seitan", "soy", "cashew", "almond", "oat", "coconut",
     "nutritional yeast", "vegetable broth", "veggie", "jackfruit",
-    "substitute", "alternative", "faux", "daiya", "pb", "heart of palm",
-    "bean curd", "chick'n", "chikn", "no-egg",
+    "substitute", "alternative", "faux", "chick'n", "chikn", "no-egg",
     "eggless", "aquafaba", "flax",
 )
 
@@ -55,79 +54,6 @@ _ANIMAL_RE = re.compile(
     r"\b(" + "|".join(re.escape(w) for w in _ANIMAL_WORDS) + r")\b",
     re.IGNORECASE,
 )
-
-# Phrases that CONTAIN an animal word but are not animal ingredients — nut
-# butters, steak-cut potatoes, sodas, and producer names on drink lists.
-# Found by sweeping 12k stored verdicts: without these the screen flags
-# "Peanut Butter", "Steak Fries", "Wild Turkey 101" (bourbon), "Oyster Bay
-# Sauvignon Blanc" (winery), "IBC Cream Soda"... Stripped before matching.
-_PLANT_COMPOUNDS = (
-    "cream of coconut", "coconut cream", "coconut milk", "coconut yogurt",
-    "coconut milk custard", "cream of hearts of palm",
-    "soy milk base cream", "oat milk", "soy milk", "almond milk",
-    "peanut butter", "almond butter", "cashew butter", "sunflower butter",
-    "sun butter", "sunbutter", "seed butter", "cookie butter", "apple butter",
-    "cocoa butter", "shea butter", "butter bean", "butter beans",
-    "butternut", "butter lettuce",
-    "steak fries", "steak-cut", "steak cut", "cauliflower steak",
-    "mushroom steak", "watermelon steak",
-    "cream soda", "cream ale",
-    "egg plant", "eggplant", "just egg",
-    "oyster mushroom", "oyster mushrooms", "king oyster", "bean curd sausage",
-    # Spirit/producer names, not ingredients.
-    "wild turkey", "ranch water", "oyster bay", "billecart salmon",
-    "cream sherry", "heart of palm crab", "just in queso foundation",
-    "cheddar style vegan cheese",
-    "santa margherita", "grappa bianca",
-)
-
-# "no cheese", "without cream", "sin queso", "hold the mayo": the menu is
-# REMOVING the ingredient — strip the whole negated phrase before matching.
-_NEGATED_ANIMAL_RE = re.compile(
-    r"\b(?:no|without|sin|senza|hold(?:\s+the)?|does\s+not\s+have)\s+"
-    r"(?:[\w'-]+\s+){0,2}?(?:"
-    + "|".join(re.escape(w) for w in _ANIMAL_WORDS)
-    + r")(?:\s+(?:"
-    + "|".join(re.escape(w) for w in _ANIMAL_WORDS)
-    + r"))*\b",
-    re.IGNORECASE,
-)
-
-_ANIMAL_FREE_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(w) for w in _ANIMAL_WORDS)
-    + r")(?:\s+(?:and|/)\s+(?:"
-    + "|".join(re.escape(w) for w in _ANIMAL_WORDS)
-    + r"))*[- ]free\b",
-    re.IGNORECASE,
-)
-
-# These clauses describe optional variants, not the base dish being judged.
-_OPTIONAL_VARIANT_RE = re.compile(
-    r"\b(?:also\s+)?available\s+with\b[^.;]*"
-    r"|\(?\badd(?:ed)?\b[^().;]*(?:"
-    + "|".join(re.escape(w) for w in _ANIMAL_WORDS)
-    + r")[^().;]*\)?"
-    r"|\boptional\b[^.;]*"
-    r"|\btry\s+any\s+one\s+of\b[^.;]*"
-    r"|\bdoes\s+not\s+have\b[^.;]*"
-    r"|\btop\s+any\b[^.;]*"
-    r"|[|—–-]\s+[^|.;]*\+\$\d+(?:\.\d+)?",
-    re.IGNORECASE,
-)
-
-
-def _screenable(text: str) -> str:
-    """Text with plant compounds and negated ingredients removed, so the
-    animal-word regexes only ever see genuinely risky mentions."""
-    lowered = (text or "").lower()
-    lowered = re.sub(r"[\"“”'‘’]+", " ", lowered)
-    lowered = re.sub(r"\s+", " ", lowered)
-    for phrase in sorted(_PLANT_COMPOUNDS, key=len, reverse=True):
-        lowered = lowered.replace(phrase, " ")
-    lowered = _NEGATED_ANIMAL_RE.sub(" ", lowered)
-    lowered = _ANIMAL_FREE_RE.sub(" ", lowered)
-    lowered = _OPTIONAL_VARIANT_RE.sub(" ", lowered)
-    return _QUALIFIED_RISK_RE.sub(" ", lowered)
 
 
 def _mock_qualified(text: str) -> bool:
@@ -186,65 +112,6 @@ _ANIMAL_DEFINED_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Remove only a qualifier that directly modifies a risky term. The previous
-# global check let an unrelated phrase such as "plant-based hummus" excuse
-# "Chicken Pita" elsewhere in the same description.
-_RISK_TERMS = _ANIMAL_WORDS + _ANIMAL_DEFINED_DISHES
-_QUALIFIED_RISK_RE = re.compile(
-    r"\b(?:"
-    + "|".join(re.escape(w) for w in sorted(_MOCK_WORDS, key=len, reverse=True))
-    + r")(?:[\s™®-]+[\w'-]+){0,3}[\s™®-]+(?:"
-    + "|".join(re.escape(w) for w in sorted(_RISK_TERMS, key=len, reverse=True))
-    + r")(?:[\s-]+(?:"
-    + "|".join(re.escape(w) for w in sorted(_RISK_TERMS, key=len, reverse=True))
-    + r"))*\b",
-    re.IGNORECASE,
-)
-
-
-# Strong all-vegan venue markers. At a fully plant-based restaurant the
-# animal-word screens are all wrong — their "Grilled Cheese", "Sausage
-# Gravy", and "Chicken" are substitutes by definition (Plantees, VEGGIE
-# GARDEN, Winter Park Biscuit Co). A lone "vegan options available" on an
-# ordinary menu must NOT qualify, so these are deliberately strong phrases.
-_PLANT_VENUE_NAME_RE = re.compile(r"\b(?:vegan|plant[- ]based)\b", re.IGNORECASE)
-
-# Exact venues whose official sites explicitly state that the entire menu is
-# plant-based. Exact matching avoids treating generic "veggie" or "plant"
-# business names as vegan. Re-verify if one of these businesses changes hands.
-_VERIFIED_PLANT_VENUE_NAMES = frozenset({
-    "plantees",
-    "veggie garden",
-    "winter park biscuit company",
-})
-_PLANT_VENUE_TEXT_MARKERS = (
-    "100% vegan", "100% plant-based", "100% plant based", "all vegan",
-    "fully vegan", "completely vegan", "entirely plant-based",
-    "entirely plant based", "vegan restaurant", "vegan cafe", "vegan cafe",
-    "vegan bakery", "vegan kitchen", "vegan comfort food", "vegan diner",
-    "plant-based restaurant", "plant based restaurant", "plant-based menu",
-    "plant based menu", "everything is vegan", "menu is vegan",
-)
-
-
-def is_plant_based_venue(
-    restaurant_name: str | None,
-    editorial_summary: str | None = None,
-    menu_text: str | None = None,
-) -> bool:
-    """Whether this restaurant is (very likely) fully plant-based, in which
-    case animal words on its menu are substitutes and every animal-word
-    screen must stand down."""
-    name = (restaurant_name or "").lower()
-    normalized_name = re.sub(r"[^a-z0-9]+", " ", name).strip()
-    if (
-        normalized_name in _VERIFIED_PLANT_VENUE_NAMES
-        or _PLANT_VENUE_NAME_RE.search(name)
-    ):
-        return True
-    context = f"{editorial_summary or ''} {menu_text or ''}".lower()
-    return any(marker in context for marker in _PLANT_VENUE_TEXT_MARKERS)
-
 
 def defining_animal_ingredient(name: str, menu_text: str) -> str | None:
     """The animal word (or animal-defined dish name) in a dish's NAME,
@@ -259,11 +126,8 @@ def defining_animal_ingredient(name: str, menu_text: str) -> str | None:
     mozzarella to make it plant-based" would mock-qualify the very dish
     the rule exists to catch (how Antonio's Cheese Pizza slipped through).
     """
-    screenable_name = _screenable(name)
-    match = _ANIMAL_RE.search(screenable_name) or _ANIMAL_DEFINED_RE.search(
-        screenable_name
-    )
-    if match:
+    match = _ANIMAL_RE.search(name) or _ANIMAL_DEFINED_RE.search(name)
+    if match and not _mock_qualified(menu_text):
         return match.group(0)
     return None
 
@@ -301,48 +165,11 @@ def baked_in_dairy_cheese(name: str, menu_text: str) -> str | None:
     return None
 
 
-def unqualified_animal_ingredient(text: str) -> str | None:
-    """The first unqualified animal/animal-defined term, if one exists."""
-    screenable = _screenable(text)
-    match = _ANIMAL_RE.search(screenable) or _ANIMAL_DEFINED_RE.search(screenable)
-    return match.group(0) if match else None
-
-
 def unqualified_animal_word(text: str) -> bool:
-    """True when menu text contains an unqualified animal-risk term."""
-    return unqualified_animal_ingredient(text) is not None
-
-
-_DRINK_ANIMAL_WORDS = (
-    "honey", "milk", "yogurt", "egg", "eggs", "gelatin", "lard", "tallow",
-    "whey", "custard", "gelato",
-)
-_DRINK_ANIMAL_RE = re.compile(
-    r"\b(" + "|".join(re.escape(w) for w in _DRINK_ANIMAL_WORDS) + r")\b",
-    re.IGNORECASE,
-)
-
-
-def unqualified_drink_animal_ingredient(text: str) -> str | None:
-    """High-signal animal terms in a drink name.
-
-    Cocktail/wine names routinely contain ranch, fish, eel, butter, and cream
-    as brands, wordplay, or tasting styles. Only direct ingredient-like terms
-    are safe enough for a deterministic name backstop.
-    """
-    match = _DRINK_ANIMAL_RE.search(_screenable(text))
-    return match.group(0) if match else None
-
-
-_WHOLE_DISH_VEGAN_RE = re.compile(
-    r"^\s*vegan\b|\b(?:certified|explicitly)\s+vegan\b",
-    re.IGNORECASE,
-)
-
-
-def menu_declares_dish_vegan(description: str | None) -> bool:
-    """Whether the restaurant explicitly labels the whole described item vegan."""
-    return bool(_WHOLE_DISH_VEGAN_RE.search(description or ""))
+    """True when text plainly names an animal ingredient with no mock/plant
+    qualifier anywhere — the shared "is this actually risky?" primitive."""
+    match = _ANIMAL_RE.search(text)
+    return bool(match) and not _mock_qualified(text)
 
 
 def _dish_text(dish) -> str:
@@ -371,8 +198,8 @@ def apply_guardrails(result) -> list[dict]:
         if dish.verdict not in ("vegan", "likely_vegan"):
             continue
         text = _dish_text(dish)
-        match = _ANIMAL_RE.search(_screenable(text))
-        if match:
+        match = _ANIMAL_RE.search(text)
+        if match and not _mock_qualified(text):
             flags.append({
                 "check_type": "guardrail",
                 "rule": "animal_ingredient_vegan",

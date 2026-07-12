@@ -46,8 +46,7 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 - **Frontend:** React + Vite, Tailwind
 - **LLM:** DeepSeek is the sole menu-classification provider. Both the default
   and `auto` resolve to DeepSeek, with no fallback to Claude, Codex, or
-  Anthropic. Deterministic animal-ingredient guardrails are always enforced;
-  their run-level flags and audit trail are enabled by default.
+  Anthropic. Automatic model audits and guardrail downgrades are disabled.
   Large menus may be chunked across multiple DeepSeek calls to stay within
   response limits. Do NOT introduce LangChain/RAG scaffolding — this is a structured
   extraction problem, not a retrieval problem, and direct calls with
@@ -77,10 +76,10 @@ Each verdict must store: `confidence` (0–1), `reasoning` (short text), and
 ## Classifier Policy
 
 DeepSeek always performs menu classification. There is no automatic provider
-fallback or secondary-model trust loop. A deterministic hard rule prevents
-vegan/likely-vegan verdicts when unqualified animal ingredients appear, and
-run-level guardrail flags are recorded for monitoring. Automated model spot
-checks and learned-correction prompt injection remain off.
+fallback and no classifier trust-loop: guardrail downgrades, spot checks,
+learned-correction prompt injection, and classifier audit recording are off.
+The legacy audit tables and helper modules remain for historical data and
+migration compatibility, but they are not part of normal runs.
 
 ## Data Model
 

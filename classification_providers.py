@@ -58,9 +58,9 @@ _BILLING = {
     "deepseek": "deepseek_api",
 }
 
-# No provider triggers secondary-model spot checks or learned prompt
-# corrections. Deterministic safety rules live in classifier.py and apply to
-# every provider regardless of this legacy compatibility set.
+# Automatic classifier audits are disabled. Keep the name for compatibility
+# with the classification path, where an empty set means no prompt correction,
+# guardrail downgrade, or audit record is produced.
 UNTRUSTED_PROVIDERS = frozenset()
 
 # DeepSeek's response-size limit still benefits from proactive menu chunking.

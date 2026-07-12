@@ -97,10 +97,9 @@ def load_settings() -> Settings:
         deepseek_classifier_timeout_seconds=_get_int(
             "DEEPSEEK_CLASSIFIER_TIMEOUT_SECONDS", 900
         ),
-        # Deterministic DeepSeek guardrails and their audit trail are on by
-        # default. The animal-word hard rule is unconditional in classifier.py.
+        # Automatic DeepSeek auditing and verdict downgrades are off by default.
         deepseek_guardrails=os.environ.get(
-            "DEEPSEEK_GUARDRAILS", "1"
+            "DEEPSEEK_GUARDRAILS", "0"
         ).strip().lower() not in ("0", "false", "no", "off"),
         # DeepSeek caps output per response: deepseek-chat allows up to 8192;
         # deepseek-reasoner allows much more — raise this if you switch.

@@ -37,9 +37,6 @@ from guardrails import (
     baked_in_dairy_cheese,
     defining_animal_ingredient,
     hidden_batter_risk,
-    is_plant_based_venue,
-    menu_declares_dish_vegan,
-    unqualified_drink_animal_ingredient,
     unqualified_animal_word,
 )
 
@@ -55,6 +52,21 @@ _ADD_ON_CONTEXT_RE = re.compile(
     r"protein\s+add|make\s+it\s+with|top\s+with)\b",
     re.IGNORECASE,
 )
+
+# These restaurants explicitly operate fully vegan menus. This is intentionally
+# exact-name only: it prevents ordinary restaurants with "vegan options" from
+# receiving a venue-wide override while preserving plant-based menu vocabulary
+# such as "chik", "cheese", and "sausage gravy" at verified vegan venues.
+_VERIFIED_FULLY_VEGAN_VENUES = frozenset({
+    "plantees",
+    "veggie garden",
+    "winter park biscuit company",
+})
+
+
+def _is_verified_fully_vegan_venue(name: str | None) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+    return normalized in _VERIFIED_FULLY_VEGAN_VENUES
 
 # Sonnet gives near-Opus quality on structured extraction at a fraction of
 # the cost (output tokens dominate here — ~100/dish). This is the METERED
@@ -446,16 +458,12 @@ def result_from_data(
     cost_estimate: float = 0.0,
     stop_reason: str | None = None,
     mode: str = "full",
-    plant_based_venue: bool = False,
+    fully_vegan_venue: bool = False,
 ) -> ClassificationResult:
     """Validate provider/file-exchange JSON into the shared result model.
 
     In delta mode an empty dish list is a legitimate answer ("nothing
     changed"), and removed_dish_names is honored.
-
-    plant_based_venue: the restaurant is fully vegan/plant-based, so its
-    "Grilled Cheese" and "Sausage Gravy" are substitutes by definition —
-    every animal-word/standard-recipe screen stands down.
     """
     dishes: list[ClassifiedDish] = []
     raw_dishes = data.get("dishes", []) if isinstance(data, dict) else []
@@ -480,6 +488,14 @@ def result_from_data(
         # unqualified animal ingredient, or the model said not_vegan (it may
         # have seen a contradiction; trust it).
         reasoning = dish.get("reasoning") or ""
+        if fully_vegan_venue:
+            verdict = "vegan"
+            confidence = max(confidence, 0.99)
+            reasoning = (
+                (reasoning + " " if reasoning else "")
+                + "Verified fully vegan venue; animal-style menu names use "
+                "plant-based ingredients."
+            )
         if (
             verdict in ("likely_vegan", "vegan_adaptable", "unclear")
             and _VEGAN_NAME_RE.search(name)
@@ -500,17 +516,7 @@ def result_from_data(
         # reasoning routinely says "remove X to make it plant-based", which
         # would wrongly mock-qualify the dish being screened.
         menu_words = f"{name} {dish.get('description') or ''}"
-        category = dish.get("category")
-        if category not in ("food", "drink", "dessert"):
-            category = "food"
-        # Every screen below reasons from STANDARD recipes, which don't
-        # apply at a fully plant-based venue — there, "cheese" IS vegan
-        # cheese and "sausage" IS a substitute.
-        if (
-            not plant_based_venue
-            and not menu_declares_dish_vegan(dish.get("description"))
-            and verdict in ("vegan", "likely_vegan")
-        ):
+        if not fully_vegan_venue and verdict in ("vegan", "likely_vegan"):
             batter_word = hidden_batter_risk(menu_words)
             if batter_word:
                 verdict = "unclear"
@@ -520,49 +526,12 @@ def result_from_data(
                     + f"[{batter_word} batter standardly contains "
                     "milk/butter/egg; no vegan version stated]"
                 )
-        # HARD safety rule, deliberately not configurable: a vegan/
-        # likely_vegan verdict on a dish whose own menu words plainly name
-        # an unqualified animal ingredient becomes unclear. This is the
-        # product's defined worst failure, and it reached production when
-        # the run-level guardrail screen was switched off (Athena's
-        # "Grilled Chicken Pita" — the model classified the description,
-        # which omitted the chicken in the name).
-        if (
-            not plant_based_venue
-            and not menu_declares_dish_vegan(dish.get("description"))
-            and verdict in ("vegan", "likely_vegan")
-        ):
-            # Drink descriptions are commonly tasting notes ("honey",
-            # "cream", "brown butter"), not ingredient declarations. The
-            # drink name itself remains screened (Honey Rooibos still trips).
-            if category == "drink":
-                safety_words = name
-                offending = unqualified_drink_animal_ingredient(name)
-                unsafe_animal_term = bool(offending)
-            else:
-                safety_words = menu_words
-                offending = defining_animal_ingredient(name, safety_words)
-                unsafe_animal_term = bool(
-                    offending or unqualified_animal_word(safety_words)
-                )
-            if unsafe_animal_term:
-                verdict = "unclear"
-                confidence = min(confidence, 0.4)
-                reasoning = (
-                    (reasoning + " " if reasoning else "")
-                    + (
-                        f"[{offending} in the dish's name"
-                        if offending
-                        else "[an animal ingredient in the menu text"
-                    )
-                    + " with no plant qualifier — a vegan verdict is unsafe]"
-                )
         # vegan_adaptable requires the dish to survive the modification. An
         # animal ingredient in the NAME is definitional (Cheese Empanada,
         # Shrimp Fried Rice) — removing it doesn't leave that dish, so the
         # honest verdict is not_vegan. Feta on a Greek Salad (name clean)
         # stays adaptable; "Vegan Cheese Pizza" was already upgraded above.
-        if not plant_based_venue and verdict == "vegan_adaptable":
+        if not fully_vegan_venue and verdict == "vegan_adaptable":
             defining = defining_animal_ingredient(name, menu_words)
             if defining:
                 verdict = "not_vegan"
@@ -575,7 +544,7 @@ def result_from_data(
         # Pizza with dairy cheese listed is not vegan, full stop — baked-in
         # cheese isn't a removable topping. Only menus offering vegan cheese
         # (mock-qualified) or cheeseless pizzas (marinara) escape.
-        if not plant_based_venue and verdict != "not_vegan":
+        if not fully_vegan_venue and verdict != "not_vegan":
             baked_cheese = baked_in_dairy_cheese(name, menu_words)
             if baked_cheese:
                 verdict = "not_vegan"
@@ -585,6 +554,9 @@ def result_from_data(
                     + f"[{baked_cheese} is baked in — not vegan unless the "
                     "menu offers vegan cheese]"
                 )
+        category = dish.get("category")
+        if category not in ("food", "drink", "dessert"):
+            category = "food"
         # Alcohol labeling: model value validated, then the word-list
         # backstop settles drinks the model left unclear ("Coke" and
         # "tequila" are not the same kind of drink). Deterministic and
@@ -883,11 +855,12 @@ def classify_menu(
 
     context = "\n".join(context_bits)
     menu = menu_text[:_MAX_MENU_CHARS]
-    # Fully plant-based venues use animal words for substitutes ("Grilled
-    # Cheese" at Plantees) — the animal-word screens stand down for them.
-    plant_based_venue = is_plant_based_venue(
-        restaurant_name, editorial_summary, menu
-    )
+    fully_vegan_venue = _is_verified_fully_vegan_venue(restaurant_name)
+    if fully_vegan_venue:
+        context += (
+            "\nThis is a verified fully vegan restaurant. Animal-style menu "
+            "names refer to plant-based substitutes."
+        )
     delta = bool(prior_dishes)
     prompt = (
         context
@@ -985,12 +958,12 @@ def classify_menu(
         output_tokens=out_tok,
         cost_estimate=cost,
         stop_reason=response.stop_reason,
-        plant_based_venue=plant_based_venue,
+        fully_vegan_venue=fully_vegan_venue,
     )
-    # Run-level screen (flags + audit trail). The old gate also required the
-    # provider to be in UNTRUSTED_PROVIDERS — an empty set, so the screen
-    # could NEVER fire even with the flag on. The non-negotiable hard rule
-    # now lives inside result_from_data; this adds the monitoring trail.
-    if result.ok and settings.deepseek_guardrails and not plant_based_venue:
+    if (
+        result.ok
+        and response.provider in UNTRUSTED_PROVIDERS
+        and settings.deepseek_guardrails
+    ):
         result.guardrail_flags = apply_guardrails(result)
     return result

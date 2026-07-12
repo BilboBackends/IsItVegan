@@ -309,10 +309,9 @@ certification. Anthropic defaults to Claude Sonnet; override it with
 Classification uses DeepSeek exclusively (`classification_providers.py`).
 `CLASSIFIER_PROVIDER=deepseek` is the default; `auto` is an alias for the same
 single-provider behavior. A DeepSeek failure stops that classification instead
-of silently falling back to Claude, Codex, or Anthropic. Deterministic
-animal-ingredient guardrails are always enforced and their flags are audited;
-secondary-model spot checks and learned-correction injection remain disabled.
-Large menus are still split into bounded chunks before being sent to
+of silently falling back to Claude, Codex, or Anthropic. Automatic classifier
+guardrails, spot checks, learned-correction injection, and audit records are
+disabled. Large menus are still split into bounded chunks before being sent to
 DeepSeek; that is response-size handling, not a second classifier or audit.
 
 Admin classification runs—including a single restaurant's **reclassify**
