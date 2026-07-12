@@ -23,12 +23,12 @@ export const GOOGLE_AUTH_ENABLED =
 const COMMENT_AUTH_RETURN_KEY = "dishtune:commentAuthReturn";
 const COMMENT_AUTH_RETURN_MAX_AGE = 60 * 60 * 1000;
 
-export function rememberCommentAuthReturn(placeId) {
+export function rememberCommentAuthReturn(placeId, dishName = null) {
   if (!placeId) return;
   try {
     window.localStorage.setItem(
       COMMENT_AUTH_RETURN_KEY,
-      JSON.stringify({ placeId, createdAt: Date.now() })
+      JSON.stringify({ placeId, dishName, createdAt: Date.now() })
     );
   } catch {
     // The query-string fallback still works when storage is unavailable.
@@ -48,7 +48,7 @@ export function pendingCommentAuthReturn() {
       window.localStorage.removeItem(COMMENT_AUTH_RETURN_KEY);
       return null;
     }
-    return value.placeId;
+    return { placeId: value.placeId, dishName: value.dishName || null };
   } catch {
     return null;
   }
@@ -340,6 +340,7 @@ export async function fetchComments(placeId) {
 // caps the response at 1000 rows); switch to a count() aggregate or a view
 // when threads outgrow that.
 let commentCountsCache = { at: 0, map: null };
+let dishMentionCountsCache = { at: 0, map: null };
 
 export async function fetchCommentCounts() {
   if (!CLOUD_ENABLED) return new Map();
@@ -353,6 +354,35 @@ export async function fetchCommentCounts() {
     map.set(row.place_id, (map.get(row.place_id) || 0) + 1);
   }
   commentCountsCache = { at: Date.now(), map };
+  return map;
+}
+
+// `${place_id}:${dish_key}` -> number of comments that @mention that dish.
+// The structured mentions array makes this stable even when numeric dish ids
+// change after a menu refresh.
+export async function fetchDishMentionCounts() {
+  if (!CLOUD_ENABLED) return new Map();
+  if (
+    dishMentionCountsCache.map &&
+    Date.now() - dishMentionCountsCache.at < 60_000
+  ) {
+    return dishMentionCountsCache.map;
+  }
+  const client = await getClient();
+  const { data, error } = await client
+    .from("comments")
+    .select("place_id, mentions")
+    .limit(1000);
+  if (error) throw new Error(error.message);
+  const map = new Map();
+  for (const row of data || []) {
+    for (const mention of row.mentions || []) {
+      if (!mention?.dish_key) continue;
+      const key = `${row.place_id}:${mention.dish_key}`;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+  }
+  dishMentionCountsCache = { at: Date.now(), map };
   return map;
 }
 
@@ -370,6 +400,8 @@ export async function postComment(placeId, body, mentions, userId) {
     .single();
   if (error) throw new Error(error.message);
   commentCountsCache.at = 0; // card chips refresh on next fetch
+  dishMentionCountsCache.at = 0;
+  window.dispatchEvent(new Event("dishtune:comments-changed"));
   const [withName] = await attachDisplayNames(client, [data]);
   return withName;
 }
@@ -379,6 +411,8 @@ export async function deleteComment(commentId) {
   const { error } = await client.from("comments").delete().eq("id", commentId);
   if (error) throw new Error(error.message);
   commentCountsCache.at = 0;
+  dishMentionCountsCache.at = 0;
+  window.dispatchEvent(new Event("dishtune:comments-changed"));
 }
 
 export async function reportComment(commentId, userId) {

@@ -26,6 +26,8 @@ export default function Comments({
   // modal's tab badge) owns the state and passes both down.
   comments: controlledComments,
   onCommentsChange,
+  initialMention = null,
+  filterDish = null,
 }) {
   const session = useContext(SessionContext);
   const controlled = controlledComments !== undefined;
@@ -40,6 +42,7 @@ export default function Comments({
   const [authBusy, setAuthBusy] = useState(false);
   const [authSent, setAuthSent] = useState(false);
   const [authError, setAuthError] = useState(null);
+  const [activeDishFilter, setActiveDishFilter] = useState(filterDish);
   const textareaRef = useRef(null);
 
   const placeId = restaurant?.place_id;
@@ -61,8 +64,35 @@ export default function Comments({
     return () => window.cancelAnimationFrame(frame);
   }, [session?.user]);
 
+  useEffect(() => {
+    setActiveDishFilter(filterDish || null);
+  }, [filterDish]);
+
+  useEffect(() => {
+    const name =
+      typeof initialMention === "string"
+        ? initialMention
+        : initialMention?.name;
+    if (!name) return;
+    const key = dishKey(name);
+    setBody((current) =>
+      current.includes(`@${name}`) ? current : `@${name} ${current}`
+    );
+    setMentions((current) =>
+      current.some((mention) => mention.dish_key === key)
+        ? current
+        : [...current, { dish_key: key, dish_name: name }]
+    );
+    const frame = window.requestAnimationFrame(() => textareaRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [initialMention]);
+
   function returnToCommentsUrl() {
-    rememberCommentAuthReturn(placeId);
+    const mentionName =
+      typeof initialMention === "string"
+        ? initialMention
+        : initialMention?.name;
+    rememberCommentAuthReturn(placeId, mentionName);
     const url = new URL(window.location.href);
     url.searchParams.set("comments", placeId);
     // Supabase's browser OAuth flow uses the fragment for session tokens.
@@ -191,6 +221,19 @@ export default function Comments({
 
   if (!CLOUD_ENABLED || !placeId) return null;
 
+  const filterName =
+    typeof activeDishFilter === "string"
+      ? activeDishFilter
+      : activeDishFilter?.name;
+  const filterKey = filterName ? dishKey(filterName) : null;
+  const visibleComments = filterKey
+    ? (comments || []).filter((comment) =>
+        (comment.mentions || []).some(
+          (mention) => mention.dish_key === filterKey
+        )
+      )
+    : comments || [];
+
   return (
     <section>
       <h3 className="text-sm font-bold text-stone-800">
@@ -204,6 +247,21 @@ export default function Comments({
           tips · reviews · chat
         </span>
       </h3>
+
+      {filterKey && (
+        <div className="mt-2 flex items-center justify-between gap-3 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-800">
+          <span className="min-w-0 truncate font-semibold">
+            Tips mentioning @{filterName}
+          </span>
+          <button
+            type="button"
+            onClick={() => setActiveDishFilter(null)}
+            className="shrink-0 font-bold hover:underline"
+          >
+            Show all buzz
+          </button>
+        </div>
+      )}
 
       {session?.user ? (
         <form onSubmit={submit} className="relative mt-2">
@@ -253,6 +311,15 @@ export default function Comments({
               ? "Continue with Google, or use your email to get a secure sign-in link."
               : "Use your email to get a secure sign-in link and join the conversation."}
           </p>
+          {initialMention && (
+            <p className="mt-1 text-xs font-semibold text-sky-700">
+              After signing in, your tip will mention @{
+                typeof initialMention === "string"
+                  ? initialMention
+                  : initialMention.name
+              }.
+            </p>
+          )}
           {authSent ? (
             <div className="mt-3 rounded-lg bg-white px-3 py-2 text-xs text-stone-600">
               <div className="font-bold text-emerald-700">Check your email 📬</div>
@@ -319,7 +386,12 @@ export default function Comments({
             No tips yet — be the first.
           </div>
         )}
-        {(comments || []).map((comment) => (
+        {filterKey && comments?.length > 0 && visibleComments.length === 0 && (
+          <div className="text-xs text-stone-400">
+            No tips mention this dish yet.
+          </div>
+        )}
+        {visibleComments.map((comment) => (
           <div key={comment.id} className="rounded-xl bg-stone-50 px-3 py-2">
             <div className="flex items-baseline justify-between gap-2">
               <span className="text-xs font-bold text-stone-700">

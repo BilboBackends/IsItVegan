@@ -288,6 +288,7 @@ export default function Explore({
   const [dishesFilter, setDishesFilter] = useState("all");
   // "comments" opens the menu modal straight on its Tips tab (💬 chip).
   const [dishesTab, setDishesTab] = useState(null);
+  const [dishesMention, setDishesMention] = useState(null);
   // place_id -> comment count for the card chips; empty map when the
   // account backend isn't configured.
   const [commentCounts, setCommentCounts] = useState(null);
@@ -339,8 +340,9 @@ export default function Explore({
   useEffect(() => {
     if (commentsReturnHandledRef.current || restaurants.length === 0) return;
     const url = new URL(window.location.href);
+    const storedReturn = pendingCommentAuthReturn();
     const returnPlaceId =
-      url.searchParams.get("comments") || pendingCommentAuthReturn();
+      url.searchParams.get("comments") || storedReturn?.placeId;
     if (!returnPlaceId) return;
     const target = restaurants.find(
       (restaurant) => restaurant.place_id === returnPlaceId
@@ -353,6 +355,7 @@ export default function Explore({
     clearCommentAuthReturn();
     setDishesFilter("all");
     setDishesTab("comments");
+    setDishesMention(storedReturn?.dishName || null);
     setDishesFor(target);
     url.searchParams.delete("comments");
     window.history.replaceState(null, "", url.toString());
@@ -1167,9 +1170,11 @@ export default function Explore({
           onClose={() => {
             setDishesFor(null);
             setDishesTab(null);
+            setDishesMention(null);
           }}
           initialFilter={dishesFilter}
           initialTab={dishesTab}
+          initialMention={dishesMention}
           onOpenDish={(d) =>
             setDetailDish({
               ...d,

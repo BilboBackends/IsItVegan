@@ -33,6 +33,9 @@ export default function DishDetail({
   onToggleFavorite,
   restaurantFavorite,
   onToggleRestaurant,
+  onAddTip,
+  onViewTips,
+  tipCount = 0,
   // Canonical link for sharing. Hosts that open this panel WITHOUT a dish
   // deep-link in the address bar (the Restaurants tab) pass the #dishes
   // deep-link so recipients still land on the dish.
@@ -224,6 +227,22 @@ export default function DishDetail({
           </section>
 
           <div className="flex flex-wrap gap-2">
+            {onAddTip && (
+              <button
+                onClick={onAddTip}
+                className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:border-sky-400"
+              >
+                Add tip
+              </button>
+            )}
+            {onViewTips && tipCount > 0 && (
+              <button
+                onClick={onViewTips}
+                className="rounded-full border border-sky-200 bg-white px-4 py-2 text-sm font-bold text-sky-700 hover:border-sky-400"
+              >
+                View {tipCount} tip{tipCount === 1 ? "" : "s"}
+              </button>
+            )}
             <button onClick={share} className="rounded-full border border-stone-300 bg-white px-4 py-2 text-sm font-bold text-stone-700 hover:border-emerald-600">
               {copied ? "Link copied" : "Share dish"}
             </button>

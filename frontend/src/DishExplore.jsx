@@ -27,6 +27,13 @@ import {
   parseDishQuery,
 } from "./dishSearch.js";
 import { loadDishes } from "./dishData.js";
+import {
+  CLOUD_ENABLED,
+  dishKey,
+  fetchDishMentionCounts,
+  registerRestaurants,
+} from "./cloud.js";
+import { apiUrl } from "./staticData.js";
 
 const MAITLAND = { lat: 28.6278, lng: -81.3631 };
 const RESULTS_PAGE_SIZE = 120;
@@ -121,6 +128,11 @@ export default function DishExplore({
   const [originLabel, setOriginLabel] = useState("Maitland");
   const [selectedDishId, setSelectedDishId] = useState(null);
   const [menuRestaurant, setMenuRestaurant] = useState(null);
+  const [menuCommentTarget, setMenuCommentTarget] = useState(null);
+  const [dishMentionCounts, setDishMentionCounts] = useState(() => new Map());
+  const [restaurantDirectory, setRestaurantDirectory] = useState(
+    () => new Map()
+  );
   const [mobileView, setMobileView] = useState("list");
   // Keep the sidebar expanded once there is room for it. The map/list split
   // waits until a wider breakpoint so neither pane becomes cramped.
@@ -165,14 +177,45 @@ export default function DishExplore({
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    fetch(apiUrl("/api/restaurants"))
+      .then((response) => (response.ok ? response.json() : { restaurants: [] }))
+      .then((data) => {
+        const list = data.restaurants || [];
+        registerRestaurants(list);
+        setRestaurantDirectory(
+          new Map(list.map((item) => [item.id, item]))
+        );
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!CLOUD_ENABLED) return;
+    const refresh = () => {
+      fetchDishMentionCounts()
+        .then(setDishMentionCounts)
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener("dishtune:comments-changed", refresh);
+    return () =>
+      window.removeEventListener("dishtune:comments-changed", refresh);
+  }, []);
+
   const restaurants = useMemo(() => {
     const byId = new Map();
     for (const dish of dishes) {
       let item = byId.get(dish.restaurant_id);
       if (!item) {
+        const directoryItem = restaurantDirectory.get(dish.restaurant_id);
         item = {
           id: dish.restaurant_id,
           name: dish.restaurant_name,
+          place_id: directoryItem?.place_id || dish.place_id,
+          address: dish.address,
+          website_url: dish.website_url,
+          primary_type: dish.primary_type,
           rating: dish.rating,
           user_rating_count: dish.user_rating_count,
           open_now: dish.open_now,
@@ -190,7 +233,7 @@ export default function DishExplore({
       }
     }
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [dishes]);
+  }, [dishes, restaurantDirectory]);
 
   const restaurantById = useMemo(
     () => new Map(restaurants.map((item) => [item.id, item])),
@@ -227,13 +270,15 @@ export default function DishExplore({
     () =>
       dishes.map((dish) => ({
         ...dish,
+        place_id:
+          dish.place_id || restaurantDirectory.get(dish.restaurant_id)?.place_id,
         distance:
           dish.lat != null && dish.lng != null
             ? haversineMiles(origin, { lat: dish.lat, lng: dish.lng })
             : null,
         priceValue: parsePriceValue(dish.price),
       })),
-    [dishes, origin]
+    [dishes, origin, restaurantDirectory]
   );
 
   // Keep typing responsive while React computes a result set for the latest
@@ -627,7 +672,10 @@ export default function DishExplore({
           menuButton.textContent = "See dishes →";
           menuButton.style.cssText =
             "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-          menuButton.onclick = () => setMenuRestaurant(item.restaurant);
+          menuButton.onclick = () => {
+            setMenuCommentTarget(null);
+            setMenuRestaurant(item.restaurant);
+          };
           row.append(menuButton);
         }
         actions.append(row);
@@ -715,6 +763,23 @@ export default function DishExplore({
 
   function openDish(dish) {
     window.location.hash = `dishes?dish=${dish.id}`;
+  }
+
+  function tipCountForDish(dish) {
+    return (
+      dishMentionCounts.get(`${dish.place_id}:${dishKey(dish.name)}`) || 0
+    );
+  }
+
+  function openDishComments(dish, mode = "add") {
+    const targetRestaurant = restaurantById.get(dish.restaurant_id);
+    if (!targetRestaurant?.place_id) return;
+    if (selectedDishId != null) {
+      window.history.replaceState(null, "", `${window.location.pathname}#dishes`);
+      setSelectedDishId(null);
+    }
+    setMenuCommentTarget({ dish, mode });
+    setMenuRestaurant(targetRestaurant);
   }
 
   function closeDish() {
@@ -1310,6 +1375,24 @@ export default function DishExplore({
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+                          {CLOUD_ENABLED && dish.place_id && (
+                            <button
+                              type="button"
+                              onClick={() => openDishComments(dish, "add")}
+                              className="font-bold text-sky-700 hover:underline"
+                            >
+                              Add tip
+                            </button>
+                          )}
+                          {tipCountForDish(dish) > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => openDishComments(dish, "view")}
+                              className="font-bold text-sky-700 hover:underline"
+                            >
+                              View {tipCountForDish(dish)} tip{tipCountForDish(dish) === 1 ? "" : "s"}
+                            </button>
+                          )}
                           <button
                             onClick={() => toggleRestaurantFilter(dish.restaurant_id)}
                             className="font-semibold text-emerald-700 hover:underline"
@@ -1378,13 +1461,27 @@ export default function DishExplore({
           onToggleFavorite={() => toggleDish(selectedDish.id)}
           restaurantFavorite={favorites.restaurants.includes(selectedDish.restaurant_id)}
           onToggleRestaurant={() => toggleRestaurant(selectedDish.restaurant_id)}
+          onAddTip={() => openDishComments(selectedDish, "add")}
+          onViewTips={() => openDishComments(selectedDish, "view")}
+          tipCount={tipCountForDish(selectedDish)}
         />
       )}
 
       {menuRestaurant && (
         <DishModal
           restaurant={menuRestaurant}
-          onClose={() => setMenuRestaurant(null)}
+          onClose={() => {
+            setMenuRestaurant(null);
+            setMenuCommentTarget(null);
+          }}
+          onOpenDish={openDish}
+          initialTab={menuCommentTarget ? "comments" : null}
+          initialMention={
+            menuCommentTarget?.mode === "add" ? menuCommentTarget.dish : null
+          }
+          initialCommentFilter={
+            menuCommentTarget?.mode === "view" ? menuCommentTarget.dish : null
+          }
         />
       )}
     </div>
