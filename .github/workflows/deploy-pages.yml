@@ -34,7 +34,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_STATIC_DATA: "1"
-          # Custom domain (www.dishtune.com, via public/CNAME) serves the
+          # Custom domain (dishtune.com, via public/CNAME) serves the
           # site at the domain root, so the Vite base stays "/". The old
           # /IsItVegan/ base only applied to the github.io project URL.
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
