@@ -237,6 +237,14 @@ evidence stops changing, or at the pass limit. Failed attempts preserve the
 last validated menu. Repaired restaurant IDs are printed for change-aware
 reclassification.
 
+The Admin **Scrape failures** panel also offers `Claude fix` and `Codex fix`.
+Either launches the same bounded Scrape Doctor workflow for one restaurant:
+load stored evidence, reproduce with the real scraper, investigate the live
+site, make only a generic scraper fix, add a regression test, run the full
+suite plus live verification, and commit without pushing. Runs require a clean
+git worktree and share a one-job lock. The backend disables Flask auto-reload
+so an agent editing Python cannot terminate its own job.
+
 When keyword matching finds no menu link, a cheap LLM navigator (Claude Haiku)
 picks the menu link from all the page's links — catching non-obvious labels
 ("Bill of Fare", "View Our Menu") the keyword list misses. Menu links that

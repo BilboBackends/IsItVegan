@@ -427,10 +427,12 @@ def ingest_status() -> object:
 
 @app.post("/api/scrape-fix")
 def scrape_fix_endpoint() -> object:
-    """Launch the Scrape Doctor: a headless Claude Code agent that deep-dives
-    ONE failed scrape, fixes the scraper generically, verifies, and commits
-    (see .claude/skills/scrape-doctor/SKILL.md). Subscription-billed; one
-    run at a time; poll /api/scrape-fix/status for the live log."""
+    """Launch the Scrape Doctor through Claude Code or Codex.
+
+    The selected subscription agent deep-dives one failed scrape, fixes the
+    scraper generically, verifies, and commits but never pushes. One shared
+    job at a time; poll /api/scrape-fix/status for the live log.
+    """
     import scrape_doctor
 
     db.init_db()
@@ -438,8 +440,11 @@ def scrape_fix_endpoint() -> object:
     restaurant_id = payload.get("restaurant_id")
     if not isinstance(restaurant_id, int):
         return jsonify({"error": "restaurant_id must be an integer."}), 400
+    agent = payload.get("agent", "claude")
+    if agent not in ("claude", "codex"):
+        return jsonify({"error": "agent must be claude or codex."}), 400
     try:
-        return jsonify(scrape_doctor.start(restaurant_id))
+        return jsonify(scrape_doctor.start(restaurant_id, agent=agent))
     except LookupError as exc:
         return jsonify({"error": str(exc)}), 404
     except RuntimeError as exc:
@@ -1309,5 +1314,7 @@ def restaurant_menu_text(restaurant_id: int) -> object:
 
 
 if __name__ == "__main__":
-    # Local only. debug=True gives auto-reload while iterating on the pipeline.
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    # Long-running scrape/classify/doctor jobs live in this process. Werkzeug's
+    # file watcher would kill them as soon as an agent edits scraper code, so
+    # keep debug tracebacks but require an explicit restart to load code edits.
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)

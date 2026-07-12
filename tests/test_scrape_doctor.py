@@ -5,6 +5,7 @@ deterministic shell around it so the button can't mis-fire.
 """
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -31,6 +32,21 @@ def test_prompt_survives_missing_profile():
         {"id": 7, "name": "Y", "website_url": None, "address": None}, None
     )
     assert "id=7" in prompt
+
+
+def test_codex_prompt_and_command_use_bounded_workspace_access():
+    prompt = scrape_doctor.build_prompt(
+        {"id": 8, "name": "Z", "website_url": "https://z.test", "address": None},
+        None,
+        agent="codex",
+    )
+    assert "codex CLI" in prompt
+    command = scrape_doctor._codex_command("codex", Path("result.txt"))
+    assert command[:2] == ["codex", "exec"]
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert "sandbox_workspace_write.network_access=true" in command
+    assert "--json" in command and "--output-last-message" in command
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
 
 
 def test_result_line_parses_all_verdicts():
@@ -75,6 +91,9 @@ def test_api_validation():
 
     client = app.test_client()
     assert client.post("/api/scrape-fix", json={}).status_code == 400
+    assert client.post(
+        "/api/scrape-fix", json={"restaurant_id": 1, "agent": "other"}
+    ).status_code == 400
     assert (
         client.post("/api/scrape-fix", json={"restaurant_id": 99999999}).status_code
         == 404

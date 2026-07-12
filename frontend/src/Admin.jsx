@@ -168,12 +168,12 @@ function ScrapeFailuresPanel() {
     }
   }
 
-  async function startDoctor(failure) {
+  async function startDoctor(failure, agent) {
     setOpen(true);
     const res = await fetch("/api/scrape-fix", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurant_id: failure.id }),
+      body: JSON.stringify({ restaurant_id: failure.id, agent }),
     });
     const state = await res.json();
     if (!res.ok) {
@@ -217,7 +217,7 @@ function ScrapeFailuresPanel() {
                 {doctor.running && (
                   <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
                 )}
-                Scrape Doctor
+                Scrape Doctor · {doctor.agent === "codex" ? "Codex" : "Claude"}
                 {doctor.restaurant_name && ` — ${doctor.restaurant_name}`}
                 {!doctor.running && doctor.verdict && (
                   <span
@@ -291,14 +291,24 @@ function ScrapeFailuresPanel() {
                     {retrying === f.id ? "Scraping…" : "Retry"}
                   </button>
                   <button
-                    onClick={() => startDoctor(f)}
+                    onClick={() => startDoctor(f, "claude")}
                     disabled={Boolean(doctor?.running) || retrying !== null}
                     className="rounded-lg border border-violet-300 px-2.5 py-1 text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
                     title="Launch an agent (your Claude subscription) that deep-dives this site, fixes the scraper generically, verifies with tests + a live re-scrape, and commits the change"
                   >
-                    {doctor?.running && doctor.restaurant_id === f.id
+                    {doctor?.running && doctor.restaurant_id === f.id && doctor.agent === "claude"
                       ? "Diagnosing…"
-                      : "🩺 Auto-fix"}
+                      : "Claude fix"}
+                  </button>
+                  <button
+                    onClick={() => startDoctor(f, "codex")}
+                    disabled={Boolean(doctor?.running) || retrying !== null}
+                    className="rounded-lg border border-sky-300 px-2.5 py-1 text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                    title="Launch Codex using your ChatGPT subscription to deep-dive this site, fix the scraper generically, verify with tests + live re-scrapes, and commit the change"
+                  >
+                    {doctor?.running && doctor.restaurant_id === f.id && doctor.agent === "codex"
+                      ? "Diagnosing…"
+                      : "Codex fix"}
                   </button>
                 </div>
               </div>
