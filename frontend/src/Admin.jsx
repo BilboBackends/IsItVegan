@@ -119,6 +119,10 @@ function ScrapeFailuresPanel() {
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [retrying, setRetrying] = useState(null); // restaurant id
+  // Scrape Doctor: the headless agent run that deep-dives one failure and
+  // fixes the scraper itself (see .claude/skills/scrape-doctor/SKILL.md).
+  const [doctor, setDoctor] = useState(null);
+  const doctorTimer = useRef(null);
 
   const load = () =>
     fetch("/api/scrape-failures")
@@ -126,8 +130,28 @@ function ScrapeFailuresPanel() {
       .then((data) => setFailures(data.failures || []))
       .catch(() => setFailures([]));
 
+  const pollDoctor = () => {
+    clearTimeout(doctorTimer.current);
+    fetch("/api/scrape-fix/status")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((state) => {
+        if (!state) return;
+        setDoctor(state);
+        if (state.running) {
+          doctorTimer.current = setTimeout(pollDoctor, 3000);
+        } else if (state.verdict) {
+          load(); // a fix may have unblocked this restaurant
+        }
+      })
+      .catch(() => {});
+  };
+
   useEffect(() => {
     load();
+    // Reconnect to an in-flight doctor run after a page reload.
+    pollDoctor();
+    return () => clearTimeout(doctorTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function retry(failure) {
@@ -142,6 +166,22 @@ function ScrapeFailuresPanel() {
     } finally {
       setRetrying(null);
     }
+  }
+
+  async function startDoctor(failure) {
+    setOpen(true);
+    const res = await fetch("/api/scrape-fix", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restaurant_id: failure.id }),
+    });
+    const state = await res.json();
+    if (!res.ok) {
+      setDoctor({ verdict: "error", error: state.error });
+      return;
+    }
+    setDoctor(state);
+    doctorTimer.current = setTimeout(pollDoctor, 3000);
   }
 
   if (!failures || failures.length === 0) return null;
@@ -171,6 +211,40 @@ function ScrapeFailuresPanel() {
       </button>
       {open && (
         <div className="mt-3 space-y-2">
+          {doctor && (doctor.running || doctor.verdict) && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs">
+              <div className="flex items-center gap-2 font-bold text-violet-900">
+                {doctor.running && (
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-violet-600 border-t-transparent" />
+                )}
+                Scrape Doctor
+                {doctor.restaurant_name && ` — ${doctor.restaurant_name}`}
+                {!doctor.running && doctor.verdict && (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+                      doctor.verdict === "fixed"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : doctor.verdict === "unscrapeable"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-rose-100 text-rose-800"
+                    }`}
+                  >
+                    {doctor.verdict}
+                  </span>
+                )}
+              </div>
+              {(doctor.summary || doctor.error) && (
+                <div className="mt-1 text-violet-900">
+                  {doctor.summary || doctor.error}
+                </div>
+              )}
+              {doctor.running && (doctor.log?.length ?? 0) > 0 && (
+                <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-white/70 p-2 font-mono text-[10px] leading-4 text-slate-600">
+                  {doctor.log.slice(-12).join("\n")}
+                </pre>
+              )}
+            </div>
+          )}
           {failures.map((f) => (
             <div key={f.id} className="rounded-lg bg-white p-3 text-sm shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -215,6 +289,16 @@ function ScrapeFailuresPanel() {
                     className="rounded-lg border border-emerald-300 px-2.5 py-1 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:text-slate-400"
                   >
                     {retrying === f.id ? "Scraping…" : "Retry"}
+                  </button>
+                  <button
+                    onClick={() => startDoctor(f)}
+                    disabled={Boolean(doctor?.running) || retrying !== null}
+                    className="rounded-lg border border-violet-300 px-2.5 py-1 text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                    title="Launch an agent (your Claude subscription) that deep-dives this site, fixes the scraper generically, verifies with tests + a live re-scrape, and commits the change"
+                  >
+                    {doctor?.running && doctor.restaurant_id === f.id
+                      ? "Diagnosing…"
+                      : "🩺 Auto-fix"}
                   </button>
                 </div>
               </div>

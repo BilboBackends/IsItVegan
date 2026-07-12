@@ -425,6 +425,35 @@ def ingest_status() -> object:
         return jsonify({**_ingest_state, "recent": list(_ingest_state["recent"])})
 
 
+@app.post("/api/scrape-fix")
+def scrape_fix_endpoint() -> object:
+    """Launch the Scrape Doctor: a headless Claude Code agent that deep-dives
+    ONE failed scrape, fixes the scraper generically, verifies, and commits
+    (see .claude/skills/scrape-doctor/SKILL.md). Subscription-billed; one
+    run at a time; poll /api/scrape-fix/status for the live log."""
+    import scrape_doctor
+
+    db.init_db()
+    payload = request.get_json(silent=True) or {}
+    restaurant_id = payload.get("restaurant_id")
+    if not isinstance(restaurant_id, int):
+        return jsonify({"error": "restaurant_id must be an integer."}), 400
+    try:
+        return jsonify(scrape_doctor.start(restaurant_id))
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@app.get("/api/scrape-fix/status")
+def scrape_fix_status() -> object:
+    """Live state of the current (or last) Scrape Doctor run."""
+    import scrape_doctor
+
+    return jsonify(scrape_doctor.status())
+
+
 @app.get("/api/scrape-failures")
 def scrape_failures_endpoint() -> object:
     """Restaurants whose last scrape failed, with per-URL diagnostics —
