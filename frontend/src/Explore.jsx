@@ -17,6 +17,7 @@ import {
 import { cuisineLabel, cuisineOptions, isDessertVenue } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
 import { apiUrl } from "./staticData.js";
+import NoteIcon from "./NoteIcon.jsx";
 import {
   CLOUD_ENABLED,
   clearCommentAuthReturn,
@@ -288,7 +289,7 @@ export default function Explore({
   // "all" | "veganish" — clicking a card's vegan-count text opens the menu
   // pre-filtered to the vegan-friendly items.
   const [dishesFilter, setDishesFilter] = useState("all");
-  // "comments" opens the menu modal straight on its Notes tab (♪ chip).
+  // "comments" opens the menu modal straight on its Notes tab.
   const [dishesTab, setDishesTab] = useState(null);
   const [dishesMention, setDishesMention] = useState(null);
   const [dishesCommentFilter, setDishesCommentFilter] = useState(null);
@@ -885,7 +886,7 @@ export default function Explore({
       {(r.website_url ||
         r.dish_count > 0 ||
         CLOUD_ENABLED) && (
-        <div className="mt-auto flex items-center justify-between border-t border-stone-100 pt-3 text-xs font-semibold">
+        <div className="mt-auto grid grid-cols-3 items-center border-t border-stone-100 pt-3 text-xs font-semibold">
           {/* Community is always discoverable at bottom-left and opens the
               modal directly on its comments tab. Website remains centered
               between it and the dishes action. */}
@@ -900,7 +901,7 @@ export default function Explore({
                   setDishesCommentFilter(null);
                   setDishesFor(r);
                 }}
-                className="shrink-0 rounded-lg border border-sky-200 bg-sky-50 px-1.5 py-1.5 text-xs font-semibold text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs font-semibold tabular-nums text-sky-700 transition hover:border-sky-300 hover:bg-sky-100"
                 title={
                   (commentCounts?.get(r.place_id) || 0) > 0
                     ? `${commentCounts.get(r.place_id)} community note${
@@ -914,7 +915,8 @@ export default function Explore({
                   (commentCounts?.get(r.place_id) || 0) === 1 ? "" : "s"
                 }`}
               >
-                ♪ {commentCounts?.get(r.place_id) || 0}
+                <NoteIcon className="h-4 w-4" />
+                <span>{commentCounts?.get(r.place_id) || 0}</span>
               </button>
             )}
           </div>

@@ -15,6 +15,7 @@ import {
 } from "./cloud.js";
 import Comments from "./Comments.jsx";
 import DishCommentBadge from "./DishCommentBadge.jsx";
+import NoteIcon from "./NoteIcon.jsx";
 import ThumbVote from "./ThumbVote.jsx";
 
 // Shared dish-verdict modal (used by both Explore and Admin). Fetches its own
@@ -92,7 +93,7 @@ export default function DishModal({
   // "veganish" opens the menu pre-filtered to vegan-friendly items — the
   // card's vegan-count text uses this as a direct shortcut.
   initialFilter = "all",
-  // "comments" jumps straight to the Notes tab (the card's ♪ chip).
+  // "comments" jumps straight to the Notes tab (the card's note chip).
   initialTab = null,
   initialMention = null,
   initialCommentFilter = null,
@@ -147,7 +148,7 @@ export default function DishModal({
         registerRestaurants([restaurant]);
         registerDishes(list);
         // Open on the first category that actually has items — unless the
-        // caller asked for the Notes tab directly (card's ♪ chip).
+        // caller asked for the Notes tab directly (card's note chip).
         const first = CATEGORIES.find((c) =>
           list.some((d) => dishCategory(d) === c.key)
         );
@@ -372,13 +373,14 @@ export default function DishModal({
                 setCommentTarget(null);
                 setTab("comments");
               }}
-              className={`relative -mb-px shrink-0 whitespace-nowrap rounded-t-lg border px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
+              className={`relative -mb-px inline-flex shrink-0 items-center whitespace-nowrap rounded-t-lg border px-2 py-2 text-xs font-medium transition sm:px-3 sm:text-sm ${
                 tab === "comments"
                   ? "border-slate-200 border-b-white bg-white text-slate-900"
                   : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
             >
-              ♪<span className="max-sm:hidden"> Notes</span>
+              <NoteIcon className="h-4 w-4 sm:mr-1" />
+              <span className="max-sm:hidden">Notes</span>
               {(comments?.length ?? 0) > 0 && (
                 <span className="ml-1 rounded-full bg-sky-100 px-1.5 text-xs font-semibold text-sky-700 sm:ml-1.5">
                   {comments.length}
