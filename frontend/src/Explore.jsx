@@ -769,14 +769,21 @@ export default function Explore({
   // mobile where the click first flips the view to the map. Pin clicks
   // (source "map") don't move the map — they highlight + scroll the card.
   useEffect(() => {
-    if (!focus) return;
+    // Stale focus (older than the click's map animation) must not keep
+    // re-firing when later map panning changes viewBounds below.
+    if (!focus || Date.now() - focus.ts > 2500) return;
     if (focus.source === "map") {
-      // Center the card: "nearest" parked it at the viewport edge, where
-      // the highlight was easy to miss.
-      document
-        .getElementById(`vf-card-${focus.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
+      // The pin click also pans/zooms the map, and every settled viewport
+      // re-splits the list and MOVES the card — a scroll fired during that
+      // window animates toward a stale position and visibly misses. The
+      // viewBounds dependency restarts this timer on each re-split, so the
+      // single scroll runs only once the layout has been quiet.
+      const t = setTimeout(() => {
+        document
+          .getElementById(`vf-card-${focus.id}`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 350);
+      return () => clearTimeout(t);
     }
     const map = mapRef.current;
     const marker = markersRef.current[focus.id];
@@ -784,7 +791,7 @@ export default function Explore({
     focusMapOnMarker(map, marker);
     const t = setTimeout(() => marker.openPopup(), 850);
     return () => clearTimeout(t);
-  }, [focus, showMap]);
+  }, [focus, showMap, viewBounds]);
 
   function focusRestaurant(r) {
     if (r.lat == null || r.lng == null) return;
