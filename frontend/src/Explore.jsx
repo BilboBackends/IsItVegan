@@ -771,9 +771,11 @@ export default function Explore({
   useEffect(() => {
     if (!focus) return;
     if (focus.source === "map") {
+      // Center the card: "nearest" parked it at the viewport edge, where
+      // the highlight was easy to miss.
       document
         .getElementById(`vf-card-${focus.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
     const map = mapRef.current;
