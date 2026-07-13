@@ -55,12 +55,13 @@ verify_enabled = true
 # ⚠ `supabase config push` run without a terminal attached APPLIES WITHOUT
 # PROMPTING — there is no safe dry-run. A push with this section stale
 # (enabled=false, empty credentials) once disabled the working Google
-# provider and cleared its dashboard credentials. Keep this file mirroring
-# the dashboard before any push. To restore Google sign-in: re-enter the
-# OAuth client id + secret (Google Cloud Console → Credentials) in
-# Supabase → Auth → Providers → Google, set enabled=true here, and flip
-# the VITE_SUPABASE_GOOGLE_ENABLED build flags back to true.
+# provider and cleared its dashboard credentials.
+#
+# Failsafe: enabled=true with env-referenced credentials means a push with
+# the env vars UNSET refuses to parse ("Missing required field client_id")
+# instead of silently wiping the dashboard values. To intentionally push
+# this section, first export both vars with the dashboard's values.
 [auth.external.google]
-enabled = false
-client_id = ""
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
 secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
