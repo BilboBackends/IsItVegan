@@ -52,13 +52,14 @@ otp_expiry = 3600
 enroll_enabled = true
 verify_enabled = true
 
-# Off until a real Google OAuth client exists. The remote project had the
-# provider switched on with an EMPTY client id — sign-in always failed with
-# "provider is not enabled" — and config push refuses enabled=true without
-# a client_id. To go live: create an OAuth client in Google Cloud Console
-# (redirect URI https://axsmhbckemjdbfrnvxsx.supabase.co/auth/v1/callback),
-# enter it in Supabase → Auth → Providers → Google, then flip this and the
-# VITE_SUPABASE_GOOGLE_ENABLED build flags back to true.
+# ⚠ `supabase config push` run without a terminal attached APPLIES WITHOUT
+# PROMPTING — there is no safe dry-run. A push with this section stale
+# (enabled=false, empty credentials) once disabled the working Google
+# provider and cleared its dashboard credentials. Keep this file mirroring
+# the dashboard before any push. To restore Google sign-in: re-enter the
+# OAuth client id + secret (Google Cloud Console → Credentials) in
+# Supabase → Auth → Providers → Google, set enabled=true here, and flip
+# the VITE_SUPABASE_GOOGLE_ENABLED build flags back to true.
 [auth.external.google]
 enabled = false
 client_id = ""
