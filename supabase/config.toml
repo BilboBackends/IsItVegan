@@ -34,24 +34,32 @@ max_frequency = "1m"
 otp_length = 8
 otp_expiry = 3600
 
-# Sign-in emails speak as DishTune, not Supabase. Pushed to the hosted
-# project with `npx supabase config push`. The sender address stays
-# Supabase's shared mailer until a custom SMTP domain is configured.
-[auth.email.template.magic_link]
-subject = "Sign in to DishTune"
-content_path = "./supabase/templates/magic_link.html"
-
-[auth.email.template.confirmation]
-subject = "Welcome to DishTune — confirm your email"
-content_path = "./supabase/templates/confirmation.html"
+# DishTune-branded sign-in emails (supabase/templates/) are written and
+# ready, but Supabase's FREE tier rejects template changes while on the
+# default shared mailer: "configure a custom SMTP provider or upgrade".
+# To enable: set up custom SMTP (dashboard → Project settings → Auth →
+# SMTP; e.g. Resend's free tier), uncomment these blocks, and run
+# `npx supabase config push`.
+# [auth.email.template.magic_link]
+# subject = "Sign in to DishTune"
+# content_path = "./supabase/templates/magic_link.html"
+#
+# [auth.email.template.confirmation]
+# subject = "Welcome to DishTune — confirm your email"
+# content_path = "./supabase/templates/confirmation.html"
 
 [auth.mfa.totp]
 enroll_enabled = true
 verify_enabled = true
 
-# Mirrors the remote project (enabled via dashboard) so `config push`
-# leaves this section untouched; credentials live only in the dashboard.
+# Off until a real Google OAuth client exists. The remote project had the
+# provider switched on with an EMPTY client id — sign-in always failed with
+# "provider is not enabled" — and config push refuses enabled=true without
+# a client_id. To go live: create an OAuth client in Google Cloud Console
+# (redirect URI https://axsmhbckemjdbfrnvxsx.supabase.co/auth/v1/callback),
+# enter it in Supabase → Auth → Providers → Google, then flip this and the
+# VITE_SUPABASE_GOOGLE_ENABLED build flags back to true.
 [auth.external.google]
-enabled = true
+enabled = false
 client_id = ""
 secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
