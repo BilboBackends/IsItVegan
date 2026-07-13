@@ -1,21 +1,50 @@
+// Every Google primary_type maps into one of these broad groups; anything
+// unmatched becomes "Other" instead of minting a one-off dropdown option
+// ("Coworking Space", "Burrito", "Hotel"…), so the cuisine filter stays
+// ~20 options as new areas are added.
+//
+// ORDER MATTERS — first match wins, and several types contain other groups'
+// keywords as substrings: latin_american ⊃ american, pizza_delivery ⊃ deli,
+// steak ⊃ tea (hence tea_house, never bare "tea"), barbecue / oyster_bar ⊃
+// bar. Keep the more specific group above the one it collides with.
 const GROUPS = [
-  ["Japanese", ["japanese", "sushi"]],
-  ["Seafood", ["seafood"]],
+  ["Vegan & Health", ["vegan", "vegetarian", "health_food"]],
   ["Italian & Pizza", ["italian", "pizza"]],
-  ["Thai", ["thai"]],
-  ["Indian", ["indian"]],
+  ["Japanese & Sushi", ["japanese", "sushi", "ramen"]],
   ["Chinese", ["chinese"]],
-  ["Korean", ["korean"]],
+  ["Thai", ["thai"]],
   ["Vietnamese", ["vietnamese"]],
-  ["Mediterranean", ["mediterranean", "greek", "middle_eastern"]],
-  ["Mexican & Tacos", ["mexican", "taco"]],
-  ["Barbecue", ["barbecue"]],
-  ["American", ["american", "hot_dog"]],
-  ["Sandwiches & Deli", ["sandwich", "deli"]],
-  ["Cafe & Breakfast", ["cafe", "coffee", "breakfast"]],
-  ["Pub & Brewery", ["pub", "bar", "brewery"]],
-  ["Fast Food", ["fast_food"]],
-  ["Vegan", ["vegan"]],
+  ["Korean", ["korean"]],
+  ["Indian", ["indian"]],
+  ["Other Asian", ["asian", "malaysian", "filipino", "indonesian", "hawaiian", "poke"]],
+  ["Mexican & Latin", [
+    "mexican", "taco", "burrito", "tex_mex", "latin", "cuban", "peruvian",
+    "colombian", "brazilian", "argentin", "venezuelan", "caribbean",
+    "spanish", "tapas", "arepa", "empanada",
+  ]],
+  ["Mediterranean & Middle Eastern", [
+    "mediterranean", "greek", "middle_eastern", "turkish", "persian",
+    "lebanese", "israeli", "falafel", "kebab", "afghan",
+  ]],
+  ["Seafood", ["seafood", "oyster", "fish", "crab", "lobster"]],
+  ["Barbecue & Southern", ["barbecue", "bbq", "cajun", "creole", "soul_food", "southern"]],
+  ["American & Burgers", [
+    "american", "steak", "hamburger", "burger", "hot_dog", "chicken",
+    "wings", "diner", "cheesesteak",
+  ]],
+  ["Breakfast & Brunch", ["breakfast", "brunch", "pancake", "waffle"]],
+  ["Sandwiches & Deli", ["sandwich", "deli", "bagel"]],
+  ["Coffee & Tea", ["coffee", "cafe", "tea_house", "boba", "bubble_tea"]],
+  ["Sweets & Treats", [
+    "ice_cream", "dessert", "bakery", "cake", "donut", "doughnut",
+    "chocolate", "candy", "confectionery", "frozen_yogurt", "gelato",
+    "pastry", "creperie", "acai", "juice", "smoothie",
+  ]],
+  ["Bars & Breweries", [
+    "bar", "pub", "brewery", "brewpub", "beer", "wine", "cocktail",
+    "lounge", "taproom", "distillery",
+  ]],
+  ["Fast Food", ["fast_food", "food_court"]],
 ];
 
 export function cuisineLabel(primaryType) {
@@ -24,13 +53,9 @@ export function cuisineLabel(primaryType) {
   for (const [label, matches] of GROUPS) {
     if (matches.some((value) => type.includes(value))) return label;
   }
-  const fallback = type
-    .replaceAll("_", " ")
-    .replace(/\b(restaurant|shop)\b/g, "")
-    .trim();
-  return fallback
-    ? fallback.replace(/\b\w/g, (letter) => letter.toUpperCase())
-    : "Other";
+  // Generic and rare types (market, hotel, meal_takeaway, fine_dining…)
+  // consolidate under Other rather than becoming their own filter option.
+  return "Other";
 }
 
 // Venues whose product IS dessert. Their headline vegan count includes
@@ -119,6 +144,9 @@ export function venueKindLabel(kind) {
 
 export function cuisineOptions(items) {
   return [...new Set(items.map((item) => cuisineLabel(item.primary_type)))].sort(
-    (a, b) => a.localeCompare(b)
+    (a, b) =>
+      // "Other" is the catch-all bucket — it belongs at the end of the
+      // dropdown, not alphabetized into the real cuisines.
+      Number(a === "Other") - Number(b === "Other") || a.localeCompare(b)
   );
 }
