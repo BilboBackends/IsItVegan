@@ -452,5 +452,5 @@ fixtures/                   # mock data for running without live APIs
 frontend/                   # React + Vite + Tailwind (dashboard + public site)
 supabase/                   # accounts data plane: schema.sql (RLS), config.toml,
                             # migrations, branded email templates, SETUP.md
-docs/                       # working notes (e.g. session logs)
+docs/                       # local working notes / session logs (gitignored)
 ```
