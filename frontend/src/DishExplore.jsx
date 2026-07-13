@@ -166,6 +166,10 @@ export default function DishExplore({
   const markersRef = useRef({});
   const loadMoreRef = useRef(null);
   const sortBeforeRestaurantRef = useRef(null);
+  // True while the dessert place chip auto-switched the Type filter, so
+  // leaving the chip can restore the food default without clobbering a
+  // Type the user chose themselves.
+  const dessertCategoriesAutoRef = useRef(false);
 
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 1280px)");
@@ -334,6 +338,24 @@ export default function DishExplore({
     });
   }
 
+  // The Dessert place chip means "show me treats", but the Type filter
+  // defaults to food only — which hid every actual dessert at dessert
+  // venues. While Type is still its untouched default, follow the venue
+  // kind (mirroring DishModal's dessert-first menus); a Type the user
+  // picked explicitly is never overridden.
+  function changeVenueKind(key) {
+    if (key === "dessert" && placeType !== "dessert" && foodOnly) {
+      dessertCategoriesAutoRef.current = true;
+      setCategories(new Set(["dessert"]));
+    } else if (key !== "dessert" && dessertCategoriesAutoRef.current) {
+      dessertCategoriesAutoRef.current = false;
+      if (categories.size === 1 && categories.has("dessert")) {
+        setCategories(new Set(["food"]));
+      }
+    }
+    setPlaceType(key);
+  }
+
   const shown = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
     const out = dishesWithDistance.filter((dish) => {
@@ -388,9 +410,15 @@ export default function DishExplore({
         const roleOrder = Number(a.serving_role === "side") - Number(b.serving_role === "side");
         if (roleOrder) return roleOrder;
       }
+      // Vegan always leads, whatever sort is active: the chosen sort orders
+      // dishes WITHIN each verdict group. Otherwise "Closest" (set by
+      // near-me) or "Cheapest" would rank not-vegan dishes above vegan ones
+      // — useless on a vegan finder.
+      const verdictOrder =
+        (VERDICT_ORDER[a.verdict] ?? 5) - (VERDICT_ORDER[b.verdict] ?? 5);
+      if (verdictOrder) return verdictOrder;
       if (sortBy === "recommended") {
         return (
-          (VERDICT_ORDER[a.verdict] ?? 5) - (VERDICT_ORDER[b.verdict] ?? 5) ||
           (b.rating ?? -1) - (a.rating ?? -1) ||
           (b.confidence ?? -1) - (a.confidence ?? -1) ||
           a.name.localeCompare(b.name)
@@ -825,6 +853,7 @@ export default function DishExplore({
     setQuery("");
     setPlaceType("all");
     setVerdicts(new Set());
+    dessertCategoriesAutoRef.current = false;
     setCategories(new Set(["food"]));
     setServingRole("all");
     setMaxPrice(0);
@@ -1142,7 +1171,7 @@ export default function DishExplore({
           )}
           {placeType !== "all" && (
             <button
-              onClick={() => setPlaceType("all")}
+              onClick={() => changeVenueKind("all")}
               className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
               title="Remove place-type filter"
             >
@@ -1191,7 +1220,7 @@ export default function DishExplore({
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
-      <VenueKindFilter value={placeType} onChange={setPlaceType} />
+      <VenueKindFilter value={placeType} onChange={changeVenueKind} />
 
       <button
         type="button"
