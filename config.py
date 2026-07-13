@@ -39,6 +39,8 @@ class Settings:
     discovery_cell_radius_meters: float
     discovery_city: str | None
     database_path: str
+    supabase_url: str | None
+    supabase_service_role_key: str | None
 
 
 def _get_float(name: str, default: float) -> float:
@@ -120,6 +122,12 @@ def load_settings() -> Settings:
         # empty to keep everything. MVP: Maitland only.
         discovery_city=(os.environ.get("DISCOVERY_CITY", "Maitland") or None),
         database_path=os.environ.get("DATABASE_PATH", "veganfind.db"),
+        # User-data plane (Supabase) for the Admin activity page. The service
+        # role key bypasses RLS — server-side only, never sent to a frontend.
+        supabase_url=(os.environ.get("SUPABASE_URL") or None),
+        supabase_service_role_key=(
+            os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or None
+        ),
     )
 
 

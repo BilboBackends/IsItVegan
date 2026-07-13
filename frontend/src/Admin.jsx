@@ -2921,6 +2921,13 @@ export default function Admin() {
             <p className="text-sm text-slate-500">
               Discovery · menu scraping · dish classification
               {config?.city ? ` · ${config.city}, FL` : ""}
+              {" · "}
+              <a
+                href="#admin/activity"
+                className="font-semibold text-slate-700 underline decoration-slate-300 underline-offset-2 hover:text-slate-900"
+              >
+                👥 User activity
+              </a>
             </p>
           </div>
           <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">

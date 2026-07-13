@@ -21,6 +21,7 @@ import threading
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+import activity
 import classifier
 import db
 import discover
@@ -98,6 +99,22 @@ def get_config() -> object:
             "classifier": provider_status(),
         }
     )
+
+
+@app.get("/api/admin/activity")
+def get_admin_activity() -> object:
+    """Recent user activity (sign-ups, notes, replies, votes, favorites,
+    reports) from the Supabase user-data plane, read with the service role
+    key. Local Admin only — this endpoint is never part of the static site.
+    """
+    if not activity.activity_config()["enabled"]:
+        # Not an error: the feature is simply unconfigured. The UI shows
+        # setup instructions for the listed variables.
+        return jsonify(activity.fetch_activity())
+    try:
+        return jsonify(activity.fetch_activity())
+    except Exception as exc:  # httpx errors, malformed payloads
+        return jsonify({"error": f"Supabase request failed: {exc}"}), 502
 
 
 @app.get("/api/restaurants")

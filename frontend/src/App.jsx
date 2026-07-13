@@ -4,6 +4,7 @@ import { ProfileContext, SessionContext } from "./cloud.js";
 import AccountButton from "./AccountButton.jsx";
 import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
+import AdminActivity from "./AdminActivity.jsx";
 
 // Shell: hash-routed views. Consumers can browse restaurants or search the
 // cross-menu dish index; #admin holds discovery/ingest/enrich controls.
@@ -84,7 +85,15 @@ export default function App() {
               </div>
             </div>
           </nav>
-          {isAdmin ? <Admin /> : <ExploreHub view={exploreView} />}
+          {isAdmin ? (
+            hash.startsWith("#admin/activity") ? (
+              <AdminActivity />
+            ) : (
+              <Admin />
+            )
+          ) : (
+            <ExploreHub view={exploreView} />
+          )}
         </div>
       </ProfileContext.Provider>
     </SessionContext.Provider>
