@@ -291,6 +291,9 @@ export default function Explore({
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
+  // Phones: the inline "distances from X · change" address row under the
+  // search bar — origin control without opening the collapsed filters.
+  const [originOpen, setOriginOpen] = useState(false);
   const [view, setView] = useState("list"); // mobile toggle; desktop shows both
   // Phones: filters collapse behind a disclosure (a swipe strip was
   // undiscoverable); desktop always shows them inline.
@@ -405,6 +408,22 @@ export default function Explore({
     if (!isDesktop) setView("map");
     setFocus({ id: target.place_id, ts: Date.now(), source: "card" });
   }, [restaurants, isDesktop]);
+
+  // One origin change path for every control (sidebar picker, mobile pin,
+  // mobile address row): closest-first sort, fresh map split, closed row.
+  function changeOrigin(point, label) {
+    setOrigin(point);
+    setOriginLabel(label);
+    // Picking a location means "what's near here" — surface the closest
+    // restaurants instead of leaving the previous sort.
+    setSortBy("distance");
+    // Drop the stale map-viewport split: on mobile the hidden map can't
+    // re-report bounds, so the old viewport would keep the previous area's
+    // restaurants pinned in the "On the map" section above the ones
+    // actually near the new origin.
+    setViewBounds(null);
+    setOriginOpen(false);
+  }
 
   function clearFilters() {
     setQuery("");
@@ -1107,21 +1126,7 @@ export default function Explore({
               </option>
             ))}
           </select>
-          <LocationPicker
-            originLabel={originLabel}
-            onOrigin={(point, label) => {
-              setOrigin(point);
-              setOriginLabel(label);
-              // Picking a location means "what's near here" — surface the
-              // closest restaurants instead of leaving the previous sort.
-              setSortBy("distance");
-              // Drop the stale map-viewport split: on mobile the hidden map
-              // can't re-report bounds, so the old viewport would keep the
-              // previous area's restaurants pinned in the "On the map"
-              // section above the ones actually near the new origin.
-              setViewBounds(null);
-            }}
-          />
+          <LocationPicker originLabel={originLabel} onOrigin={changeOrigin} />
         </FilterSidebar>
 
         <div className="min-w-0 flex-1">
@@ -1150,15 +1155,29 @@ export default function Explore({
       </div>
       {/* Phones: near-me one tap from the search bar — the full picker
           lives behind the collapsed filter sidebar. */}
-      <NearMeIconButton
-        className="lg:hidden"
-        onOrigin={(point, label) => {
-          setOrigin(point);
-          setOriginLabel(label);
-          setSortBy("distance");
-          setViewBounds(null);
-        }}
-      />
+      <NearMeIconButton className="lg:hidden" onOrigin={changeOrigin} />
+      </div>
+
+      {/* Phones: origin status + inline address search, one small line —
+          no digging into the collapsed filters for the LocationPicker. */}
+      <div className="-mt-2 mb-3 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setOriginOpen((value) => !value)}
+          aria-expanded={originOpen}
+          className="text-xs text-stone-500"
+        >
+          📍 Distances from{" "}
+          <span className="font-semibold text-stone-700">{originLabel}</span>{" "}
+          · <span className="font-semibold text-emerald-700 underline underline-offset-2">
+            {originOpen ? "close" : "change"}
+          </span>
+        </button>
+        {originOpen && (
+          <div className="mt-2">
+            <LocationPicker compact originLabel={originLabel} onOrigin={changeOrigin} />
+          </div>
+        )}
       </div>
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and

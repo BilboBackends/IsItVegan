@@ -141,6 +141,9 @@ export default function DishExplore({
   const [maxMiles, setMaxMiles] = useState(0);
   const [origin, setOrigin] = useState(MAITLAND);
   const [originLabel, setOriginLabel] = useState("Maitland");
+  // Phones: the inline "distances from X · change" address row under the
+  // search bar — origin control without opening the collapsed filters.
+  const [originOpen, setOriginOpen] = useState(false);
   const [selectedDishId, setSelectedDishId] = useState(null);
   const [menuRestaurant, setMenuRestaurant] = useState(null);
   const [menuCommentTarget, setMenuCommentTarget] = useState(null);
@@ -849,6 +852,17 @@ export default function DishExplore({
     showRestaurantOnMap(dish);
   }
 
+  // One origin change path for every control (sidebar picker, mobile pin,
+  // mobile address row): closest-first sort and a closed address row.
+  function changeOrigin(point, label) {
+    setOrigin(point);
+    setOriginLabel(label);
+    // Picking a location means "what's near here" — surface the closest
+    // dishes instead of leaving the previous sort.
+    setSortBy("distance");
+    setOriginOpen(false);
+  }
+
   function clearFilters() {
     setQuery("");
     setPlaceType("all");
@@ -991,16 +1005,7 @@ export default function DishExplore({
                 <option key={range.miles} value={range.miles}>{range.label}</option>
               ))}
             </select>
-            <LocationPicker
-              originLabel={originLabel}
-              onOrigin={(point, label) => {
-                setOrigin(point);
-                setOriginLabel(label);
-                // Picking a location means "what's near here" — surface the
-                // closest dishes instead of leaving the previous sort.
-                setSortBy("distance");
-              }}
-            />
+            <LocationPicker originLabel={originLabel} onOrigin={changeOrigin} />
             </div>
           </div>
           {/* Sidebar is narrow, so both pill groups use fixed grids instead
@@ -1091,14 +1096,29 @@ export default function DishExplore({
       </div>
       {/* Phones: near-me one tap from the search bar — the full picker
           lives behind the collapsed filter sidebar. */}
-      <NearMeIconButton
-        className="lg:hidden"
-        onOrigin={(point, label) => {
-          setOrigin(point);
-          setOriginLabel(label);
-          setSortBy("distance");
-        }}
-      />
+      <NearMeIconButton className="lg:hidden" onOrigin={changeOrigin} />
+      </div>
+
+      {/* Phones: origin status + inline address search, one small line —
+          no digging into the collapsed filters for the LocationPicker. */}
+      <div className="-mt-2 mb-3 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setOriginOpen((value) => !value)}
+          aria-expanded={originOpen}
+          className="text-xs text-stone-500"
+        >
+          📍 Distances from{" "}
+          <span className="font-semibold text-stone-700">{originLabel}</span>{" "}
+          · <span className="font-semibold text-emerald-700 underline underline-offset-2">
+            {originOpen ? "close" : "change"}
+          </span>
+        </button>
+        {originOpen && (
+          <div className="mt-2">
+            <LocationPicker compact originLabel={originLabel} onOrigin={changeOrigin} />
+          </div>
+        )}
       </div>
 
       {/* Active filters — front and center above the results, never buried

@@ -52,7 +52,10 @@ export function NearMeIconButton({ onOrigin, className = "" }) {
   );
 }
 
-export default function LocationPicker({ originLabel, onOrigin }) {
+// compact: address form only — for the phone's inline "change origin" row,
+// where geolocation already has its own one-tap pin button and the current
+// origin label lives on the toggle line itself.
+export default function LocationPicker({ originLabel, onOrigin, compact = false }) {
   const [address, setAddress] = useState("");
   const [locating, setLocating] = useState(false);
   const [searching, setSearching] = useState(false);
@@ -113,6 +116,7 @@ export default function LocationPicker({ originLabel, onOrigin }) {
         <input
           type="text"
           value={address}
+          autoFocus={compact}
           onChange={(event) => {
             setAddress(event.target.value);
             if (error) setError(null);
@@ -129,21 +133,25 @@ export default function LocationPicker({ originLabel, onOrigin }) {
           {searching ? "…" : "Go"}
         </button>
       </form>
-      <button
-        type="button"
-        onClick={useMyLocation}
-        disabled={locating}
-        className="mt-1.5 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
-        title={`Distances measured from ${originLabel}`}
-      >
-        {locating ? "Locating…" : "📍 Near me"}
-      </button>
+      {!compact && (
+        <button
+          type="button"
+          onClick={useMyLocation}
+          disabled={locating}
+          className="mt-1.5 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:border-emerald-600 hover:text-emerald-700 disabled:text-stone-400"
+          title={`Distances measured from ${originLabel}`}
+        >
+          {locating ? "Locating…" : "📍 Near me"}
+        </button>
+      )}
       {error && (
         <div className="mt-1 text-center text-xs text-rose-500">{error}</div>
       )}
-      <div className="mt-1 text-center text-xs text-stone-400">
-        Distances from {originLabel}
-      </div>
+      {!compact && (
+        <div className="mt-1 text-center text-xs text-stone-400">
+          Distances from {originLabel}
+        </div>
+      )}
     </div>
   );
 }
