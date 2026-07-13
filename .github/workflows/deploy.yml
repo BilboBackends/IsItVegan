@@ -15,7 +15,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages
+  # Distinct from the legacy GH Pages workflow's "pages" group so the two
+  # don't cancel each other while both exist during the cutover.
+  group: deploy-cloudflare
   cancel-in-progress: true
 
 jobs:
