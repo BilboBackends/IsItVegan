@@ -92,7 +92,20 @@ export default function App() {
               <Admin />
             )
           ) : (
-            <ExploreHub view={exploreView} />
+            <>
+              <ExploreHub view={exploreView} />
+              {/* Google OAuth brand verification checks that the homepage
+                  links the published policies. */}
+              <footer className="pb-8 pt-2 text-center text-xs text-stone-400">
+                <a href="/privacy.html" className="hover:text-stone-600 hover:underline">
+                  Privacy
+                </a>
+                {" · "}
+                <a href="/terms.html" className="hover:text-stone-600 hover:underline">
+                  Terms
+                </a>
+              </footer>
+            </>
           )}
         </div>
       </ProfileContext.Provider>
