@@ -86,7 +86,19 @@ export default function AdminActivity() {
     setError(null);
     try {
       const response = await fetch("/api/admin/activity");
-      const payload = await response.json();
+      if (response.status === 404) {
+        // The backend keeps use_reloader=False, so a route added after it
+        // started 404s (as Flask's HTML error page) until a manual restart.
+        throw new Error(
+          "The backend doesn't know this endpoint yet — restart `python api.py` and refresh."
+        );
+      }
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error(`Backend returned a non-JSON response (${response.status}).`);
+      }
       if (!response.ok) throw new Error(payload.error || `API ${response.status}`);
       setData(payload);
       setRefreshedAt(new Date());
