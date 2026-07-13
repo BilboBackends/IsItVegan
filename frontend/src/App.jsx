@@ -49,6 +49,18 @@ export default function App() {
                 <span>DishTune</span>
               </a>
               <div className="flex items-center gap-2">
+                {/* Legal links stay visible in the header — the page footer
+                    sits below hundreds of cards where nobody finds it. Phones
+                    have no header room; they keep the footer links. */}
+                <div className="mr-1 hidden items-center gap-2 text-xs text-stone-400 sm:flex">
+                  <a href="/privacy" className="hover:text-stone-600 hover:underline">
+                    Privacy
+                  </a>
+                  <span aria-hidden="true">·</span>
+                  <a href="/terms" className="hover:text-stone-600 hover:underline">
+                    Terms
+                  </a>
+                </div>
                 <AccountButton
                   session={session}
                   profile={profile}
