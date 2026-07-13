@@ -1115,6 +1115,11 @@ export default function Explore({
               // Picking a location means "what's near here" — surface the
               // closest restaurants instead of leaving the previous sort.
               setSortBy("distance");
+              // Drop the stale map-viewport split: on mobile the hidden map
+              // can't re-report bounds, so the old viewport would keep the
+              // previous area's restaurants pinned in the "On the map"
+              // section above the ones actually near the new origin.
+              setViewBounds(null);
             }}
           />
         </FilterSidebar>
@@ -1151,6 +1156,7 @@ export default function Explore({
           setOrigin(point);
           setOriginLabel(label);
           setSortBy("distance");
+          setViewBounds(null);
         }}
       />
       </div>
