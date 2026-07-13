@@ -12,11 +12,15 @@ major_version = 17
 
 [auth]
 enabled = true
-site_url = "https://bilbobackends.github.io/IsItVegan/"
+# The apex domain is canonical; the github.io URL stays allowed because old
+# magic-link emails and bookmarks may still round-trip through it.
+site_url = "https://dishtune.com/"
 additional_redirect_urls = [
   "http://localhost:5173/",
   "http://127.0.0.1:5173/",
   "https://bilbobackends.github.io/IsItVegan/",
+  "https://dishtune.com/",
+  "https://www.dishtune.com/",
 ]
 enable_signup = true
 enable_anonymous_sign_ins = false
@@ -30,11 +34,24 @@ max_frequency = "1m"
 otp_length = 8
 otp_expiry = 3600
 
+# Sign-in emails speak as DishTune, not Supabase. Pushed to the hosted
+# project with `npx supabase config push`. The sender address stays
+# Supabase's shared mailer until a custom SMTP domain is configured.
+[auth.email.template.magic_link]
+subject = "Sign in to DishTune"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.confirmation]
+subject = "Welcome to DishTune — confirm your email"
+content_path = "./supabase/templates/confirmation.html"
+
 [auth.mfa.totp]
 enroll_enabled = true
 verify_enabled = true
 
+# Mirrors the remote project (enabled via dashboard) so `config push`
+# leaves this section untouched; credentials live only in the dashboard.
 [auth.external.google]
-enabled = false
+enabled = true
 client_id = ""
 secret = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
