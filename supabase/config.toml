@@ -34,19 +34,25 @@ max_frequency = "1m"
 otp_length = 8
 otp_expiry = 3600
 
-# DishTune-branded sign-in emails (supabase/templates/) are written and
-# ready, but Supabase's FREE tier rejects template changes while on the
-# default shared mailer: "configure a custom SMTP provider or upgrade".
-# To enable: set up custom SMTP (dashboard → Project settings → Auth →
-# SMTP; e.g. Resend's free tier), uncomment these blocks, and run
-# `npx supabase config push`.
-# [auth.email.template.magic_link]
-# subject = "Sign in to DishTune"
-# content_path = "./supabase/templates/magic_link.html"
-#
-# [auth.email.template.confirmation]
-# subject = "Welcome to DishTune — confirm your email"
-# content_path = "./supabase/templates/confirmation.html"
+# Custom SMTP (Resend, domain-verified dishtune.com): auth emails send as
+# DishTune instead of Supabase's shared mailer, which also lifts the free
+# tier's template-customization block. The password IS the Resend API key.
+[auth.email.smtp]
+enabled = true
+host = "smtp.resend.com"
+port = 465
+user = "resend"
+pass = "env(RESEND_API_KEY)"
+admin_email = "hello@dishtune.com"
+sender_name = "DishTune"
+
+[auth.email.template.magic_link]
+subject = "Sign in to DishTune"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.confirmation]
+subject = "Welcome to DishTune — confirm your email"
+content_path = "./supabase/templates/confirmation.html"
 
 [auth.mfa.totp]
 enroll_enabled = true
