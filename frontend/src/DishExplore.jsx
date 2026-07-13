@@ -49,7 +49,11 @@ import {
 } from "./cloud.js";
 import { apiUrl } from "./staticData.js";
 
-const MAITLAND = { lat: 28.6278, lng: -81.3631 };
+// Default distance origin: downtown Orlando, the center of gravity of the
+// current coverage. originLabel === DEFAULT_ORIGIN_LABEL means the user
+// hasn't picked their own origin yet (near-me or address search).
+const ORLANDO = { lat: 28.5384, lng: -81.3789 };
+const DEFAULT_ORIGIN_LABEL = "Orlando";
 const RESULTS_PAGE_SIZE = 120;
 const RANGES = [
   { miles: 0, label: "Any distance" },
@@ -139,8 +143,8 @@ export default function DishExplore({
   const [openFilter, setOpenFilter] = useState("all");
   const [sortBy, setSortBy] = useState("recommended");
   const [maxMiles, setMaxMiles] = useState(0);
-  const [origin, setOrigin] = useState(MAITLAND);
-  const [originLabel, setOriginLabel] = useState("Maitland");
+  const [origin, setOrigin] = useState(ORLANDO);
+  const [originLabel, setOriginLabel] = useState(DEFAULT_ORIGIN_LABEL);
   // Phones: the inline "distances from X · change" address row under the
   // search bar — origin control without opening the collapsed filters.
   const [originOpen, setOriginOpen] = useState(false);
@@ -743,7 +747,7 @@ export default function DishExplore({
       marker.bindPopup(popup, { closeButton: false });
     }
 
-    if (originLabel !== "Maitland") {
+    if (originLabel !== DEFAULT_ORIGIN_LABEL) {
       // A chosen origin (address search or near-me) wins: center the map
       // there so it answers "what's around this spot", even when that spot
       // is far from every pin.
@@ -751,7 +755,7 @@ export default function DishExplore({
     } else if (bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     } else {
-      map.setView([MAITLAND.lat, MAITLAND.lng], 13);
+      map.setView([ORLANDO.lat, ORLANDO.lng], 13);
     }
 
     const resizeTimer = setTimeout(() => map.invalidateSize(), 100);

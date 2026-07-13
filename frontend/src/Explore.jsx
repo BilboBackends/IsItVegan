@@ -46,7 +46,11 @@ import {
 // nothing secret ever reaches the browser, per CLAUDE.md). Desktop shows
 // list and map side by side; mobile toggles between them.
 
-const MAITLAND = { lat: 28.6278, lng: -81.3631 };
+// Default distance origin: downtown Orlando, the center of gravity of the
+// current coverage. originLabel === DEFAULT_ORIGIN_LABEL means the user
+// hasn't picked their own origin yet (near-me or address search).
+const ORLANDO = { lat: 28.5384, lng: -81.3789 };
+const DEFAULT_ORIGIN_LABEL = "Orlando";
 
 function haversineMiles(a, b) {
   const R = 3958.8;
@@ -289,8 +293,8 @@ export default function Explore({
   const [priceTier, setPriceTier] = useState(0);
   const [openFilter, setOpenFilter] = useState("all");
   const [maxMiles, setMaxMiles] = useState(0);
-  const [origin, setOrigin] = useState(MAITLAND);
-  const [originLabel, setOriginLabel] = useState("Maitland");
+  const [origin, setOrigin] = useState(ORLANDO);
+  const [originLabel, setOriginLabel] = useState(DEFAULT_ORIGIN_LABEL);
   // Phones: the inline "distances from X · change" address row under the
   // search bar — origin control without opening the collapsed filters.
   const [originOpen, setOriginOpen] = useState(false);
@@ -725,7 +729,7 @@ export default function Explore({
       marker.bindPopup(el, { closeButton: false });
     });
 
-    if (originLabel !== "Maitland") {
+    if (originLabel !== DEFAULT_ORIGIN_LABEL) {
       // A chosen origin (address search or near-me) wins: center the map
       // there so it answers "what's around this spot", even when that spot
       // is far from every pin.
