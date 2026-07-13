@@ -52,12 +52,15 @@ export default function App() {
                 {/* Legal links stay visible in the header — the page footer
                     sits below hundreds of cards where nobody finds it. Phones
                     have no header room; they keep the footer links. */}
+                {/* .html works everywhere: Vite dev serves public/ files only
+                    at their literal names; Cloudflare redirects to the clean
+                    /privacy and /terms URLs in production. */}
                 <div className="mr-1 hidden items-center gap-2 text-xs text-stone-400 sm:flex">
-                  <a href="/privacy" className="hover:text-stone-600 hover:underline">
+                  <a href="/privacy.html" className="hover:text-stone-600 hover:underline">
                     Privacy
                   </a>
                   <span aria-hidden="true">·</span>
-                  <a href="/terms" className="hover:text-stone-600 hover:underline">
+                  <a href="/terms.html" className="hover:text-stone-600 hover:underline">
                     Terms
                   </a>
                 </div>
@@ -109,11 +112,11 @@ export default function App() {
               {/* Google OAuth brand verification checks that the homepage
                   links the published policies. */}
               <footer className="pb-8 pt-2 text-center text-xs text-stone-400">
-                <a href="/privacy" className="hover:text-stone-600 hover:underline">
+                <a href="/privacy.html" className="hover:text-stone-600 hover:underline">
                   Privacy
                 </a>
                 {" · "}
-                <a href="/terms" className="hover:text-stone-600 hover:underline">
+                <a href="/terms.html" className="hover:text-stone-600 hover:underline">
                   Terms
                 </a>
               </footer>
