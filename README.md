@@ -1,14 +1,16 @@
-# VeganFind
+# DishTune (VeganFind)
 
-Finds vegan-friendly dishes at restaurants by analyzing menu text and photos,
-even when a restaurant doesn't market itself as vegan. See [CLAUDE.md](CLAUDE.md)
-for the full product spec and pipeline design.
+Finds vegan-friendly dishes at restaurants by analyzing menu text, even when
+a restaurant doesn't market itself as vegan. Currently covering **Greater
+Orlando** (~460 venues, 28,000+ classified menu items). See
+[CLAUDE.md](CLAUDE.md) for the product spec and pipeline design.
 
-**Live site:** https://bilbobackends.github.io/IsItVegan/ — a fully static
-build served by GitHub Pages: the consumer views plus JSON data snapshots,
-no backend, no credentials, nothing a visitor can trigger. The pipeline
-(scraping, classification, Admin) runs only on the local machine; see
-"Publishing the public site" below.
+**Live site:** https://dishtune.com — a fully static build served by
+**Cloudflare Pages**: the consumer views plus JSON data snapshots, no
+backend, no credentials, nothing a visitor can trigger. User accounts and
+community notes are a separate Supabase data plane (see "Accounts &
+community" below). The pipeline (scraping, classification, Admin) runs only
+on the local machine; see "Publishing the public site" below.
 
 
 ## Setup
@@ -53,28 +55,40 @@ reach the client.
 
 Two top-level views:
 
-- **Explore** — one consumer-facing page that opens on **Restaurants & map**
-  (`#restaurants`) and switches quickly to **Food items & map** (`#dishes`).
-  Food items is a searchable index across every analyzed restaurant, with
-  separate food, dessert, and drink sections plus verdict and restaurant
-  filters; its map pins show matching-item counts. The restaurant view keeps
-  search, distance/geolocation controls, synchronized cards and map pins, and
-  dish-detail modals. Google ratings and rating counts appear on restaurant
-  cards, map popups, food results, and dish modals after enrichment.
+- **Explore** — one consumer-facing page with **Restaurants**, **Dishes**,
+  and **Saved** tabs. Dishes is a searchable index across every analyzed
+  restaurant, with food/dessert/drink category toggles plus verdict and
+  restaurant filters; its map pins show matching-item counts. The
+  restaurant view keeps search, distance/geolocation controls, synchronized
+  cards and map pins, and dish-detail modals. Google ratings and rating
+  counts appear on restaurant cards, map popups, food results, and dish
+  modals after enrichment. Both tabs share a venue-kind chip row
+  (All / Restaurant / Coffee / Dessert — the Dessert chip also flips the
+  category filter so dessert venues actually list their treats) and a
+  consolidated cuisine filter (~20 broad groups; unknown Google types fold
+  into "Other" instead of minting one-off options).
   Food search also understands combined intent such as `vegan pizza`,
   `high protein breakfast`, and dietary phrases such as `dairy free`, while
   indexing normalized ingredients such as tofu, seitan, and mushroom. It
   supports distance ranges / nearest-first sorting, price caps (Under
   $10/$15/$20/$30) with a cheapest sort, a meals-vs-sides filter, shareable
-  dish details, correction reports, and matching map pins. Restaurant cards
+  dish details, correction reports, and matching map pins. Whatever sort is
+  active, dish results keep verdict groups in order — vegan first, then
+  likely vegan, adaptable, unclear, not vegan — with the chosen sort
+  applied inside each group. Restaurant cards
   carry Google $-tier price levels and a strict vegan count: a headline
   "N vegan meals" means verdict `vegan` or high-confidence `likely_vegan`
   only — `vegan_adaptable` never counts, and sides are tallied separately so
   a bag of chips can't pose as a meal. Hearts save dishes and restaurants
-  locally in the browser under the **Saved** tab—no account required. Menu
+  under the **Saved** tab — stored per-browser, synced to the account when
+  signed in. Menu
   freshness and current opening status are shown wherever that restaurant
-  context is useful. On phones, filters collapse behind a compact disclosure
-  and a floating List/Map pill flips views.
+  context is useful. Distances default to measuring from downtown Orlando
+  until the visitor picks their own origin. On phones, filters collapse
+  behind a compact disclosure, a floating List/Map pill flips views, a
+  one-tap 📍 button by the search bar uses geolocation, and a
+  "Distances from X · change" line expands into an inline address search
+  (Nominatim) without opening the filter drawer.
 - **Admin** (`#admin`, local only) — the pipeline dashboard: run discovery /
   enrichment / ingestion, refresh stale menus and Google opening data, review
   correction reports, add restaurants (two-step: pick the exact Google Places
@@ -98,7 +112,12 @@ Two top-level views:
   status, group by refresh/pipeline/freshness/classification age, and sort
   by name, last-classified time, menu size, or vegan meals. An automated
   menu-quality audit flags likely-false or incomplete menus with one-click
-  rescrape and human review dispositions.
+  rescrape and human review dispositions. A **User activity** page
+  (`#admin/activity`, linked from the Admin header) shows account sign-ups,
+  notes/replies, votes, favorites, and comment reports from the Supabase
+  data plane as stat tiles plus one filterable chronological feed; it needs
+  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in the root `.env`
+  (server-side only — the anon key cannot see emails or join dates).
 
 Consumer views automatically exclude Google place types that are not food
 venues (for example convenience stores, gas stations, and supermarkets).
@@ -107,6 +126,32 @@ false-positive listing can be hidden from Explore without deleting its data.
 While the expanded catalog is being processed, consumer views and static
 exports also require at least one classified dish. Unfinished venues remain
 visible in Admin and appear automatically after classification.
+
+## Accounts & community (Supabase)
+
+User accounts are optional and feature-flagged: favorites/thumbs sync, and
+per-restaurant comment threads ("notes") with @dish and @user mentions and
+replies. Sign-in is Google OAuth or an email magic link. The browser talks
+to Supabase directly with the publishable anon key; **Row Level Security is
+the entire write-authorization story** (`supabase/schema.sql`, applied via
+the SQL editor; setup walkthrough in `supabase/SETUP.md`). Cloud rows key
+on the restaurant's Google place_id plus a normalized dish name, because
+numeric dish ids renumber on full reclassification.
+
+- Frontend flags (`frontend/.env.local` locally; repo Actions vars for the
+  public build): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
+  `VITE_SUPABASE_GOOGLE_ENABLED`. Without them every account feature is
+  inert and the site behaves as before.
+- The **service role key** exists only in the root `.env` for the local
+  Admin activity page. It bypasses RLS — never put it in any `VITE_`
+  variable or frontend file.
+- `supabase/config.toml` mirrors the hosted project's auth config
+  (site URL, redirect allow-list, providers). ⚠ `supabase config push`
+  applies WITHOUT prompting when run non-interactively; keep the file
+  mirroring the dashboard before any push. Branded email templates live in
+  `supabase/templates/` but are commented out in config.toml: Supabase's
+  free tier only allows custom templates once a custom SMTP provider is
+  configured.
 
 ## Running the pipeline from the command line
 
@@ -263,8 +308,9 @@ so sites that scrape fine over HTTP never pay for the LLM, PDF, or browser step.
 
 Remaining failures: bot walls that survive even a real-Chrome headless
 browser, social-profile-only "websites", and menus published solely as
-images. All are photo-fallback candidates (the planned Phase 4). In the
-current set, **53 of 59 sites with websites yield a real menu** (~90%).
+images. All are photo-fallback candidates (the planned Phase 4). Measured
+on the original Maitland set, **53 of 59 sites with websites yielded a real
+menu** (~90%).
 
 ### Phase 3 — dish classification
 
@@ -331,8 +377,15 @@ density can matter as much as raw menu length.
 ## Publishing the public site
 
 The public site is fully static: the frontend built in static-data mode plus
-JSON snapshots of the consumer data, deployed to GitHub Pages by
-`.github/workflows/deploy-pages.yml` on every push to master.
+JSON snapshots of the consumer data, deployed to **Cloudflare Pages**
+(project `dishtune`, custom domains dishtune.com + www) by
+`.github/workflows/deploy.yml` on every push to master — build, then
+`wrangler pages deploy`. The workflow needs the `CLOUDFLARE_API_TOKEN`
+repo secret and `CLOUDFLARE_ACCOUNT_ID` repo variable. Cloudflare caps
+deployment assets at 25 MiB per file, so the workflow drops the raw
+`data/dishes.json` (60+ MiB legacy fallback) — every modern browser
+stream-decompresses `dishes.json.gz` (~7 MiB) instead. GitHub Pages was
+the original host (retired 2026-07-13; it required a public repository).
 
 ```bash
 # After a recrawl/reclassify session — export data, commit, push, deploy:
@@ -353,16 +406,19 @@ for a paginated PostgreSQL search API and server-side facets. On the static
 build Admin and report submission are hidden because there is no backend to
 receive them.
 
-## Discovery configuration (`.env`)
+## Configuration (root `.env`)
 
 | Var | Default | Purpose |
 |-----|---------|---------|
 | `GOOGLE_PLACES_API_KEY` | — | Google Places API (New) key. Required for live runs. |
-| `DISCOVERY_LAT` / `DISCOVERY_LNG` | Maitland center | Search center. |
+| `DEEPSEEK_API_KEY` | — | Menu classification (sole provider). |
+| `DISCOVERY_LAT` / `DISCOVERY_LNG` | Maitland center | Area-discovery search center (expansion normally runs via Admin's Prospect radius sweeps instead). |
 | `DISCOVERY_RADIUS_METERS` | 4000 | Area radius to cover. |
 | `DISCOVERY_CELL_RADIUS_METERS` | 1500 | Grid cell size. Smaller = more thorough, more API calls (~49 calls/run at 1500m). |
-| `DISCOVERY_CITY` | Maitland | Keep only results whose address is in this city. |
+| `DISCOVERY_CITY` | Maitland | Keep only area-discovery results whose address is in this city. |
 | `DATABASE_PATH` | veganfind.db | SQLite file location. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | — | Admin activity page (server-side only; bypasses RLS). |
+| `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` | — | Hosting: local wrangler deploys + DNS/domain API (CI uses the repo secret/variable). |
 
 ## Project layout
 
@@ -389,8 +445,12 @@ usage_limits.py             # subscription usage windows for the limits panel
 venue_filter.py             # consumer-visibility gate (types, hidden, archived)
 publish_static.py           # export consumer data JSON for the public site
 api.py                      # Flask JSON API for the local dashboard
+activity.py                 # Admin user-activity feed (Supabase service key)
 tests/                      # network-free regression tests (pytest)
-.github/workflows/          # GitHub Pages deploy on push
+.github/workflows/          # Cloudflare Pages deploy on push (deploy.yml)
 fixtures/                   # mock data for running without live APIs
 frontend/                   # React + Vite + Tailwind (dashboard + public site)
+supabase/                   # accounts data plane: schema.sql (RLS), config.toml,
+                            # migrations, branded email templates, SETUP.md
+docs/                       # working notes (e.g. session logs)
 ```
