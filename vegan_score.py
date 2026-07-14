@@ -45,12 +45,18 @@ def menu_offers_plant_protein(menu_text: str | None) -> bool:
 # vegan lineup — earns the full substance credit.
 _TREAT_VARIETY_SATURATION = 5
 
+# Review-volume prior for reputation: ratings shrink toward the neutral 4.0
+# (reputation 1.0, same as unrated) until enough reviews back them up.
+_RATING_PRIOR = 4.0
+_RATING_PRIOR_WEIGHT = 25
+
 
 def compute_vegan_score(
     vegan_meals: int,
     vegan_sides: int = 0,
     substance_points: float = 0.0,
     google_rating: float | None = None,
+    rating_count: int | None = None,
     dessert_venue: bool = False,
     plant_protein_menu: bool = False,
 ) -> dict:
@@ -88,7 +94,16 @@ def compute_vegan_score(
     if google_rating is None:
         reputation = 1.0  # unknown, not bad
     else:
-        reputation = 2.0 * min(1.0, max(0.0, (float(google_rating) - 3.0) / 2.0))
+        rating = float(google_rating)
+        if rating_count is not None:
+            # Trust a rating only as far as its sample: a lone 5.0 must not
+            # outrank a 4.6 built on thousands of reviews. Bayesian shrink
+            # toward the 4.0 neutral midpoint; ~25 reviews earn half trust.
+            n = max(0, int(rating_count))
+            rating = (n * rating + _RATING_PRIOR_WEIGHT * _RATING_PRIOR) / (
+                n + _RATING_PRIOR_WEIGHT
+            )
+        reputation = 2.0 * min(1.0, max(0.0, (rating - 3.0) / 2.0))
 
     return {
         "score": round(selection + substance + reputation, 1),

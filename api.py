@@ -159,6 +159,7 @@ def get_restaurants() -> object:
             vegan_sides=c["vegan_sides"] if c else 0,
             substance_points=c.get("vegan_substance_points", 0.0) if c else 0.0,
             google_rating=r.get("rating"),
+            rating_count=r.get("user_rating_count"),
             dessert_venue=r.get("primary_type") in db.DESSERT_VENUE_TYPES,
             plant_protein_menu=menu_offers_plant_protein(
                 menu_source["content"] if menu_source else None

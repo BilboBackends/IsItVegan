@@ -118,6 +118,7 @@ def _consumer_restaurant_row(restaurant: dict, counts: dict | None) -> dict:
         vegan_sides=counts["vegan_sides"] if counts else 0,
         substance_points=counts.get("vegan_substance_points", 0.0) if counts else 0.0,
         google_rating=restaurant.get("rating"),
+        rating_count=restaurant.get("user_rating_count"),
         dessert_venue=restaurant.get("primary_type") in db.DESSERT_VENUE_TYPES,
         plant_protein_menu=menu_offers_plant_protein(
             menu_source["content"] if menu_source else None

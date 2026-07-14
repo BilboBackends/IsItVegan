@@ -65,6 +65,15 @@ def test_reputation_scales_and_clamps():
     assert compute_vegan_score(3, google_rating=None)["reputation"] == 1.0
 
 
+def test_reputation_weighs_review_volume():
+    lone = compute_vegan_score(3, google_rating=5.0, rating_count=1)
+    proven = compute_vegan_score(3, google_rating=4.6, rating_count=4000)
+    assert proven["reputation"] > lone["reputation"]
+    assert lone["reputation"] < 1.2  # barely above the unrated neutral
+    # No count supplied -> legacy behavior, rating taken at face value.
+    assert compute_vegan_score(3, google_rating=4.6)["reputation"] == 1.6
+
+
 def test_sides_help_a_little():
     none = compute_vegan_score(2, vegan_sides=0)["selection"]
     some = compute_vegan_score(2, vegan_sides=4)["selection"]
