@@ -11,6 +11,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
+    // Listen on the LAN so a phone on the home network / WireGuard tunnel
+    // can open the dev app at http://192.168.1.50:5173. The backend stays
+    // loopback-only; the /api proxy below runs server-side on this machine.
+    host: true,
     allowedHosts: ["nutty-stuffy-snuff.ngrok-free.dev"],
     proxy: {
       "/api": "http://127.0.0.1:5000",
