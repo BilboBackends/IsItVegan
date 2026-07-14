@@ -839,6 +839,9 @@ export default function Explore({
           label="restaurant"
         />
       </div>
+      {/* Quality row: our score and Google's reputation side by side —
+          two compact chips that fit one line even on phones. The vegan
+          count gets its own row below so it never stacks unpredictably. */}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {r.vegan_score != null && r.dish_count > 0 && (
           <VeganScoreBadge
@@ -847,6 +850,17 @@ export default function Explore({
             onToggle={setScoreOpenFor}
           />
         )}
+        {ratingText(r.rating, r.user_rating_count) && (
+          <span className="text-xs font-semibold text-stone-600" title="Google rating">
+            <span className="text-amber-500">★</span>{" "}
+            {Number(r.rating).toFixed(1)}
+            <span className="font-normal text-stone-400">
+              {" "}({formatRatingCount(r.user_rating_count) ?? "—"})
+            </span>
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5">
         <button
           type="button"
           onClick={(event) => {
@@ -887,15 +901,6 @@ export default function Explore({
         {priceLevelSymbol(r.price_level) && (
           <span className="font-semibold text-stone-600" title="Google price level">
             {priceLevelSymbol(r.price_level)}
-          </span>
-        )}
-        {ratingText(r.rating, r.user_rating_count) && (
-          <span className="font-semibold text-stone-600" title="Google rating">
-            <span className="text-amber-500">★</span>{" "}
-            {Number(r.rating).toFixed(1)}
-            <span className="font-normal text-stone-400">
-              {" "}({formatRatingCount(r.user_rating_count) ?? "—"})
-            </span>
           </span>
         )}
         {r.distance != null && (
