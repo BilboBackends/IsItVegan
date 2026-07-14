@@ -203,6 +203,9 @@ function VeganScoreBadge({ r, open, onToggle }) {
                 <span className="font-normal text-stone-400">/10</span>
               </span>
             </div>
+            {/* Everything reads out of 5: the components are stored on
+                different internal scales (5/3/2) but users shouldn't need
+                three denominators to compare bars. */}
             <ScoreBar
               label="Selection"
               value={p.selection}
@@ -215,8 +218,8 @@ function VeganScoreBadge({ r, open, onToggle }) {
             />
             <ScoreBar
               label="Substance"
-              value={p.substance}
-              max={3}
+              value={Math.round(((p.substance * 5) / 3) * 10) / 10}
+              max={5}
               note={
                 treat
                   ? "Vegan treat variety — it's a dessert spot"
@@ -225,11 +228,11 @@ function VeganScoreBadge({ r, open, onToggle }) {
             />
             <ScoreBar
               label="Reputation"
-              value={p.reputation}
-              max={2}
+              value={Math.round(((p.reputation * 5) / 2) * 10) / 10}
+              max={5}
               note={
                 r.rating != null
-                  ? `${Number(r.rating).toFixed(1)}★ on Google (3.0★ → 0, 5.0★ → 2)`
+                  ? `${Number(r.rating).toFixed(1)}★ on Google, weighted by review count`
                   : "No Google rating yet — scored neutral"
               }
             />
@@ -247,10 +250,12 @@ function veganScoreTitle(r) {
     p.basis === "treat_variety"
       ? "(vegan treat variety — it's a dessert spot)"
       : "(filling vegan options: protein-rich dishes, purpose-built vegan mains, or vegan proteins offered on the menu)";
+  const five = (value, max) => ((value * 5) / max).toFixed(1);
   return (
-    `Vegan score ${p.score}/10 — selection ${p.selection}/5 ` +
-    `(vegan options with diminishing returns), substance ${p.substance}/3 ` +
-    `${substanceMeaning}, reputation ${p.reputation}/2 (Google rating)`
+    `Vegan score ${p.score}/10 — selection ${five(p.selection, 5)}/5 ` +
+    `(vegan options with diminishing returns), substance ${five(p.substance, 3)}/5 ` +
+    `${substanceMeaning}, reputation ${five(p.reputation, 2)}/5 (Google rating, ` +
+    `weighted by review count)`
   );
 }
 
