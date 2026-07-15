@@ -13,6 +13,7 @@
 
 import { createContext } from "react";
 import { attachReplyTargets } from "./commentReplies.js";
+import { mergeNotificationEvents } from "./notifications.js";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -117,6 +118,14 @@ export function registerRestaurants(restaurants) {
       registry.restaurantIdByPlaceId.set(r.place_id, r.id);
     }
   }
+}
+
+// Display name for a place_id once the restaurant datasets have announced
+// themselves; null (caller shows a generic label) before that.
+export function restaurantNameForPlaceId(placeId) {
+  const restaurantId = registry.restaurantIdByPlaceId.get(placeId);
+  if (restaurantId == null) return null;
+  return registry.restaurantsById.get(restaurantId)?.name || null;
 }
 
 // Stable identity for a favorite/vote target, or null when the datasets
@@ -536,6 +545,123 @@ export async function deleteComment(commentId) {
   commentCountsCache.at = 0;
   dishMentionCountsCache.at = 0;
   window.dispatchEvent(new Event("dishtune:comments-changed"));
+}
+
+// ----------------------------------------------------------- notifications
+
+// Everything the bell needs about you is derivable from the public comments
+// table: replies target your note ids, mentions carry your user_id in the
+// canonicalized user_mentions array (GIN-indexed for exactly this lookup).
+export async function fetchNotificationEvents(userId) {
+  if (!userId) return [];
+  const client = await getClient();
+  if (!client) return [];
+
+  const { data: ownRows, error: ownError } = await client
+    .from("comments")
+    .select("id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (ownError) throw new Error(ownError.message);
+  const ownIds = (ownRows || []).map((row) => row.id);
+
+  const fields =
+    "id, user_id, place_id, body, mentions, user_mentions, parent_comment_id, created_at";
+
+  // Same bounded-URL chunking rationale as attachUsernames.
+  const chunks = [];
+  for (let index = 0; index < ownIds.length; index += 100) {
+    chunks.push(ownIds.slice(index, index + 100));
+  }
+  const replyResponses = await Promise.all(
+    chunks.map((ids) =>
+      client
+        .from("comments")
+        .select(fields)
+        .in("parent_comment_id", ids)
+        .neq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(50)
+    )
+  );
+  const replies = [];
+  for (const { data, error } of replyResponses) {
+    if (error) throw new Error(error.message);
+    replies.push(...(data || []));
+  }
+
+  const { data: mentionRows, error: mentionError } = await client
+    .from("comments")
+    .select(fields)
+    .contains("user_mentions", JSON.stringify([{ user_id: userId }]))
+    .neq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (mentionError) throw new Error(mentionError.message);
+
+  const merged = mergeNotificationEvents({
+    replies,
+    mentions: mentionRows || [],
+    userId,
+  }).slice(0, 50);
+  return attachUsernames(client, merged);
+}
+
+export async function fetchMyNotes(userId) {
+  if (!userId) return [];
+  const client = await getClient();
+  if (!client) return [];
+  const { data, error } = await client
+    .from("comments")
+    .select("id, place_id, body, mentions, parent_comment_id, created_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+// The notification_state migration can lag behind a frontend deploy.
+// A missing table must degrade to "no watermark yet" (everything unread),
+// never break the feed.
+function isMissingNotificationState(error) {
+  return (
+    error?.code === "PGRST205" || // not in PostgREST's schema cache
+    error?.code === "42P01" || // undefined_table
+    /notification_state/.test(error?.message || "")
+  );
+}
+
+export async function fetchNotificationsSeenAt(userId) {
+  if (!userId) return null;
+  const client = await getClient();
+  if (!client) return null;
+  const { data, error } = await client
+    .from("notification_state")
+    .select("seen_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) {
+    if (isMissingNotificationState(error)) return null;
+    throw new Error(error.message);
+  }
+  return data?.seen_at || null;
+}
+
+export async function markNotificationsSeen(userId) {
+  if (!userId) return null;
+  const client = await getClient();
+  if (!client) return null;
+  const seenAt = new Date().toISOString();
+  const { error } = await client
+    .from("notification_state")
+    .upsert({ user_id: userId, seen_at: seenAt });
+  if (error) {
+    if (isMissingNotificationState(error)) return null;
+    throw new Error(error.message);
+  }
+  return seenAt;
 }
 
 export async function reportComment(commentId, userId) {

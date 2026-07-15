@@ -344,6 +344,24 @@ drop policy if exists "own reports readable" on public.comment_reports;
 create policy "own reports readable"
   on public.comment_reports for select using (auth.uid() = user_id);
 
+-- ------------------------------------------------------ notification_state
+-- Cross-device notification read state: one row per user recording when
+-- they last opened the notifications panel. Replies and @mentions newer
+-- than seen_at light the header badge on any signed-in device. A separate
+-- table rather than a profiles column so the timestamp is not
+-- world-readable through the "profiles are readable" policy.
+create table if not exists public.notification_state (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  seen_at timestamptz not null default now()
+);
+
+alter table public.notification_state enable row level security;
+
+drop policy if exists "own notification state" on public.notification_state;
+create policy "own notification state"
+  on public.notification_state for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 -- ------------------------------------------------------ Data API privileges
 -- This project keeps "Automatically expose new tables" OFF. Grants are a
 -- separate security layer from RLS: these make only the operations used by
@@ -368,9 +386,13 @@ grant insert, delete on table public.comments to authenticated;
 revoke all on table public.comment_reports from anon, authenticated;
 grant select, insert on table public.comment_reports to authenticated;
 
+revoke all on table public.notification_state from anon, authenticated;
+grant select, insert, update on table public.notification_state to authenticated;
+
 -- The service role is reserved for trusted moderation/admin tooling.
 grant all on table public.profiles, public.favorites, public.votes,
-  public.comments, public.comment_reports to service_role;
+  public.comments, public.comment_reports, public.notification_state
+  to service_role;
 
 -- These functions exist only as database triggers; browser clients never
 -- call them as RPC endpoints.

@@ -74,6 +74,19 @@ changes:
 
     npx supabase db push
 
+## 6. Notifications
+
+Signed-in users get a header bell showing replies to their notes and
+@mentions of them, plus a "Your notes" tab listing everything they have
+written, grouped by restaurant. Both feeds are derived straight from the
+public `comments` table (replies target the user's note ids; mentions carry
+the user's id in the canonicalized `user_mentions` array, which is
+GIN-indexed for that lookup) — there is no separate notifications table to
+fan out into. The only new state is `notification_state.seen_at`, a
+per-user cross-device watermark advanced whenever the panel is opened;
+anything newer lights the badge. Rows are readable/writable only by their
+owner (`20260715120000_notification_state.sql`).
+
 ## What lives where
 
 | Data                          | Home                                    |

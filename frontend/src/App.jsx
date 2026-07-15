@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { STATIC_MODE } from "./staticData.js";
 import { ProfileContext, SessionContext } from "./cloud.js";
 import AccountButton from "./AccountButton.jsx";
+import NotificationBell from "./NotificationBell.jsx";
 import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
 import AdminActivity from "./AdminActivity.jsx";
@@ -72,6 +73,7 @@ export default function App() {
                     Terms
                   </a>
                 </div>
+                <NotificationBell />
                 <AccountButton
                   session={session}
                   profile={profile}
