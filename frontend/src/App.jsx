@@ -5,6 +5,7 @@ import AccountButton from "./AccountButton.jsx";
 import ExploreHub from "./ExploreHub.jsx";
 import Admin from "./Admin.jsx";
 import AdminActivity from "./AdminActivity.jsx";
+import { replaceHashRouteFromClick } from "./hashNavigation.js";
 
 // Shell: hash-routed views. Consumers can browse restaurants or search the
 // cross-menu dish index; #admin holds discovery/ingest/enrich controls.
@@ -18,7 +19,11 @@ export default function App() {
   useEffect(() => {
     const onHash = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onHash);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onHash);
+    };
   }, []);
 
   // The static public build is a consumer product. Keep the local pipeline
@@ -40,7 +45,10 @@ export default function App() {
           <nav className="sticky top-0 z-30 border-b border-stone-200/80 bg-[#faf8f4]/90 backdrop-blur">
             <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
               <a
-                href="#"
+                href="#restaurants"
+                onClick={(event) =>
+                  replaceHashRouteFromClick(event, "restaurants")
+                }
                 className="flex items-center gap-2 text-lg font-extrabold tracking-tight text-emerald-800"
               >
                 <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-700 text-base text-white">
@@ -77,6 +85,9 @@ export default function App() {
                   <div className="flex gap-1 rounded-full border border-stone-200 bg-white p-1 text-xs shadow-sm sm:text-sm">
                     <a
                       href="#restaurants"
+                      onClick={(event) =>
+                        replaceHashRouteFromClick(event, "restaurants")
+                      }
                       className={`rounded-full px-2.5 py-1.5 font-semibold transition sm:px-4 ${
                         !isAdmin
                           ? "bg-emerald-700 text-white"
@@ -87,6 +98,9 @@ export default function App() {
                     </a>
                     <a
                       href="#admin"
+                      onClick={(event) =>
+                        replaceHashRouteFromClick(event, "admin")
+                      }
                       className={`rounded-full px-2.5 py-1.5 font-semibold transition sm:px-4 ${
                         isAdmin
                           ? "bg-emerald-700 text-white"

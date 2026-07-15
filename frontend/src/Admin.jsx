@@ -4,6 +4,10 @@ import "leaflet/dist/leaflet.css";
 import DishModal from "./DishModal.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import {
+  ADMIN_ROWS_PER_PAGE,
+  limitGroupedRows,
+} from "./adminPagination.js";
+import {
   FreshnessBadge,
   OpenStatusBadge,
   isMenuStale,
@@ -1843,6 +1847,10 @@ export default function Admin() {
   const [groupBy, setGroupBy] = useState("none");
   const [sortBy, setSortBy] = useState("recent");
   const [tableView, setTableView] = useState("active"); // active | archived
+  const [rowPagination, setRowPagination] = useState({
+    key: null,
+    limit: ADMIN_ROWS_PER_PAGE,
+  });
   const [menuFor, setMenuFor] = useState(null); // restaurant whose menu is open
   const [historyFor, setHistoryFor] = useState(null); // menu-history modal
   const [deleteFor, setDeleteFor] = useState(null); // restaurant pending permanent deletion
@@ -1882,8 +1890,32 @@ export default function Admin() {
   // Keeping it here also preserves its live status when there are no failures.
   const [doctor, setDoctor] = useState(null);
   const doctorTimer = useRef(null);
+  const qualityTimer = useRef(null);
   const doctorCompletionRef = useRef(null);
   const classifyPollRef = useRef(false);
+
+  async function loadMenuQuality({ quiet = false } = {}) {
+    try {
+      const response = await fetch("/api/menu-quality");
+      if (!response.ok) {
+        throw new Error(`/api/menu-quality ${response.status}`);
+      }
+      setMenuQuality((await response.json()).findings || []);
+    } catch (qualityError) {
+      // Initial loading is supplemental, but an explicit review/reopen action
+      // must tell the operator when its follow-up refresh did not complete.
+      if (!quiet) throw qualityError;
+    }
+  }
+
+  function scheduleMenuQuality() {
+    clearTimeout(qualityTimer.current);
+    // Let the primary table paint before the CPU-heavier full-menu audit.
+    qualityTimer.current = setTimeout(
+      () => void loadMenuQuality({ quiet: true }),
+      250
+    );
+  }
 
   async function loadData() {
     setLoading(true);
@@ -1892,11 +1924,10 @@ export default function Admin() {
       // Price the cost estimates against the provider currently selected in
       // the classify controls, so the pre-run number matches the button.
       const providerParam = encodeURIComponent(classifierProvider);
-      const [rRes, cRes, reportRes, qualityRes, usageRes] = await Promise.all([
+      const [rRes, cRes, reportRes, usageRes] = await Promise.all([
         fetch(`/api/restaurants?include_excluded=true&provider=${providerParam}`),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
-        fetch("/api/menu-quality"),
         fetch("/api/provider-usage"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
@@ -1907,8 +1938,8 @@ export default function Admin() {
       );
       if (cRes.ok) setConfig(await cRes.json());
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
-      if (qualityRes.ok) setMenuQuality((await qualityRes.json()).findings || []);
       if (usageRes.ok) setProviderUsage(await usageRes.json());
+      scheduleMenuQuality();
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
     } finally {
@@ -2056,7 +2087,10 @@ export default function Admin() {
     // Reconnect to an in-flight Doctor run even when the failure panel is
     // absent because its target had a superficially successful scrape.
     pollDoctor();
-    return () => clearTimeout(doctorTimer.current);
+    return () => {
+      clearTimeout(doctorTimer.current);
+      clearTimeout(qualityTimer.current);
+    };
   }, []);
 
   async function runDiscovery() {
@@ -2219,7 +2253,7 @@ export default function Admin() {
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not save review.");
-      await loadData();
+      await loadMenuQuality();
     } catch (reviewError) {
       setError(reviewError.message);
     } finally {
@@ -2237,7 +2271,7 @@ export default function Admin() {
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not reopen warning.");
-      await loadData();
+      await loadMenuQuality();
     } catch (reviewError) {
       setError(reviewError.message);
     } finally {
@@ -2758,6 +2792,35 @@ export default function Admin() {
     }
     return result;
   }, [filtered, groupBy, sortBy]);
+
+  // Filters and bulk selection still cover every matching restaurant, but
+  // only a bounded prefix becomes table DOM. Couple an expanded limit to the
+  // exact data/view identity so a filter or data refresh uses 75 immediately,
+  // rather than briefly rendering the old large limit before an effect runs.
+  const qualityPaginationVersion =
+    operationalFilter === "quality" ? activeMenuQuality : null;
+  const paginationKey = useMemo(
+    () => ({}),
+    [
+      restaurants,
+      query,
+      operationalFilter,
+      areaFilter,
+      groupBy,
+      sortBy,
+      tableView,
+      qualityPaginationVersion,
+    ]
+  );
+  const visibleRowLimit =
+    rowPagination.key === paginationKey
+      ? rowPagination.limit
+      : ADMIN_ROWS_PER_PAGE;
+  const renderedGroups = useMemo(
+    () => limitGroupedRows(groupedFiltered, visibleRowLimit),
+    [groupedFiltered, visibleRowLimit]
+  );
+  const renderedRowCount = Math.min(visibleRowLimit, filtered.length);
 
   // Distinct areas (active rows) nested under their metro, biggest first —
   // drives the area dropdown's optgroups.
@@ -3448,7 +3511,7 @@ export default function Admin() {
             </button>
           )}
           <span className="ml-auto whitespace-nowrap text-sm text-slate-500">
-            {filtered.length} shown
+            {filtered.length} results
           </span>
           </>
           )}
@@ -3547,8 +3610,8 @@ export default function Admin() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {groupedFiltered.map((group) => {
-                    const groupSelectable = group.items.filter(
+                  {renderedGroups.map((group) => {
+                    const groupSelectable = group.allItems.filter(
                       (restaurant) =>
                         restaurant.refresh_enabled && restaurant.is_consumer_venue
                     );
@@ -3566,7 +3629,7 @@ export default function Admin() {
                                 <input
                                   type="checkbox"
                                   checked={groupSelected}
-                                  onChange={() => toggleGroup(group.items)}
+                                  onChange={() => toggleGroup(group.allItems)}
                                   disabled={groupSelectable.length === 0}
                                   aria-label={`Select group ${group.label}`}
                                   className="h-4 w-4 rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed"
@@ -3575,7 +3638,7 @@ export default function Admin() {
                                   {group.label}
                                 </span>
                                 <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500 shadow-sm">
-                                  {group.items.length}
+                                  {group.totalCount}
                                 </span>
                               </div>
                             </td>
@@ -3916,6 +3979,32 @@ export default function Admin() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+          {!loading && filtered.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+              <span>
+                Showing {renderedRowCount.toLocaleString()} of{" "}
+                {filtered.length.toLocaleString()} matching restaurants.
+                Selection controls apply to all filtered results, including
+                rows not displayed yet.
+              </span>
+              {renderedRowCount < filtered.length && (
+                <button
+                  onClick={() =>
+                    setRowPagination((current) => ({
+                      key: paginationKey,
+                      limit:
+                        (current.key === paginationKey
+                          ? current.limit
+                          : ADMIN_ROWS_PER_PAGE) + ADMIN_ROWS_PER_PAGE,
+                    }))
+                  }
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-bold text-slate-700 shadow-sm hover:bg-slate-100"
+                >
+                  Load {Math.min(ADMIN_ROWS_PER_PAGE, filtered.length - renderedRowCount)} more
+                </button>
+              )}
             </div>
           )}
         </div>

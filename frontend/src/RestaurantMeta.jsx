@@ -1,4 +1,8 @@
-import { scheduledOpenState, todayHoursText } from "./openingHours.js";
+import {
+  openingHoursSnapshot,
+  scheduledOpenState,
+  todayHoursText,
+} from "./openingHours.js";
 
 function ageInDays(value) {
   if (!value) return null;
@@ -46,6 +50,27 @@ export function currentOpenState(openNow, enrichedAt, openingHours, date = new D
   return openNow === 1 || openNow === true;
 }
 
+export function restaurantOpenSnapshot(
+  openNow,
+  enrichedAt,
+  openingHours,
+  date = new Date()
+) {
+  const hours = openingHoursSnapshot(openingHours, date);
+  let openState = hours.scheduledOpenState;
+  if (openState == null) {
+    openState =
+      openNow == null || (ageInDays(enrichedAt) ?? Infinity) >= 1
+        ? null
+        : openNow === 1 || openNow === true;
+  }
+  return {
+    openState,
+    scheduleState: hours.scheduledOpenState,
+    todayHours: hours.todayHours,
+  };
+}
+
 export function FreshnessBadge({ fetchedAt, compact = false }) {
   const label = relativeDate(fetchedAt);
   if (!label) return null;
@@ -63,8 +88,11 @@ export function FreshnessBadge({ fetchedAt, compact = false }) {
 }
 
 export function OpenStatusBadge({ openNow, enrichedAt, openingHours }) {
-  const scheduleState = scheduledOpenState(openingHours);
-  const openState = currentOpenState(openNow, enrichedAt, openingHours);
+  const { scheduleState, openState } = restaurantOpenSnapshot(
+    openNow,
+    enrichedAt,
+    openingHours
+  );
   if (openState == null) {
     if (openNow == null && !openingHours?.length) return null;
     return (

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { scheduledOpenState, todayHoursText } from "../src/openingHours.js";
+import {
+  openingHoursSnapshot,
+  scheduledOpenState,
+  todayHoursText,
+} from "../src/openingHours.js";
 
 const zone = "America/New_York";
 
@@ -29,4 +33,12 @@ test("handles 24-hour schedules and returns today's display text", () => {
   const date = new Date("2026-07-05T16:00:00Z");
   assert.equal(scheduledOpenState(hours, date, zone), true);
   assert.equal(todayHoursText(hours, date, zone), "Open 24 hours");
+});
+
+test("returns today's text and open state in one snapshot", () => {
+  const hours = ["Monday: 11:00 AM-9:00 PM"];
+  assert.deepEqual(
+    openingHoursSnapshot(hours, new Date("2026-07-06T17:00:00Z"), zone),
+    { todayHours: "11:00 AM-9:00 PM", scheduledOpenState: true }
+  );
 });

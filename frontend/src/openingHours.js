@@ -12,6 +12,12 @@ const DAYS = [
 // visitor in another time zone still sees the restaurant's local status.
 export const RESTAURANT_TIME_ZONE = "America/New_York";
 
+// Static restaurant records keep the same opening-hours array for the life of
+// the page. Parsing it once avoids repeating the regex work on every filter,
+// card, and dish that belongs to that restaurant.
+const scheduleCache = new WeakMap();
+const clockFormatterCache = new Map();
+
 function normalizedText(value) {
   return String(value || "")
     .replace(/[\u2000-\u200b\u202f\u205f\u3000]/g, " ")
@@ -21,13 +27,18 @@ function normalizedText(value) {
 }
 
 function zonedClock(date, timeZone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "long",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
+  let formatter = clockFormatterCache.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    clockFormatterCache.set(timeZone, formatter);
+  }
+  const parts = formatter.formatToParts(date);
   const value = (type) => parts.find((part) => part.type === type)?.value;
   return {
     day: value("weekday"),
@@ -91,30 +102,19 @@ function parseDayLine(line) {
 
 function parsedSchedule(openingHours) {
   if (!Array.isArray(openingHours)) return new Map();
-  return new Map(
+  const cached = scheduleCache.get(openingHours);
+  if (cached) return cached;
+  const schedule = new Map(
     openingHours
       .map(parseDayLine)
       .filter(Boolean)
       .map((entry) => [entry.day, entry])
   );
+  scheduleCache.set(openingHours, schedule);
+  return schedule;
 }
 
-export function todayHoursText(
-  openingHours,
-  date = new Date(),
-  timeZone = RESTAURANT_TIME_ZONE
-) {
-  const { day } = zonedClock(date, timeZone);
-  return parsedSchedule(openingHours).get(day)?.text || null;
-}
-
-export function scheduledOpenState(
-  openingHours,
-  date = new Date(),
-  timeZone = RESTAURANT_TIME_ZONE
-) {
-  const schedule = parsedSchedule(openingHours);
-  const { day, minutes } = zonedClock(date, timeZone);
+function scheduledStateAt(schedule, day, minutes) {
   const dayIndex = DAYS.indexOf(day);
   const today = schedule.get(day);
   const yesterday = schedule.get(DAYS[(dayIndex + 6) % 7]);
@@ -134,4 +134,36 @@ export function scheduledOpenState(
       ? minutes >= interval.start && minutes < interval.end
       : minutes >= interval.start
   );
+}
+
+// Calculate the display hours and open state from one parsed schedule and one
+// timezone lookup. Consumers that need both should use this snapshot instead
+// of calling todayHoursText and scheduledOpenState separately.
+export function openingHoursSnapshot(
+  openingHours,
+  date = new Date(),
+  timeZone = RESTAURANT_TIME_ZONE
+) {
+  const schedule = parsedSchedule(openingHours);
+  const { day, minutes } = zonedClock(date, timeZone);
+  return {
+    todayHours: schedule.get(day)?.text || null,
+    scheduledOpenState: scheduledStateAt(schedule, day, minutes),
+  };
+}
+
+export function todayHoursText(
+  openingHours,
+  date = new Date(),
+  timeZone = RESTAURANT_TIME_ZONE
+) {
+  return openingHoursSnapshot(openingHours, date, timeZone).todayHours;
+}
+
+export function scheduledOpenState(
+  openingHours,
+  date = new Date(),
+  timeZone = RESTAURANT_TIME_ZONE
+) {
+  return openingHoursSnapshot(openingHours, date, timeZone).scheduledOpenState;
 }

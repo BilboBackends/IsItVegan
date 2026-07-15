@@ -14,6 +14,7 @@ import {
   registerRestaurants,
 } from "./cloud.js";
 import Comments from "./Comments.jsx";
+import { pushDishDetailRouteFromClick } from "./hashNavigation.js";
 import DishCommentBadge from "./DishCommentBadge.jsx";
 import NoteIcon from "./NoteIcon.jsx";
 import ThumbVote from "./ThumbVote.jsx";
@@ -583,6 +584,9 @@ export default function DishModal({
                     ) : (
                       <a
                         href={`#dishes?dish=${d.id}`}
+                        onClick={(event) =>
+                          pushDishDetailRouteFromClick(event, d.id)
+                        }
                         aria-label="Details, share, or report"
                         className="shrink-0 whitespace-nowrap font-bold text-emerald-700 hover:underline"
                       >

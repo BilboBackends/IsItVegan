@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { apiUrl } from "./staticData.js";
+import { fetchRestaurants } from "./staticData.js";
 import FavoriteButton from "./FavoriteButton.jsx";
 import RatingBadge from "./RatingBadge.jsx";
 import { FreshnessBadge, OpenStatusBadge } from "./RestaurantMeta.jsx";
 import { VerdictChip } from "./DishModal.jsx";
-import { loadDishes } from "./dishData.js";
+import { loadSavedDishesResult } from "./dishData.js";
 import DishCommentBadge from "./DishCommentBadge.jsx";
+import {
+  pushDishDetailRouteFromClick,
+  replaceHashRouteFromClick,
+} from "./hashNavigation.js";
 import {
   CLOUD_ENABLED,
   dishKey,
@@ -17,22 +21,79 @@ import {
 export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }) {
   const [restaurants, setRestaurants] = useState([]);
   const [dishes, setDishes] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [restaurantsLoaded, setRestaurantsLoaded] = useState(false);
+  const [dishesLoading, setDishesLoading] = useState(false);
+  const [restaurantLoadError, setRestaurantLoadError] = useState(null);
+  const [dishLoadError, setDishLoadError] = useState(null);
+  const [loadRetry, setLoadRetry] = useState(0);
   const [dishMentionCounts, setDishMentionCounts] = useState(() => new Map());
   const mapEl = useRef(null);
   const mapRef = useRef(null);
 
   useEffect(() => {
-    Promise.all([
-      fetch(apiUrl("/api/restaurants")).then((response) => response.json()),
-      loadDishes(),
-    ])
-      .then(([restaurantData, dishData]) => {
-        setRestaurants(restaurantData.restaurants || []);
-        setDishes(dishData);
+    setRestaurantsLoaded(false);
+    setDishesLoading(false);
+    setRestaurantLoadError(null);
+    fetchRestaurants()
+      .then((response) => {
+        if (!response.ok) throw new Error(`Restaurant directory ${response.status}`);
+        return response.json();
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .then((restaurantData) => {
+        setRestaurants(restaurantData.restaurants || []);
+      })
+      .catch((error) => {
+        setRestaurantLoadError(
+          error?.message || "Saved restaurants could not be loaded."
+        );
+      })
+      .finally(() => setRestaurantsLoaded(true));
+  }, [loadRetry]);
+
+  useEffect(() => {
+    if (!restaurantsLoaded || restaurantLoadError) return;
+    let cancelled = false;
+    setDishLoadError(null);
+    if (favorites.dishes.length === 0) {
+      setDishes([]);
+      setDishesLoading(false);
+      return;
+    }
+    setDishesLoading(true);
+    loadSavedDishesResult(favorites.dishes, restaurants)
+      .then((result) => {
+        if (cancelled) return;
+        setDishes(result.dishes);
+        if (result.failures.length > 0) {
+          setDishLoadError(
+            `${result.failures.length} saved menu${
+              result.failures.length === 1 ? "" : "s"
+            } could not be loaded. The available saved dishes are shown below.`
+          );
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDishLoadError(
+            error?.message || "Saved dishes could not be loaded."
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDishesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    favorites.dishes,
+    restaurants,
+    restaurantsLoaded,
+    restaurantLoadError,
+    loadRetry,
+  ]);
+
+  const loading = !restaurantsLoaded || dishesLoading;
 
   useEffect(() => {
     if (!CLOUD_ENABLED) return;
@@ -156,13 +217,34 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
 
   return (
     <div className="mx-auto max-w-5xl px-4 pb-10 pt-5">
-      {savedRestaurants.length === 0 && savedDishes.length === 0 ? (
+      {(restaurantLoadError || dishLoadError) && (
+        <div
+          role="alert"
+          className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+        >
+          <span>{restaurantLoadError || dishLoadError}</span>
+          <button
+            type="button"
+            onClick={() => setLoadRetry((value) => value + 1)}
+            className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold hover:bg-amber-100"
+          >
+            Retry saved items
+          </button>
+        </div>
+      )}
+      {restaurantLoadError ? null : savedRestaurants.length === 0 &&
+        savedDishes.length === 0 &&
+        !dishLoadError ? (
         <div className="rounded-2xl border border-dashed border-stone-300 p-12 text-center">
           <div className="text-lg font-bold text-stone-700">Nothing saved yet</div>
           <p className="mt-1 text-sm text-stone-500">
             Tap the heart on a restaurant or food item to keep it here.
           </p>
-          <a href="#dishes" className="mt-4 inline-block font-bold text-emerald-700 hover:underline">
+          <a
+            href="#dishes"
+            onClick={(event) => replaceHashRouteFromClick(event, "dishes")}
+            className="mt-4 inline-block font-bold text-emerald-700 hover:underline"
+          >
             Browse food items →
           </a>
         </div>
@@ -227,7 +309,13 @@ export default function SavedExplore({ favorites, toggleDish, toggleRestaurant }
                   <div key={dish.id} className="flex items-start justify-between gap-4 p-4">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <a href={`#dishes?dish=${dish.id}`} className="font-bold text-stone-900 hover:text-emerald-700 hover:underline">
+                        <a
+                          href={`#dishes?dish=${dish.id}`}
+                          onClick={(event) =>
+                            pushDishDetailRouteFromClick(event, dish.id)
+                          }
+                          className="font-bold text-stone-900 hover:text-emerald-700 hover:underline"
+                        >
                           {dish.name}
                         </a>
                         <DishCommentBadge

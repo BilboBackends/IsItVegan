@@ -248,11 +248,22 @@ export async function updateUsername(userId, username) {
 // Pull the account's favorites as {dishes: [ids], restaurants: [ids]},
 // preferring registry resolution (survives id renumbering) and falling back
 // to the stored local_id hint.
-export async function pullFavorites() {
+export async function pullFavorites({ beforeResolveDishes } = {}) {
   const client = await getClient();
   if (!client) return null;
   const { data, error } = await client.from("favorites").select("*");
   if (error || !data) return null;
+  if (beforeResolveDishes) {
+    const restaurantIds = [
+      ...new Set(
+        data
+          .filter((row) => row.kind === "dish")
+          .map((row) => registry.restaurantIdByPlaceId.get(row.place_id))
+          .filter((id) => id != null)
+      ),
+    ];
+    if (restaurantIds.length > 0) await beforeResolveDishes(restaurantIds);
+  }
   const out = { dishes: [], restaurants: [] };
   for (const row of data) {
     if (row.kind === "restaurant") {

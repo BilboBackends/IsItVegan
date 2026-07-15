@@ -2,8 +2,12 @@ import { useContext, useEffect, useRef, useState } from "react";
 import DishExplore from "./DishExplore.jsx";
 import Explore from "./Explore.jsx";
 import SavedExplore from "./SavedExplore.jsx";
-import { loadDishes } from "./dishData.js";
-import { apiUrl } from "./staticData.js";
+import { replaceHashRouteFromClick } from "./hashNavigation.js";
+import {
+  loadRestaurantDishShardBatch,
+  loadSavedDishesResult,
+} from "./dishData.js";
+import { fetchRestaurants } from "./staticData.js";
 import {
   SessionContext,
   mergeLocalFavorites,
@@ -39,33 +43,50 @@ export default function ExploreHub({ view = "restaurants" }) {
 
   // On sign-in: upload anything saved anonymously in this browser, then pull
   // the account's favorites and union them in — no heart is ever lost. The
-  // datasets load first so favorites can carry stable keys (place_id + dish
-  // name) instead of the renumber-prone numeric ids.
+  // Restaurant metadata loads first so favorites can carry stable place ids.
+  // Only locally/cloud-saved menus are then loaded; signing in no longer
+  // downloads and parses the entire cross-restaurant dish catalog.
   useEffect(() => {
     const userId = session?.user?.id;
     if (!userId || syncedUserRef.current === userId) return;
     syncedUserRef.current = userId;
     (async () => {
       try {
-        const [restaurantsRes] = await Promise.all([
-          fetch(apiUrl("/api/restaurants")),
-          loadDishes(), // registers dishes as a side effect
-        ]);
-        if (restaurantsRes.ok) {
-          const data = await restaurantsRes.json();
-          registerRestaurants(data.restaurants || []);
+        const restaurantsRes = await fetchRestaurants();
+        if (!restaurantsRes.ok) {
+          throw new Error(`Restaurant directory ${restaurantsRes.status}`);
         }
-        await mergeLocalFavorites(loadFavorites(), userId);
-        const cloud = await pullFavorites();
-        if (cloud) {
-          setFavorites((current) => ({
-            dishes: [...new Set([...current.dishes, ...cloud.dishes])],
-            restaurants: [
-              ...new Set([...current.restaurants, ...cloud.restaurants]),
-            ],
-          }));
+        let restaurants = [];
+        const data = await restaurantsRes.json();
+        restaurants = data.restaurants || [];
+        registerRestaurants(restaurants);
+        let hadShardFailure = false;
+        const local = loadFavorites();
+        if (local.dishes.length > 0) {
+          const result = await loadSavedDishesResult(local.dishes, restaurants);
+          hadShardFailure ||= result.failures.length > 0;
+        }
+        await mergeLocalFavorites(local, userId);
+        const cloud = await pullFavorites({
+          beforeResolveDishes: async (restaurantIds) => {
+            const result = await loadRestaurantDishShardBatch(restaurantIds);
+            hadShardFailure ||= result.failures.length > 0;
+          },
+        });
+        if (!cloud) throw new Error("Cloud favorites could not be loaded.");
+        setFavorites((current) => ({
+          dishes: [...new Set([...current.dishes, ...cloud.dishes])],
+          restaurants: [
+            ...new Set([...current.restaurants, ...cloud.restaurants]),
+          ],
+        }));
+        if (hadShardFailure) {
+          throw new Error("One or more saved menus could not be loaded.");
         }
       } catch {
+        // A later auth event/remount may retry; do not permanently mark a
+        // partial network attempt as the account's completed synchronization.
+        if (syncedUserRef.current === userId) syncedUserRef.current = null;
         /* cloud sync is additive; local favorites keep working regardless */
       }
     })();
@@ -119,6 +140,9 @@ export default function ExploreHub({ view = "restaurants" }) {
           <div className="inline-flex min-w-max rounded-xl border border-stone-200 bg-white p-1 shadow-sm">
           <a
             href="#restaurants"
+            onClick={(event) =>
+              replaceHashRouteFromClick(event, "restaurants")
+            }
             className={`rounded-lg px-4 py-2 text-sm font-bold transition sm:px-5 ${
               !foodActive && !savedActive
                 ? "bg-emerald-700 text-white shadow-sm"
@@ -129,6 +153,7 @@ export default function ExploreHub({ view = "restaurants" }) {
           </a>
           <a
             href="#dishes"
+            onClick={(event) => replaceHashRouteFromClick(event, "dishes")}
             className={`rounded-lg px-4 py-2 text-sm font-bold transition sm:px-5 ${
               foodActive
                 ? "bg-emerald-700 text-white shadow-sm"
@@ -139,6 +164,7 @@ export default function ExploreHub({ view = "restaurants" }) {
           </a>
           <a
             href="#saved"
+            onClick={(event) => replaceHashRouteFromClick(event, "saved")}
             className={`rounded-lg px-4 py-2 text-sm font-bold transition sm:px-5 ${
               savedActive
                 ? "bg-emerald-700 text-white shadow-sm"

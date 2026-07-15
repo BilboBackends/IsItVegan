@@ -436,6 +436,16 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                          AND (s.url IS NULL OR s.url != 'google:editorial_summary')
                    ) AS menu_chars,
                    (
+                       SELECT COUNT(*) FROM sources s
+                       WHERE s.restaurant_id = r.id AND s.type = 'text'
+                         AND (s.url IS NULL OR s.url != 'google:editorial_summary')
+                   ) AS menu_source_count,
+                   (
+                       SELECT MAX(s.id) FROM sources s
+                       WHERE s.restaurant_id = r.id AND s.type = 'text'
+                         AND (s.url IS NULL OR s.url != 'google:editorial_summary')
+                   ) AS menu_source_max_id,
+                   (
                        SELECT MAX(c.created_at)
                        FROM classifications c
                        JOIN dishes d ON d.id = c.dish_id
@@ -453,7 +463,10 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                    (SELECT COUNT(*) FROM restaurant_votes v
                      WHERE v.restaurant_id = r.id AND v.vote = 'down') AS down_votes,
                    cp.consecutive_failures AS crawl_failures,
-                   cp.last_error AS crawl_last_error
+                   cp.last_error AS crawl_last_error,
+                   cp.content_hash AS crawl_content_hash,
+                   cp.menu_score AS crawl_menu_score,
+                   cp.last_success_at AS crawl_last_success_at
             FROM restaurants r
             LEFT JOIN crawl_profiles cp ON cp.restaurant_id = r.id
             ORDER BY r.last_scraped_at DESC, r.name ASC
@@ -1007,6 +1020,67 @@ def get_menu_text(restaurant_id: int, db_path: str | None = None) -> dict | None
     combined["fetched_at"] = max(r["fetched_at"] for r in rows)
     combined["page_count"] = len(rows)
     return combined
+
+
+def get_menu_sources_by_restaurant(
+    restaurant_ids: Iterable[int], db_path: str | None = None
+) -> dict[int, list[dict]]:
+    """Fetch raw menu source pages for many restaurants in one connection."""
+    ids = list(dict.fromkeys(int(value) for value in restaurant_ids))
+    if not ids:
+        return {}
+
+    rows: list[sqlite3.Row] = []
+    # Stay below SQLite builds that retain the historical 999-variable cap.
+    with connect(db_path) as conn:
+        for start in range(0, len(ids), 900):
+            chunk = ids[start : start + 900]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT id, restaurant_id, content, url, fetched_at
+                    FROM sources
+                    WHERE restaurant_id IN ({placeholders}) AND type = 'text'
+                      AND (url IS NULL OR url != 'google:editorial_summary')
+                    ORDER BY restaurant_id ASC, id ASC
+                    """,
+                    chunk,
+                ).fetchall()
+            )
+
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row["restaurant_id"], []).append(dict(row))
+    return grouped
+
+
+def get_menu_texts(
+    restaurant_ids: Iterable[int], db_path: str | None = None
+) -> dict[int, dict]:
+    """Return combined menu text for many restaurants in one DB connection.
+
+    This is the batched equivalent of :func:`get_menu_text`.  Admin summary
+    reads used to call that function once per restaurant, which meant more
+    than a thousand SQLite connections and full menu scans per page refresh.
+    The exact combined-text format is intentionally identical so menu scores
+    and vegan-score inputs do not change.
+    """
+    grouped = get_menu_sources_by_restaurant(restaurant_ids, db_path=db_path)
+
+    combined_by_restaurant: dict[int, dict] = {}
+    for restaurant_id, pages in grouped.items():
+        if len(pages) == 1:
+            combined_by_restaurant[restaurant_id] = pages[0]
+            continue
+        combined = dict(pages[0])
+        combined["content"] = "\n\n".join(
+            f"[page: {page['url']}]\n{page['content']}" for page in pages
+        )
+        combined["fetched_at"] = max(page["fetched_at"] for page in pages)
+        combined["page_count"] = len(pages)
+        combined_by_restaurant[restaurant_id] = combined
+    return combined_by_restaurant
 
 
 def upsert_dish(

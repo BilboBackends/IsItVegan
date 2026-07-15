@@ -1,4 +1,10 @@
 export const PLACE_FOCUS_ZOOM = 16;
+export const MAP_FOCUS_MAX_AGE_MS = 2_500;
+
+export function isFreshMapFocus(focus, now = Date.now()) {
+  const timestamp = focus?.timestamp ?? focus?.ts;
+  return Number.isFinite(timestamp) && now - timestamp <= MAP_FOCUS_MAX_AGE_MS;
+}
 
 // Bring a selected venue into a useful street-level view without pulling the
 // user back out when they have already zoomed in for more detail.

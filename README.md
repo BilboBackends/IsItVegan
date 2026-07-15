@@ -383,8 +383,10 @@ JSON snapshots of the consumer data, deployed to **Cloudflare Pages**
 `wrangler pages deploy`. The workflow needs the `CLOUDFLARE_API_TOKEN`
 repo secret and `CLOUDFLARE_ACCOUNT_ID` repo variable. Cloudflare caps
 deployment assets at 25 MiB per file, so the workflow drops the raw
-`data/dishes.json` (60+ MiB legacy fallback) — every modern browser
-stream-decompresses `dishes.json.gz` (~7 MiB) instead. GitHub Pages was
+`data/dishes.json` (~38 MiB) — every modern browser stream-decompresses
+the compact `dishes-v2.json.gz` (~5 MiB) instead. The older full-schema gzip
+remains frozen temporarily so already-open tabs using the previous bundle do
+not break during the format rollout. GitHub Pages was
 the original host (retired 2026-07-13; it required a public repository).
 
 ```bash
@@ -396,8 +398,8 @@ python publish_static.py
 ```
 
 Only consumer-facing data ships (archived/hidden/non-food venues excluded,
-admin fields stripped). The global Food search snapshot is published as both
-plain JSON (compatibility fallback) and deterministic gzip; static clients
+admin fields stripped). The global Dishes search snapshot is written locally
+as plain JSON and deployed as a deterministic compact gzip; static clients
 stream-decompress the small gzip asset in the browser. Restaurant menus also
 get individual shards, so opening one restaurant never downloads the global
 index. These are static-hosting adapters behind one data-loader boundary. When

@@ -12,10 +12,8 @@ import DishModal, { VerdictChip } from "./DishModal.jsx";
 import RatingBadge, { ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
-  OpenStatusBadge,
-  currentOpenState,
   relativeDate,
-  todayOpeningHours,
+  restaurantOpenSnapshot,
 } from "./RestaurantMeta.jsx";
 import {
   cuisineLabel,
@@ -28,12 +26,25 @@ import { parsePriceValue, priceLevelSymbol } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
 import VenueTypeLegend from "./VenueTypeLegend.jsx";
 import VenueKindFilter from "./VenueKindFilter.jsx";
+import MapLegend from "./MapLegend.jsx";
 import {
   VENUE_MARKER_ANCHOR,
   VENUE_MARKER_SIZE,
   venueMarkerHtml,
 } from "./venueMarkers.js";
-import { focusMapOnMarker } from "./mapFocus.js";
+import {
+  focusMapOnMarker,
+  isFreshMapFocus,
+  placeFocusZoom,
+} from "./mapFocus.js";
+import {
+  MAP_INDIVIDUAL_MARKER_ZOOM,
+  aggregateMapItems,
+  clusterMarkerHtml,
+  mapItemsForViewport,
+  withPriorityMapItem,
+} from "./mapAggregation.js";
+import { withRestaurantContext } from "./dishRestaurantContext.js";
 import {
   buildDishSearchIndex,
   dishMatchesQuery,
@@ -47,7 +58,12 @@ import {
   fetchDishMentionCounts,
   registerRestaurants,
 } from "./cloud.js";
-import { apiUrl } from "./staticData.js";
+import { fetchRestaurants } from "./staticData.js";
+import {
+  isOwnedDishDetailRoute,
+  pushDishDetailRoute,
+  replaceHashRoute,
+} from "./hashNavigation.js";
 
 // Default distance origin: downtown Orlando, the center of gravity of the
 // current coverage. originLabel === DEFAULT_ORIGIN_LABEL means the user
@@ -120,6 +136,117 @@ function splitReasoning(value) {
   };
 }
 
+function buildDishMapPopup(item, originLabel, onShowItems, onOpenMenu) {
+  const popup = document.createElement("div");
+  popup.style.cssText = "min-width:200px;max-width:250px";
+  const addSection = () => {
+    const section = document.createElement("div");
+    section.style.cssText = "padding:6px 0 5px;border-top:1px solid #e7e5e4";
+    popup.append(section);
+    return section;
+  };
+
+  const head = document.createElement("div");
+  head.style.cssText = "padding-bottom:6px";
+  const title = document.createElement("div");
+  title.style.cssText = "font-weight:700;font-size:14px;color:#1c1917";
+  title.textContent = item.name;
+  const sub = document.createElement("div");
+  sub.style.cssText =
+    "color:#78716c;font-size:12px;text-transform:capitalize;margin-top:1px";
+  sub.textContent =
+    (prettyType(item.primaryType) || "restaurant") +
+    (priceLevelSymbol(item.priceLevel)
+      ? ` · ${priceLevelSymbol(item.priceLevel)}`
+      : "");
+  head.append(title, sub);
+  if (item.address) {
+    const address = document.createElement("a");
+    address.style.cssText =
+      "display:block;margin-top:2px;color:#0369a1;font-size:11px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
+    address.textContent = item.address;
+    address.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      item.address || item.name || ""
+    )}`;
+    address.target = "_blank";
+    address.rel = "noopener noreferrer";
+    address.title = "Open address in Google Maps";
+    head.append(address);
+  }
+  popup.append(head);
+
+  const googleRating = ratingText(item.rating, item.userRatingCount);
+  if (item.openState != null || item.todayHours || googleRating) {
+    const status = addSection();
+    if (item.openState != null || item.todayHours) {
+      const row = document.createElement("div");
+      row.style.cssText = "font-size:12px;font-weight:600;color:#57534e";
+      if (item.openState != null) {
+        const state = document.createElement("span");
+        state.style.cssText = `font-weight:700;color:${
+          item.openState ? "#047857" : "#be123c"
+        }`;
+        state.textContent = item.openState ? "Open now" : "Closed";
+        row.append(state);
+        if (item.todayHours) row.append(" · ");
+      }
+      if (item.todayHours) row.append(`Today: ${item.todayHours}`);
+      status.append(row);
+    }
+    if (googleRating) {
+      const rating = document.createElement("div");
+      rating.style.cssText =
+        "margin-top:2px;color:#78716c;font-size:12px;font-weight:600";
+      rating.textContent = `${googleRating} Google`;
+      status.append(rating);
+    }
+  }
+
+  const matches = addSection();
+  const count = document.createElement("div");
+  count.style.cssText = "font-size:13px;font-weight:600;color:#047857";
+  count.textContent = `${item.count} matching menu item${item.count === 1 ? "" : "s"}`;
+  matches.append(count);
+  if (item.distance != null) {
+    const distance = document.createElement("div");
+    distance.style.cssText = "margin-top:2px;color:#a8a29e;font-size:11px";
+    distance.textContent = `${item.distance.toFixed(1)} mi from ${originLabel}`;
+    matches.append(distance);
+  }
+  const listButton = document.createElement("button");
+  listButton.textContent = `Show all ${item.count} in the list →`;
+  listButton.style.cssText =
+    "display:block;margin-top:4px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:12px";
+  listButton.onclick = onShowItems;
+  matches.append(listButton);
+
+  if (item.websiteUrl || item.restaurant) {
+    const actions = addSection();
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:14px;align-items:center";
+    if (item.websiteUrl) {
+      const site = document.createElement("a");
+      site.textContent = "Website ↗";
+      site.style.cssText =
+        "color:#57534e;font-weight:700;font-size:13px;text-decoration:none";
+      site.href = item.websiteUrl;
+      site.target = "_blank";
+      site.rel = "noopener noreferrer";
+      row.append(site);
+    }
+    if (item.restaurant) {
+      const menuButton = document.createElement("button");
+      menuButton.textContent = "See dishes →";
+      menuButton.style.cssText =
+        "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
+      menuButton.onclick = onOpenMenu;
+      row.append(menuButton);
+    }
+    actions.append(row);
+  }
+  return popup;
+}
+
 export default function DishExplore({
   embedded = false,
   favorites = { dishes: [], restaurants: [] },
@@ -129,6 +256,8 @@ export default function DishExplore({
   const [dishes, setDishes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [directoryError, setDirectoryError] = useState(null);
+  const [directoryRetry, setDirectoryRetry] = useState(0);
   const [query, setQuery] = useState("");
   const [placeType, setPlaceType] = useState("all");
   // Multi-select toggle sets: pick any combination (vegan + adaptable, or
@@ -166,11 +295,22 @@ export default function DishExplore({
   );
   const [focus, setFocus] = useState(null);
   const [visibleLimit, setVisibleLimit] = useState(RESULTS_PAGE_SIZE);
+  const [statusNow, setStatusNow] = useState(() => new Date());
+  const [mapZoom, setMapZoom] = useState(10);
+  const [mapBounds, setMapBounds] = useState(null);
   // Rows are compact one-glance lines; tapping one expands its full detail.
   const [expandedIds, setExpandedIds] = useState(() => new Set());
   const mapEl = useRef(null);
+  const mobileMapAnchorRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
+  const renderedMarkersRef = useRef(new Map());
+  const markerLayerRef = useRef(null);
+  const originMarkerRef = useRef(null);
+  const didInitialMapFitRef = useRef(false);
+  const lastMapOriginRef = useRef(null);
+  const boundsSyncRef = useRef(null);
+  const dishMapActionsRef = useRef(null);
   const loadMoreRef = useRef(null);
   const sortBeforeRestaurantRef = useRef(null);
   // True while the dessert place chip auto-switched the Type filter, so
@@ -186,6 +326,11 @@ export default function DishExplore({
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setStatusNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     const syncDishFromHash = () => {
       const match = window.location.hash.match(/^#dishes\?dish=(\d+)/);
       setSelectedDishId(match ? Number(match[1]) : null);
@@ -193,7 +338,11 @@ export default function DishExplore({
     };
     syncDishFromHash();
     window.addEventListener("hashchange", syncDishFromHash);
-    return () => window.removeEventListener("hashchange", syncDishFromHash);
+    window.addEventListener("popstate", syncDishFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncDishFromHash);
+      window.removeEventListener("popstate", syncDishFromHash);
+    };
   }, []);
 
   useEffect(() => {
@@ -204,17 +353,26 @@ export default function DishExplore({
   }, []);
 
   useEffect(() => {
-    fetch(apiUrl("/api/restaurants"))
-      .then((response) => (response.ok ? response.json() : { restaurants: [] }))
+    fetchRestaurants()
+      .then((response) => {
+        if (!response.ok) throw new Error(`Restaurant directory ${response.status}`);
+        return response.json();
+      })
       .then((data) => {
         const list = data.restaurants || [];
+        if (list.length === 0) throw new Error("Restaurant directory is empty");
         registerRestaurants(list);
+        setDirectoryError(null);
         setRestaurantDirectory(
           new Map(list.map((item) => [item.id, item]))
         );
       })
-      .catch(() => {});
-  }, []);
+      .catch((reason) =>
+        setDirectoryError(
+          reason?.message || "Could not load restaurant details."
+        )
+      );
+  }, [directoryRetry]);
 
   useEffect(() => {
     if (!CLOUD_ENABLED) return;
@@ -229,25 +387,44 @@ export default function DishExplore({
       window.removeEventListener("dishtune:comments-changed", refresh);
   }, []);
 
+  const compactCatalogNeedsDirectory =
+    dishes.length > 0 && dishes[0]?.restaurant_name == null;
+  const restaurantContextReady =
+    !compactCatalogNeedsDirectory || restaurantDirectory.size > 0;
+
   const restaurants = useMemo(() => {
+    // The directory is canonical and can arrive before the global dish
+    // catalog. In the normal path this avoids grouping 60k rows just to
+    // reconstruct 700 restaurants.
+    if (restaurantDirectory.size > 0) {
+      return [...restaurantDirectory.values()].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "")
+      );
+    }
+    if (compactCatalogNeedsDirectory) return [];
+
+    // Legacy/backend fallback for a full dish response without a directory.
     const byId = new Map();
     for (const dish of dishes) {
       let item = byId.get(dish.restaurant_id);
       if (!item) {
-        const directoryItem = restaurantDirectory.get(dish.restaurant_id);
         item = {
           id: dish.restaurant_id,
-          name: dish.restaurant_name,
-          place_id: directoryItem?.place_id || dish.place_id,
+          name: dish.restaurant_name || "Restaurant",
+          place_id: dish.place_id,
           address: dish.address,
           website_url: dish.website_url,
+          lat: dish.lat,
+          lng: dish.lng,
           primary_type: dish.primary_type,
+          price_level: dish.price_level,
           rating: dish.rating,
           user_rating_count: dish.user_rating_count,
           open_now: dish.open_now,
           opening_hours: dish.opening_hours,
           enriched_at: dish.enriched_at,
           menu_fetched_at: dish.menu_fetched_at,
+          business_status: dish.business_status,
           vegan_options: 0,
           vegan_sides: 0,
         };
@@ -259,16 +436,56 @@ export default function DishExplore({
       }
     }
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
-  }, [dishes, restaurantDirectory]);
+  }, [dishes, restaurantDirectory, compactCatalogNeedsDirectory]);
 
   const restaurantById = useMemo(
     () => new Map(restaurants.map((item) => [item.id, item])),
     [restaurants]
   );
 
+  const restaurantOpenStates = useMemo(
+    () =>
+      new Map(
+        restaurants.map((item) => [
+          item.id,
+          restaurantOpenSnapshot(
+            item.open_now,
+            item.enriched_at,
+            item.opening_hours,
+            statusNow
+          ),
+        ])
+      ),
+    [restaurants, statusNow]
+  );
+  const activeOpenStates = openFilter === "all" ? null : restaurantOpenStates;
+
+  // Keep exactly one retained derived dish array: restaurant context,
+  // distance, and parsed price are added in the same pass. Compact catalog
+  // rows therefore do not balloon into two separate 60k-object copies.
+  const derivedDishes = useMemo(
+    () =>
+      (restaurantContextReady ? dishes : []).map((dish) => {
+        const hydrated = withRestaurantContext(
+          dish,
+          restaurantDirectory.get(dish.restaurant_id)
+        );
+        hydrated.distance =
+          hydrated.lat != null && hydrated.lng != null
+            ? haversineMiles(origin, {
+                lat: hydrated.lat,
+                lng: hydrated.lng,
+              })
+            : null;
+        hydrated.priceValue = parsePriceValue(hydrated.price);
+        return hydrated;
+      }),
+    [dishes, restaurantDirectory, origin, restaurantContextReady]
+  );
+
   const categoryCounts = useMemo(() => {
     const counts = { food: 0, dessert: 0, drink: 0 };
-    for (const dish of dishes) {
+    for (const dish of derivedDishes) {
       if (
         restaurant !== "all" &&
         String(dish.restaurant_id) !== restaurant
@@ -283,7 +500,7 @@ export default function DishExplore({
       }
       if (
         openFilter !== "all" &&
-        currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
+        activeOpenStates?.get(dish.restaurant_id)?.openState !==
           (openFilter === "open")
       ) {
         continue;
@@ -291,31 +508,39 @@ export default function DishExplore({
       counts[categoryOf(dish)] += 1;
     }
     return counts;
-  }, [dishes, restaurant, cuisine, placeType, openFilter]);
+  }, [
+    derivedDishes,
+    restaurant,
+    cuisine,
+    placeType,
+    openFilter,
+    activeOpenStates,
+  ]);
 
-  const cuisines = useMemo(() => cuisineOptions(dishes), [dishes]);
-
-  const dishesWithDistance = useMemo(
-    () =>
-      dishes.map((dish) => ({
-        ...dish,
-        place_id:
-          dish.place_id || restaurantDirectory.get(dish.restaurant_id)?.place_id,
-        distance:
-          dish.lat != null && dish.lng != null
-            ? haversineMiles(origin, { lat: dish.lat, lng: dish.lng })
-            : null,
-        priceValue: parsePriceValue(dish.price),
-      })),
-    [dishes, origin, restaurantDirectory]
+  const cuisines = useMemo(
+    () => cuisineOptions(restaurants),
+    [restaurants]
   );
 
   // Keep typing responsive while React computes a result set for the latest
-  // settled query. The normalized index itself is built only once per fetch.
+  // settled query. Building normalized search strings for 60k dishes is
+  // expensive, so do it only after the user actually searches.
   const deferredQuery = useDeferredValue(query);
+  const searchActive = deferredQuery.trim().length > 0;
   const searchIndex = useMemo(
-    () => new Map(dishes.map((dish) => [dish.id, buildDishSearchIndex(dish)])),
-    [dishes]
+    () => {
+      const index = new Map();
+      if (!restaurantContextReady || !searchActive) return index;
+      for (const dish of dishes) {
+        const hydrated = withRestaurantContext(
+          dish,
+          restaurantDirectory.get(dish.restaurant_id)
+        );
+        index.set(dish.id, buildDishSearchIndex(hydrated));
+      }
+      return index;
+    },
+    [dishes, restaurantDirectory, restaurantContextReady, searchActive]
   );
   const parsedQuery = useMemo(() => parseDishQuery(deferredQuery), [deferredQuery]);
 
@@ -365,7 +590,7 @@ export default function DishExplore({
 
   const shown = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
-    const out = dishesWithDistance.filter((dish) => {
+    const out = derivedDishes.filter((dish) => {
       if (verdicts.size > 0 && !verdicts.has(dish.verdict)) return false;
       if (categories.size > 0 && !categories.has(categoryOf(dish))) return false;
       // Legacy/unclear roles count as meals so unclassified data isn't
@@ -382,7 +607,7 @@ export default function DishExplore({
       if (placeType !== "all" && venueKind(dish.primary_type) !== placeType) return false;
       if (
         openFilter !== "all" &&
-        currentOpenState(dish.open_now, dish.enriched_at, dish.opening_hours) !==
+        activeOpenStates?.get(dish.restaurant_id)?.openState !==
           (openFilter === "open")
       ) return false;
       if (maxMiles > 0 && (dish.distance == null || dish.distance > maxMiles)) return false;
@@ -459,7 +684,7 @@ export default function DishExplore({
       return a.name.localeCompare(b.name) || a.restaurant_name.localeCompare(b.restaurant_name);
     });
   }, [
-    dishesWithDistance,
+    derivedDishes,
     deferredQuery,
     parsedQuery,
     searchIndex,
@@ -472,6 +697,7 @@ export default function DishExplore({
     cuisine,
     placeType,
     openFilter,
+    activeOpenStates,
     maxMiles,
     sortBy,
   ]);
@@ -499,7 +725,9 @@ export default function DishExplore({
 
   useEffect(() => {
     const target = loadMoreRef.current;
-    if (!target || visibleLimit >= shown.length) return;
+    if (mobileView !== "list" || !target || visibleLimit >= shown.length) {
+      return;
+    }
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
@@ -512,9 +740,12 @@ export default function DishExplore({
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [shown.length, visibleLimit]);
+  }, [shown.length, visibleLimit, mobileView]);
 
-  const selectedDish = dishesWithDistance.find((dish) => dish.id === selectedDishId) || null;
+  const selectedDish =
+    selectedDishId == null
+      ? null
+      : derivedDishes.find((dish) => dish.id === selectedDishId) || null;
 
   const veganCount = useMemo(
     () => dishes.filter(isCountedVegan).length,
@@ -549,9 +780,6 @@ export default function DishExplore({
           distance: dish.distance,
           rating: dish.rating,
           userRatingCount: dish.user_rating_count,
-          openingHours: dish.opening_hours,
-          openNow: dish.open_now,
-          enrichedAt: dish.enriched_at,
           primaryType: dish.primary_type,
           priceLevel: dish.price_level,
           websiteUrl: dish.website_url,
@@ -562,37 +790,180 @@ export default function DishExplore({
     return [...groups.values()];
   }, [shown, restaurantById]);
 
+  // Marker popups can outlive the render that created them. Route their
+  // filter action through the latest callback instead of capturing stale
+  // restaurant/sort state.
+  dishMapActionsRef.current = showRestaurantItems;
+
   const showMap = isDesktop || mobileView === "map";
+  const focusedRestaurantId = focus?.restaurantId ?? null;
+
+  function alignMobileMapViewport() {
+    mobileMapAnchorRef.current?.scrollIntoView({
+      block: "start",
+      inline: "nearest",
+      behavior: "auto",
+    });
+  }
+
+  function enterMobileMap() {
+    if (isDesktop) return;
+    alignMobileMapViewport();
+    setMobileView("map");
+  }
+
+  function enterMobileList() {
+    mapRef.current?.stop();
+    mapRef.current?.closePopup();
+    setFocus(null);
+    setMobileView("list");
+  }
+
+  useEffect(() => {
+    if (isDesktop || mobileView !== "map") return;
+    let secondFrame = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        alignMobileMapViewport();
+        mapRef.current?.invalidateSize({ pan: false });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame != null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [isDesktop, mobileView]);
 
   useEffect(() => {
     if (!showMap || !mapEl.current) return;
 
-    const map = L.map(mapEl.current, { zoomControl: true });
-    mapRef.current = map;
+    let map = mapRef.current;
+    if (!map) {
+      map = L.map(mapEl.current, {
+        zoomControl: true,
+        zoomAnimation: isDesktop,
+        fadeAnimation: isDesktop,
+        markerZoomAnimation: isDesktop,
+      });
+      mapRef.current = map;
+      markerLayerRef.current = L.layerGroup().addTo(map);
+      L.tileLayer(
+        isDesktop
+          ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+          : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        {
+          attribution: "© OpenStreetMap © CARTO",
+          subdomains: "abcd",
+          maxZoom: 19,
+          keepBuffer: isDesktop ? 2 : 1,
+          updateWhenIdle: !isDesktop,
+          updateWhenZooming: isDesktop,
+        }
+      ).addTo(map);
+      map.setView([origin.lat, origin.lng], 10);
+      map.on("zoomend", () => setMapZoom(map.getZoom()));
+    }
     markersRef.current = {};
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {
-        attribution: "© OpenStreetMap © CARTO",
-        subdomains: "abcd",
-        maxZoom: 19,
+
+    const bounds = mappedRestaurants.map((item) => [item.lat, item.lng]);
+    if (!originMarkerRef.current) {
+      originMarkerRef.current = L.marker([origin.lat, origin.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: '<div style="display:flex;width:32px;height:32px;align-items:center;justify-content:center"><div class="vf-pin vf-pin--dot" style="background:#2563eb"></div></div>',
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        }),
+        zIndexOffset: 1000,
+        riseOnHover: true,
+      }).addTo(map);
+      originMarkerRef.current.on("click", () => {
+        originMarkerRef.current?.openTooltip();
+      });
+    }
+    originMarkerRef.current.setLatLng([origin.lat, origin.lng]);
+    const originTip = document.createElement("span");
+    originTip.textContent = isDesktop
+      ? originLabel
+      : `Distances measured from ${originLabel}`;
+    originMarkerRef.current.unbindPopup().unbindTooltip().bindTooltip(originTip, {
+      className: "vf-tooltip",
+      direction: "top",
+      offset: [0, -8],
+    });
+
+    const focusedRestaurant =
+      focusedRestaurantId == null
+        ? null
+        : mappedRestaurants.find(
+            (item) => String(item.id) === String(focusedRestaurantId)
+          );
+    const markerItems = withPriorityMapItem(
+      mapItemsForViewport(mappedRestaurants, mapZoom, mapBounds),
+      focusedRestaurant
+    );
+    const entries = aggregateMapItems(
+      markerItems,
+      mapZoom,
+      (item) => item.id,
+      focusedRestaurant?.id
+    );
+    const activeMarkerKeys = new Set(entries.map((entry) => entry.key));
+    for (const entry of entries) {
+      const previous = renderedMarkersRef.current.get(entry.key);
+      if (entry.cluster) {
+        if (previous) continue;
+        const clusterMarker = L.marker([entry.lat, entry.lng], {
+          icon: L.divIcon({
+            className: "",
+            html: clusterMarkerHtml(entry.items.length),
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          }),
+        }).addTo(markerLayerRef.current);
+        clusterMarker.bindTooltip(
+          `${entry.items.length} restaurants · zoom in to explore`,
+          { className: "vf-tooltip", direction: "top" }
+        );
+        clusterMarker.on("click", () => {
+          const nextCenter = [entry.lat, entry.lng];
+          const nextZoom = Math.min(
+            MAP_INDIVIDUAL_MARKER_ZOOM,
+            map.getZoom() + 2
+          );
+          if (isDesktop) map.flyTo(nextCenter, nextZoom, { duration: 0.6 });
+          else map.setView(nextCenter, nextZoom, { animate: false });
+        });
+        renderedMarkersRef.current.set(entry.key, {
+          marker: clusterMarker,
+          signature: entry.key,
+        });
+        continue;
       }
-    ).addTo(map);
 
-    const bounds = [];
-    L.marker([origin.lat, origin.lng], {
-      icon: L.divIcon({
-        className: "",
-        html: '<div class="vf-pin vf-pin--dot" style="background:#2563eb"></div>',
-        iconSize: [12, 12],
-        iconAnchor: [6, 6],
-      }),
-      zIndexOffset: -100,
-    })
-      .addTo(map)
-      .bindTooltip(originLabel, { className: "vf-tooltip", direction: "top" });
-
-    for (const item of mappedRestaurants) {
+      const baseItem = entry.items[0];
+      const openStatus = restaurantOpenStates.get(baseItem.id);
+      const item = {
+        ...baseItem,
+        openState: openStatus?.openState ?? null,
+        todayHours: openStatus?.todayHours ?? null,
+      };
+      const signature = JSON.stringify([
+        item.name,
+        item.count,
+        item.rating,
+        item.openState,
+        item.todayHours,
+        item.distance,
+        item.primaryType,
+        item.priceLevel,
+        item.websiteUrl,
+      ]);
+      if (previous?.signature === signature) {
+        markersRef.current[item.id] = previous.marker;
+        continue;
+      }
+      if (previous) markerLayerRef.current.removeLayer(previous.marker);
       const kind = venueKind(item.primaryType);
       const icon = L.divIcon({
         className: "",
@@ -604,10 +975,24 @@ export default function DishExplore({
         iconSize: VENUE_MARKER_SIZE,
         iconAnchor: VENUE_MARKER_ANCHOR,
       });
-      const marker = L.marker([item.lat, item.lng], { icon }).addTo(map);
+      const marker = L.marker([item.lat, item.lng], { icon }).addTo(
+        markerLayerRef.current
+      );
       markersRef.current[item.id] = marker;
-      bounds.push([item.lat, item.lng]);
-      marker.on("click", () => focusMapOnMarker(map, marker));
+      marker.on("click", () => {
+        if (isDesktop) {
+          focusMapOnMarker(map, marker);
+        } else {
+          map.setView(marker.getLatLng(), placeFocusZoom(map.getZoom()), {
+            animate: false,
+          });
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              markersRef.current[item.id]?.openPopup();
+            });
+          });
+        }
+      });
 
       const tip = document.createElement("span");
       tip.textContent =
@@ -619,163 +1004,170 @@ export default function DishExplore({
         offset: [0, -12],
       });
 
-      // Popup mirrors the Restaurants map popup: tidy sections separated by
-      // hairlines (identity / status / matches) plus an actions row.
-      const popup = document.createElement("div");
-      popup.style.cssText = "min-width:200px;max-width:250px";
-
-      const addSection = () => {
-        const s = document.createElement("div");
-        s.style.cssText = "padding:6px 0 5px;border-top:1px solid #e7e5e4";
-        popup.append(s);
-        return s;
-      };
-
-      // — Identity —
-      const head = document.createElement("div");
-      head.style.cssText = "padding-bottom:6px";
-      const title = document.createElement("div");
-      title.style.cssText = "font-weight:700;font-size:14px;color:#1c1917";
-      title.textContent = item.name;
-      const sub = document.createElement("div");
-      sub.style.cssText =
-        "color:#78716c;font-size:12px;text-transform:capitalize;margin-top:1px";
-      sub.textContent =
-        (prettyType(item.primaryType) || "restaurant") +
-        (priceLevelSymbol(item.priceLevel)
-          ? ` · ${priceLevelSymbol(item.priceLevel)}`
-          : "");
-      head.append(title, sub);
-      if (item.address) {
-        const address = document.createElement("a");
-        address.style.cssText =
-          "display:block;margin-top:2px;color:#0369a1;font-size:11px;line-height:1.35;text-decoration:underline;text-underline-offset:2px";
-        address.textContent = item.address;
-        address.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-          item.address || item.name || ""
-        )}`;
-        address.target = "_blank";
-        address.rel = "noopener noreferrer";
-        address.title = "Open address in Google Maps";
-        head.append(address);
-      }
-      popup.append(head);
-
-      // — Status: open state · today's hours, then rating —
-      const openState = currentOpenState(
-        item.openNow, item.enrichedAt, item.openingHours
+      // Leaflet invokes this factory only when the marker is opened. Hundreds
+      // of popup DOM trees no longer sit in memory before anyone taps a pin.
+      marker.bindPopup(
+        () =>
+          buildDishMapPopup(
+            item,
+            originLabel,
+            () => dishMapActionsRef.current?.(item.id),
+            () => {
+              setMenuCommentTarget(null);
+              setMenuRestaurant(item.restaurant);
+            }
+          ),
+        { closeButton: false }
       );
-      const todayHours = todayOpeningHours(item.openingHours);
-      const googleRating = ratingText(item.rating, item.userRatingCount);
-      if (openState != null || todayHours || googleRating) {
-        const status = addSection();
-        if (openState != null || todayHours) {
-          const row = document.createElement("div");
-          row.style.cssText = "font-size:12px;font-weight:600;color:#57534e";
-          if (openState != null) {
-            const state = document.createElement("span");
-            state.style.cssText = `font-weight:700;color:${
-              openState ? "#047857" : "#be123c"
-            }`;
-            state.textContent = openState ? "Open now" : "Closed";
-            row.append(state);
-            if (todayHours) row.append(" · ");
-          }
-          if (todayHours) row.append(`Today: ${todayHours}`);
-          status.append(row);
-        }
-        if (googleRating) {
-          const rating = document.createElement("div");
-          rating.style.cssText =
-            "margin-top:2px;color:#78716c;font-size:12px;font-weight:600";
-          rating.textContent = `${googleRating} Google`;
-          status.append(rating);
-        }
-      }
-
-      // — Matching items —
-      const matches = addSection();
-      const count = document.createElement("div");
-      count.style.cssText = "font-size:13px;font-weight:600;color:#047857";
-      count.textContent = `${item.count} matching menu item${item.count === 1 ? "" : "s"}`;
-      matches.append(count);
-      if (item.distance != null) {
-        const distance = document.createElement("div");
-        distance.style.cssText = "margin-top:2px;color:#a8a29e;font-size:11px";
-        distance.textContent = `${item.distance.toFixed(1)} mi from ${originLabel}`;
-        matches.append(distance);
-      }
-      const listButton = document.createElement("button");
-      listButton.textContent = `Show all ${item.count} in the list →`;
-      listButton.style.cssText =
-        "display:block;margin-top:4px;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:12px";
-      listButton.onclick = () => {
-        showRestaurantItems(item.id);
-      };
-      matches.append(listButton);
-
-      // — Actions: Website · See dishes —
-      if (item.websiteUrl || item.restaurant) {
-        const actions = addSection();
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;gap:14px;align-items:center";
-        if (item.websiteUrl) {
-          const site = document.createElement("a");
-          site.textContent = "Website ↗";
-          site.style.cssText =
-            "color:#57534e;font-weight:700;font-size:13px;text-decoration:none";
-          site.href = item.websiteUrl;
-          site.target = "_blank";
-          site.rel = "noopener noreferrer";
-          site.onmouseenter = () => (site.style.color = "#047857");
-          site.onmouseleave = () => (site.style.color = "#57534e");
-          row.append(site);
-        }
-        if (item.restaurant) {
-          const menuButton = document.createElement("button");
-          menuButton.textContent = "See dishes →";
-          menuButton.style.cssText =
-            "margin-left:auto;color:#047857;font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:13px";
-          menuButton.onclick = () => {
-            setMenuCommentTarget(null);
-            setMenuRestaurant(item.restaurant);
-          };
-          row.append(menuButton);
-        }
-        actions.append(row);
-      }
-      marker.bindPopup(popup, { closeButton: false });
+      renderedMarkersRef.current.set(entry.key, { marker, signature });
     }
 
-    if (originLabel !== DEFAULT_ORIGIN_LABEL) {
+    for (const [key, rendered] of renderedMarkersRef.current) {
+      if (activeMarkerKeys.has(key)) continue;
+      markerLayerRef.current.removeLayer(rendered.marker);
+      renderedMarkersRef.current.delete(key);
+    }
+
+    const originKey = `${origin.lat}:${origin.lng}:${originLabel}`;
+    if (
+      originKey !== lastMapOriginRef.current &&
+      originLabel !== DEFAULT_ORIGIN_LABEL
+    ) {
       // A chosen origin (address search or near-me) wins: center the map
       // there so it answers "what's around this spot", even when that spot
       // is far from every pin.
       map.setView([origin.lat, origin.lng], 13);
-    } else if (bounds.length > 0) {
+      didInitialMapFitRef.current = true;
+    } else if (!didInitialMapFitRef.current && bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+      didInitialMapFitRef.current = true;
     } else {
-      map.setView([ORLANDO.lat, ORLANDO.lng], 13);
+      if (!didInitialMapFitRef.current) {
+        map.setView([ORLANDO.lat, ORLANDO.lng], 10);
+      }
     }
+    lastMapOriginRef.current = originKey;
 
-    const resizeTimer = setTimeout(() => map.invalidateSize(), 100);
+    const syncBounds = () => {
+      const current = map.getBounds();
+      const next = {
+        s: current.getSouth(),
+        w: current.getWest(),
+        n: current.getNorth(),
+        e: current.getEast(),
+      };
+      setMapBounds((previous) =>
+        previous &&
+        previous.s === next.s &&
+        previous.w === next.w &&
+        previous.n === next.n &&
+        previous.e === next.e
+          ? previous
+          : next
+      );
+    };
+    if (boundsSyncRef.current) map.off("moveend", boundsSyncRef.current);
+    boundsSyncRef.current = syncBounds;
+    map.on("moveend", syncBounds);
+    const resizeTimer = setTimeout(() => {
+      map.invalidateSize();
+      syncBounds();
+    }, 100);
     return () => {
       clearTimeout(resizeTimer);
-      map.remove();
-      mapRef.current = null;
-      markersRef.current = {};
+      map.off("moveend", syncBounds);
     };
-  }, [mappedRestaurants, showMap, origin, originLabel]);
+  }, [
+    mappedRestaurants,
+    showMap,
+    origin,
+    originLabel,
+    mapZoom,
+    mapBounds,
+    restaurantOpenStates,
+    focusedRestaurantId,
+    isDesktop,
+  ]);
+
+  useEffect(
+    () => () => {
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markerLayerRef.current = null;
+      originMarkerRef.current = null;
+      renderedMarkersRef.current.clear();
+      markersRef.current = {};
+    },
+    []
+  );
 
   useEffect(() => {
-    if (!focus) return;
+    if (!showMap) return;
+    if (!focus || !isFreshMapFocus(focus)) {
+      if (focus) setFocus(null);
+      return;
+    }
     const map = mapRef.current;
     const marker = markersRef.current[focus.restaurantId];
-    if (!map || !marker) return;
-    focusMapOnMarker(map, marker);
-    const timer = setTimeout(() => marker.openPopup(), 850);
-    return () => clearTimeout(timer);
-  }, [focus, showMap]);
+    if (!map) return;
+
+    let cancelled = false;
+    let opened = false;
+    let retryTimer = null;
+    let popupTimer = null;
+    let firstFrame = null;
+    let secondFrame = null;
+
+    const openFocusedPopup = (attempt = 0) => {
+      if (cancelled || opened) return;
+      const currentMarker = markersRef.current[focus.restaurantId];
+      if (currentMarker) {
+        opened = true;
+        currentMarker.openPopup();
+        setFocus((current) => (current === focus ? null : current));
+        return;
+      }
+      // Marker reconciliation follows zoom/move state updates. Give React a
+      // short window to mount the selected restaurant after the flight.
+      if (attempt < 20) {
+        retryTimer = setTimeout(() => openFocusedPopup(attempt + 1), 75);
+      }
+    };
+    if (marker) {
+      if (isDesktop) focusMapOnMarker(map, marker);
+      else {
+        map.setView(marker.getLatLng(), placeFocusZoom(map.getZoom()), {
+          animate: false,
+        });
+      }
+    } else {
+      const lat = Number(focus.lat);
+      const lng = Number(focus.lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return;
+      }
+      const nextCenter = [lat, lng];
+      const nextZoom = placeFocusZoom(map.getZoom());
+      if (isDesktop) map.flyTo(nextCenter, nextZoom, { duration: 0.8 });
+      else map.setView(nextCenter, nextZoom, { animate: false });
+    }
+    if (isDesktop) {
+      popupTimer = window.setTimeout(openFocusedPopup, 900);
+    } else {
+      // The instant mobile jump can open as soon as Leaflet has received its
+      // two-frame resize. The retry above handles a marker still reconciling.
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => openFocusedPopup());
+      });
+    }
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(popupTimer);
+      if (firstFrame != null) window.cancelAnimationFrame(firstFrame);
+      if (secondFrame != null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [focus, showMap, isDesktop]);
 
   function toggleExpanded(dishId) {
     setExpandedIds((prev) => {
@@ -788,8 +1180,13 @@ export default function DishExplore({
 
   function showRestaurantOnMap(dish) {
     if (dish.lat == null || dish.lng == null) return;
-    if (!isDesktop) setMobileView("map");
-    setFocus({ restaurantId: dish.restaurant_id, timestamp: Date.now() });
+    if (!isDesktop) enterMobileMap();
+    setFocus({
+      restaurantId: dish.restaurant_id,
+      lat: dish.lat,
+      lng: dish.lng,
+      timestamp: Date.now(),
+    });
   }
 
   function showRestaurantItems(restaurantId) {
@@ -806,7 +1203,7 @@ export default function DishExplore({
     // adaptable, unclear, then not vegan. Alphabetical sorting scattered
     // those groups and made the shortcut feel like the list reshuffled.
     setSortBy("recommended");
-    setMobileView("list");
+    enterMobileList();
   }
 
   function clearRestaurantFilter() {
@@ -827,7 +1224,7 @@ export default function DishExplore({
   }
 
   function openDish(dish) {
-    window.location.hash = `dishes?dish=${dish.id}`;
+    pushDishDetailRoute(dish.id);
   }
 
   function noteCountForDish(dish) {
@@ -840,7 +1237,7 @@ export default function DishExplore({
     const targetRestaurant = restaurantById.get(dish.restaurant_id);
     if (!targetRestaurant?.place_id) return;
     if (selectedDishId != null) {
-      window.history.replaceState(null, "", `${window.location.pathname}#dishes`);
+      replaceHashRoute("dishes");
       setSelectedDishId(null);
     }
     setMenuCommentTarget({ dish, mode });
@@ -848,17 +1245,28 @@ export default function DishExplore({
   }
 
   function closeDish() {
-    window.location.hash = "dishes";
+    setSelectedDishId(null);
+    if (isOwnedDishDetailRoute()) {
+      window.history.back();
+    } else {
+      // A shared/direct detail URL has no safe in-app entry to return to.
+      // Replace it in place so Close never sends the visitor off-site.
+      replaceHashRoute("dishes");
+    }
   }
 
   function showDishOnMap(dish) {
-    closeDish();
+    // Showing the map stays in Dishes, so consume the detail URL instead of
+    // navigating Back (which may legitimately return to Saved).
+    replaceHashRoute("dishes");
+    setSelectedDishId(null);
     showRestaurantOnMap(dish);
   }
 
   // One origin change path for every control (sidebar picker, mobile pin,
   // mobile address row): closest-first sort and a closed address row.
   function changeOrigin(point, label) {
+    setFocus(null);
     setOrigin(point);
     setOriginLabel(label);
     // Picking a location means "what's near here" — surface the closest
@@ -1079,7 +1487,6 @@ export default function DishExplore({
       <div className="relative min-w-0 flex-1">
         <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
         <input
-          autoFocus
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -1244,17 +1651,22 @@ export default function DishExplore({
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
-      <VenueKindFilter value={placeType} onChange={changeVenueKind} />
+      <div ref={mobileMapAnchorRef} className="scroll-mt-32">
+        <VenueKindFilter value={placeType} onChange={changeVenueKind} />
+      </div>
 
       <button
         type="button"
         aria-label={
           mobileView === "list" ? "Show dishes on the map" : "Show dish list"
         }
-        onClick={() => setMobileView(mobileView === "list" ? "map" : "list")}
-        className={`fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden ${
-          expandedIds.size > 0 ? "hidden" : ""
-        }`}
+        onClick={() =>
+          mobileView === "list" ? enterMobileMap() : enterMobileList()
+        }
+        className="fixed inset-x-0 z-40 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl xl:hidden"
+        style={{
+          bottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))",
+        }}
       >
         {mobileView === "list" ? "🗺 Map" : "☰ List"}
       </button>
@@ -1264,11 +1676,33 @@ export default function DishExplore({
           {error}
         </div>
       )}
+      {directoryError && (
+        <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <span>
+            Restaurant details did not load, so some names and map links may be unavailable.
+          </span>
+          <button
+            type="button"
+            onClick={() => setDirectoryRetry((value) => value + 1)}
+            className="shrink-0 font-bold underline underline-offset-2"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       <div className="xl:grid xl:grid-cols-2 xl:items-start xl:gap-5">
         <div className={!isDesktop && mobileView === "map" ? "hidden" : ""}>
-          {loading ? (
+          {!isDesktop && mobileView === "map" ? null :
+          loading ||
+          (compactCatalogNeedsDirectory &&
+            !restaurantContextReady &&
+            !directoryError) ? (
             <div className="p-12 text-center text-stone-400">Loading the menu database…</div>
+          ) : compactCatalogNeedsDirectory && !restaurantContextReady ? (
+            <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-10 text-center text-sm text-amber-800">
+              Restaurant details are required to display this compact dish catalog. Retry the directory above.
+            </div>
           ) : shown.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-stone-300 p-12 text-center">
               <div className="font-semibold text-stone-700">No dishes match those filters.</div>
@@ -1370,9 +1804,9 @@ export default function DishExplore({
                           </span>
                         )}
                         {(() => {
-                          const openState = currentOpenState(
-                            dish.open_now, dish.enriched_at, dish.opening_hours
-                          );
+                          const openState = restaurantOpenStates.get(
+                            dish.restaurant_id
+                          )?.openState;
                           if (openState == null) return null;
                           return (
                             <span
@@ -1542,17 +1976,25 @@ export default function DishExplore({
           <div className="relative z-0 isolate">
             <div
               ref={mapEl}
-              className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm xl:h-[calc(100vh-11rem)]"
+              className="h-[calc(100dvh-12.75rem)] min-h-[17rem] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm xl:h-[calc(100vh-11rem)] xl:min-h-0"
             />
-            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] w-[13.5rem] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 shadow-md">
-              <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
-                Place type
-              </div>
-              <VenueTypeLegend />
-              <div className="mt-2 border-t border-stone-100 pt-1.5 text-[11px] font-semibold text-stone-600">
-                Number = matching menu items
-              </div>
-            </div>
+            <MapLegend isDesktop={isDesktop}>
+              {mapZoom < MAP_INDIVIDUAL_MARKER_ZOOM ? (
+                <div className="text-[11px] font-semibold text-stone-600">
+                  Cluster number = nearby places
+                </div>
+              ) : (
+                <>
+                  <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                    Place type
+                  </div>
+                  <VenueTypeLegend />
+                  <div className="mt-2 border-t border-stone-100 pt-1.5 text-[11px] font-semibold text-stone-600">
+                    Number = matching menu items
+                  </div>
+                </>
+              )}
+            </MapLegend>
           </div>
         </div>
       </div>

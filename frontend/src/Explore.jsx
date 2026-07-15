@@ -9,10 +9,9 @@ import FavoriteButton from "./FavoriteButton.jsx";
 import { formatRatingCount, ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
-  currentOpenState,
   isMenuStale,
   relativeDate,
-  todayOpeningHours,
+  restaurantOpenSnapshot,
 } from "./RestaurantMeta.jsx";
 import {
   cuisineLabel,
@@ -22,8 +21,9 @@ import {
   venueKindLabel,
 } from "./cuisine.js";
 import { priceLevelRank, priceLevelSymbol } from "./price.js";
-import { apiUrl } from "./staticData.js";
+import { fetchRestaurants } from "./staticData.js";
 import NoteIcon from "./NoteIcon.jsx";
+import MapLegend from "./MapLegend.jsx";
 import VenueTypeLegend from "./VenueTypeLegend.jsx";
 import VenueKindFilter from "./VenueKindFilter.jsx";
 import {
@@ -31,7 +31,19 @@ import {
   VENUE_MARKER_SIZE,
   venueMarkerHtml,
 } from "./venueMarkers.js";
-import { focusMapOnMarker } from "./mapFocus.js";
+import {
+  focusMapOnMarker,
+  isFreshMapFocus,
+  placeFocusZoom,
+} from "./mapFocus.js";
+import {
+  MAP_INDIVIDUAL_MARKER_ZOOM,
+  aggregateMapItems,
+  clusterMarkerHtml,
+  mapItemsForViewport,
+  withPriorityMapItem,
+} from "./mapAggregation.js";
+import { progressiveRestaurantSections } from "./progressiveRestaurants.js";
 import {
   CLOUD_ENABLED,
   clearCommentAuthReturn,
@@ -51,6 +63,7 @@ import {
 // hasn't picked their own origin yet (near-me or address search).
 const ORLANDO = { lat: 28.5384, lng: -81.3789 };
 const DEFAULT_ORIGIN_LABEL = "Orlando";
+const RESTAURANT_PAGE_SIZE = 60;
 
 function haversineMiles(a, b) {
   const R = 3958.8;
@@ -62,6 +75,18 @@ function haversineMiles(a, b) {
       Math.cos((b.lat * Math.PI) / 180) *
       Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+function isWithinMapBounds(item, bounds) {
+  return (
+    bounds != null &&
+    item.lat != null &&
+    item.lng != null &&
+    item.lat >= bounds.s &&
+    item.lat <= bounds.n &&
+    item.lng >= bounds.w &&
+    item.lng <= bounds.e
+  );
 }
 
 function prettyType(t) {
@@ -324,6 +349,9 @@ export default function Explore({
   // account backend isn't configured.
   const [commentCounts, setCommentCounts] = useState(null);
   const [dishMentionCounts, setDishMentionCounts] = useState(() => new Map());
+  const [visibleLimit, setVisibleLimit] = useState(RESTAURANT_PAGE_SIZE);
+  const [statusNow, setStatusNow] = useState(() => new Date());
+  const [mapZoom, setMapZoom] = useState(10);
 
   useEffect(() => {
     if (!CLOUD_ENABLED) return;
@@ -351,10 +379,22 @@ export default function Explore({
   // {id, ts, source: "card" | "map"} — card click flies the map; pin click
   // highlights + scrolls the card. Only card-sourced focus moves the map.
   const [focus, setFocus] = useState(null);
+  // Selection outlives the short map animation above. It keeps the chosen
+  // card rendered and visibly marked after its popup has opened and `focus`
+  // is cleared, including when a viewport update re-splits the card list.
+  const [selectedRestaurantId, setSelectedRestaurantId] = useState(null);
   const [viewBounds, setViewBounds] = useState(null); // map viewport {s,w,n,e}
   const mapEl = useRef(null);
+  const mobileMapAnchorRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef({});
+  const renderedMarkersRef = useRef(new Map());
+  const markerLayerRef = useRef(null);
+  const originMarkerRef = useRef(null);
+  const didInitialMapFitRef = useRef(false);
+  const lastMapOriginRef = useRef(null);
+  const boundsSyncRef = useRef(null);
+  const loadMoreRef = useRef(null);
   const commentsReturnHandledRef = useRef(false);
 
   useEffect(() => {
@@ -365,7 +405,12 @@ export default function Explore({
   }, []);
 
   useEffect(() => {
-    fetch(apiUrl("/api/restaurants"))
+    const timer = window.setInterval(() => setStatusNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    fetchRestaurants()
       .then((res) => {
         if (!res.ok) throw new Error(`API ${res.status}`);
         return res.json();
@@ -414,13 +459,22 @@ export default function Explore({
     if (!match || restaurants.length === 0) return;
     const target = restaurants.find((item) => item.id === Number(match[1]));
     if (!target) return;
-    if (!isDesktop) setView("map");
-    setFocus({ id: target.place_id, ts: Date.now(), source: "card" });
+    if (!isDesktop) enterMobileMap();
+    setSelectedRestaurantId(target.place_id);
+    setFocus({
+      id: target.place_id,
+      lat: target.lat,
+      lng: target.lng,
+      ts: Date.now(),
+      source: "card",
+    });
   }, [restaurants, isDesktop]);
 
   // One origin change path for every control (sidebar picker, mobile pin,
   // mobile address row): closest-first sort, fresh map split, closed row.
   function changeOrigin(point, label) {
+    setFocus(null);
+    setSelectedRestaurantId(null);
     setOrigin(point);
     setOriginLabel(label);
     // Picking a location means "what's near here" — surface the closest
@@ -446,14 +500,24 @@ export default function Explore({
 
   const enriched = useMemo(
     () =>
-      restaurants.map((r) => ({
-        ...r,
-        distance:
-          r.lat != null && r.lng != null
-            ? haversineMiles(origin, { lat: r.lat, lng: r.lng })
-            : null,
-      })),
-    [restaurants, origin]
+      restaurants.map((r) => {
+        const status = restaurantOpenSnapshot(
+          r.open_now,
+          r.enriched_at,
+          r.opening_hours,
+          statusNow
+        );
+        return {
+          ...r,
+          distance:
+            r.lat != null && r.lng != null
+              ? haversineMiles(origin, { lat: r.lat, lng: r.lng })
+              : null,
+          openState: status.openState,
+          todayHours: status.todayHours,
+        };
+      }),
+    [restaurants, origin, statusNow]
   );
 
   const cuisines = useMemo(() => cuisineOptions(restaurants), [restaurants]);
@@ -481,11 +545,7 @@ export default function Explore({
       const expected = openFilter === "open";
       out = out.filter(
         (restaurant) =>
-          currentOpenState(
-            restaurant.open_now,
-            restaurant.enriched_at,
-            restaurant.opening_hours
-          ) === expected
+          restaurant.openState === expected
       );
     }
     if (maxMiles > 0) {
@@ -527,41 +587,186 @@ export default function Explore({
     });
   }, [enriched, query, placeType, cuisine, openFilter, maxMiles, sortBy, priceTier]);
 
+  useEffect(() => {
+    setVisibleLimit(RESTAURANT_PAGE_SIZE);
+  }, [query, placeType, cuisine, openFilter, maxMiles, sortBy, priceTier, origin]);
+
   const showMap = isDesktop || view === "map";
 
-  // (Re)build the map whenever it's visible and inputs change. Cheap at this
-  // scale (~60 markers), and much simpler than incremental marker sync.
+  function alignMobileMapViewport() {
+    mobileMapAnchorRef.current?.scrollIntoView({
+      block: "start",
+      inline: "nearest",
+      behavior: "auto",
+    });
+  }
+
+  function enterMobileMap() {
+    if (isDesktop) return;
+    // Do this before React removes the long list. Otherwise a deep scroll
+    // position can briefly point beyond the shortened document, which leaves
+    // mobile browsers showing Leaflet's gray canvas instead of repainting.
+    alignMobileMapViewport();
+    // A long browsing session can have hundreds of full cards mounted. Drop
+    // back to one page before opening the map; the selected card is pinned
+    // into that page when the user returns to List.
+    setVisibleLimit(RESTAURANT_PAGE_SIZE);
+    setView("map");
+  }
+
+  function enterMobileList() {
+    mapRef.current?.stop();
+    mapRef.current?.closePopup();
+    setFocus(null);
+    setView("list");
+  }
+
+  useEffect(() => {
+    if (isDesktop || view !== "map") return;
+    let secondFrame = null;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        // Mobile map mode is a stable filter-first layout: the four place
+        // type choices sit immediately under the sticky shell, with the map
+        // below. An instant document scroll also cancels any still-running
+        // smooth card scroll before the long list is removed.
+        alignMobileMapViewport();
+        mapRef.current?.invalidateSize({ pan: false });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame != null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [isDesktop, view]);
+
+  // Initialize Leaflet once, then diff only the marker layer as filters or
+  // zoom change. Tiles and map interaction state stay alive across views.
   useEffect(() => {
     if (!showMap || !mapEl.current) return;
-    const map = L.map(mapEl.current, { zoomControl: true });
-    mapRef.current = map;
+    let map = mapRef.current;
+    if (!map) {
+      map = L.map(mapEl.current, {
+        zoomControl: true,
+        zoomAnimation: isDesktop,
+        fadeAnimation: isDesktop,
+        markerZoomAnimation: isDesktop,
+      });
+      mapRef.current = map;
+      markerLayerRef.current = L.layerGroup().addTo(map);
+      L.tileLayer(
+        isDesktop
+          ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+          : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+        {
+          attribution: "© OpenStreetMap © CARTO",
+          subdomains: "abcd",
+          maxZoom: 19,
+          keepBuffer: isDesktop ? 2 : 1,
+          updateWhenIdle: !isDesktop,
+          updateWhenZooming: isDesktop,
+        }
+      ).addTo(map);
+      map.setView([origin.lat, origin.lng], 10);
+      map.on("zoomend", () => setMapZoom(map.getZoom()));
+    }
     markersRef.current = {};
-    L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {
-        attribution: "© OpenStreetMap © CARTO",
-        subdomains: "abcd",
-        maxZoom: 19,
-      }
-    ).addTo(map);
 
-    const bounds = [];
+    const mappable = filtered.filter((r) => r.lat != null && r.lng != null);
+    const bounds = mappable.map((r) => [r.lat, r.lng]);
 
     // Origin marker (small blue dot).
-    L.marker([origin.lat, origin.lng], {
-      icon: L.divIcon({
-        className: "",
-        html: '<div class="vf-pin vf-pin--dot" style="background:#2563eb"></div>',
-        iconSize: [12, 12],
-        iconAnchor: [6, 6],
-      }),
-      zIndexOffset: -100,
-    })
-      .addTo(map)
-      .bindTooltip(originLabel, { className: "vf-tooltip", direction: "top" });
+    if (!originMarkerRef.current) {
+      originMarkerRef.current = L.marker([origin.lat, origin.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: '<div style="display:flex;width:32px;height:32px;align-items:center;justify-content:center"><div class="vf-pin vf-pin--dot" style="background:#2563eb"></div></div>',
+          iconSize: [32, 32],
+          iconAnchor: [16, 16],
+        }),
+        zIndexOffset: 1000,
+        riseOnHover: true,
+      }).addTo(map);
+      originMarkerRef.current.on("click", () => {
+        originMarkerRef.current?.openTooltip();
+      });
+    }
+    originMarkerRef.current.setLatLng([origin.lat, origin.lng]);
+    const originTip = document.createElement("span");
+    originTip.textContent = isDesktop
+      ? originLabel
+      : `Distances measured from ${originLabel}`;
+    originMarkerRef.current.unbindPopup().unbindTooltip().bindTooltip(originTip, {
+      className: "vf-tooltip",
+      direction: "top",
+      offset: [0, -8],
+    });
 
-    filtered.forEach((r) => {
-      if (r.lat == null || r.lng == null) return;
+    const selectedRestaurant = selectedRestaurantId
+      ? mappable.find(
+          (restaurant) => restaurant.place_id === selectedRestaurantId
+        )
+      : null;
+    const markerItems = withPriorityMapItem(
+      mapItemsForViewport(mappable, mapZoom, viewBounds),
+      selectedRestaurant
+    );
+    const entries = aggregateMapItems(
+      markerItems,
+      mapZoom,
+      (item) => item.id,
+      selectedRestaurant?.id
+    );
+    const activeMarkerKeys = new Set(entries.map((entry) => entry.key));
+    entries.forEach((entry) => {
+      const previous = renderedMarkersRef.current.get(entry.key);
+      if (entry.cluster) {
+        if (previous) return;
+        const clusterMarker = L.marker([entry.lat, entry.lng], {
+          icon: L.divIcon({
+            className: "",
+            html: clusterMarkerHtml(entry.items.length),
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          }),
+        }).addTo(markerLayerRef.current);
+        clusterMarker.bindTooltip(
+          `${entry.items.length} restaurants · zoom in to explore`,
+          { className: "vf-tooltip", direction: "top" }
+        );
+        clusterMarker.on("click", () => {
+          const nextCenter = [entry.lat, entry.lng];
+          const nextZoom = Math.min(
+            MAP_INDIVIDUAL_MARKER_ZOOM,
+            map.getZoom() + 2
+          );
+          if (isDesktop) map.flyTo(nextCenter, nextZoom, { duration: 0.6 });
+          else map.setView(nextCenter, nextZoom, { animate: false });
+        });
+        renderedMarkersRef.current.set(entry.key, {
+          marker: clusterMarker,
+          signature: entry.key,
+        });
+        return;
+      }
+
+      const r = entry.items[0];
+      const signature = JSON.stringify([
+        r.name,
+        r.vegan_options,
+        r.vegan_sides,
+        r.dish_count,
+        r.openState,
+        r.todayHours,
+        r.rating,
+        r.primary_type,
+        r.website_url,
+      ]);
+      if (previous?.signature === signature) {
+        markersRef.current[r.place_id] = previous.marker;
+        return;
+      }
+      if (previous) markerLayerRef.current.removeLayer(previous.marker);
       const color = pinColor(r);
       const analyzed = r.dish_count > 0;
       const kind = venueKind(r.primary_type);
@@ -576,12 +781,26 @@ export default function Explore({
         iconSize: VENUE_MARKER_SIZE,
         iconAnchor: VENUE_MARKER_ANCHOR,
       });
-      const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
+      const marker = L.marker([r.lat, r.lng], { icon }).addTo(
+        markerLayerRef.current
+      );
       markersRef.current[r.place_id] = marker;
-      bounds.push([r.lat, r.lng]);
       marker.on("click", () => {
-        focusMapOnMarker(map, marker);
-        setFocus({ id: r.place_id, ts: Date.now(), source: "map" });
+        if (isDesktop) {
+          focusMapOnMarker(map, marker);
+          setFocus({ id: r.place_id, ts: Date.now(), source: "map" });
+        } else {
+          map.setView(marker.getLatLng(), placeFocusZoom(map.getZoom()), {
+            animate: false,
+          });
+          window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => {
+              markersRef.current[r.place_id]?.openPopup();
+            });
+          });
+          setFocus(null);
+        }
+        setSelectedRestaurantId(r.place_id);
       });
 
       // Tooltip and popup content built as DOM nodes with textContent —
@@ -598,6 +817,7 @@ export default function Explore({
 
       // Popup: three tidy sections (identity / status / vegan) plus an
       // actions row, separated by hairlines instead of a loose stack.
+      marker.bindPopup(() => {
       const el = document.createElement("div");
       el.style.cssText = "min-width:200px;max-width:250px";
 
@@ -639,8 +859,8 @@ export default function Explore({
       el.append(head);
 
       // — Status: open state · today's hours, then rating —
-      const openState = currentOpenState(r.open_now, r.enriched_at, r.opening_hours);
-      const todayHours = todayOpeningHours(r.opening_hours);
+      const openState = r.openState;
+      const todayHours = r.todayHours;
       const googleRating = ratingText(r.rating, r.user_rating_count);
       if (openState != null || todayHours || googleRating) {
         const status = addSection();
@@ -731,30 +951,56 @@ export default function Explore({
         }
         actions.append(row);
       }
-      marker.bindPopup(el, { closeButton: false });
+      return el;
+      }, { closeButton: false });
+      renderedMarkersRef.current.set(entry.key, { marker, signature });
     });
 
-    if (originLabel !== DEFAULT_ORIGIN_LABEL) {
+    for (const [key, rendered] of renderedMarkersRef.current) {
+      if (activeMarkerKeys.has(key)) continue;
+      markerLayerRef.current.removeLayer(rendered.marker);
+      renderedMarkersRef.current.delete(key);
+    }
+
+    const originKey = `${origin.lat}:${origin.lng}:${originLabel}`;
+    if (
+      originKey !== lastMapOriginRef.current &&
+      originLabel !== DEFAULT_ORIGIN_LABEL
+    ) {
       // A chosen origin (address search or near-me) wins: center the map
       // there so it answers "what's around this spot", even when that spot
       // is far from every pin.
       map.setView([origin.lat, origin.lng], 13);
-    } else if (bounds.length > 0) {
+      didInitialMapFitRef.current = true;
+    } else if (!didInitialMapFitRef.current && bounds.length > 0) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+      didInitialMapFitRef.current = true;
     } else {
-      map.setView([origin.lat, origin.lng], 13);
+      if (!didInitialMapFitRef.current) map.setView([origin.lat, origin.lng], 10);
     }
+    lastMapOriginRef.current = originKey;
 
     // Keep the list's "On the map" section in sync with the viewport.
     const syncBounds = () => {
       const b = map.getBounds();
-      setViewBounds({
+      const next = {
         s: b.getSouth(),
         w: b.getWest(),
         n: b.getNorth(),
         e: b.getEast(),
-      });
+      };
+      setViewBounds((current) =>
+        current &&
+        current.s === next.s &&
+        current.w === next.w &&
+        current.n === next.n &&
+        current.e === next.e
+          ? current
+          : next
+      );
     };
+    if (boundsSyncRef.current) map.off("moveend", boundsSyncRef.current);
+    boundsSyncRef.current = syncBounds;
     map.on("moveend", syncBounds);
     const resizeTimer = setTimeout(() => {
       map.invalidateSize();
@@ -763,20 +1009,46 @@ export default function Explore({
     return () => {
       clearTimeout(resizeTimer);
       map.off("moveend", syncBounds);
-      map.remove();
-      mapRef.current = null;
-      markersRef.current = {};
     };
-  }, [showMap, filtered, origin, originLabel]);
+  }, [
+    showMap,
+    filtered,
+    origin,
+    originLabel,
+    mapZoom,
+    viewBounds,
+    selectedRestaurantId,
+    isDesktop,
+  ]);
+
+  useEffect(
+    () => () => {
+      mapRef.current?.remove();
+      mapRef.current = null;
+      markerLayerRef.current = null;
+      originMarkerRef.current = null;
+      renderedMarkersRef.current.clear();
+      markersRef.current = {};
+    },
+    []
+  );
+
+  // Only pin-sourced focus follows viewport revisions. A card's flyTo emits
+  // moveend too, but that must not cancel its pending popup timer.
+  const focusViewportRevision = focus?.source === "map" ? viewBounds : null;
 
   // Card click → fly the map to that restaurant and open its popup. Runs
   // after the build effect above (declaration order), so it also works on
   // mobile where the click first flips the view to the map. Pin clicks
   // (source "map") don't move the map — they highlight + scroll the card.
   useEffect(() => {
+    if (!showMap) return;
     // Stale focus (older than the click's map animation) must not keep
     // re-firing when later map panning changes viewBounds below.
-    if (!focus || Date.now() - focus.ts > 2500) return;
+    if (!focus || !isFreshMapFocus(focus)) {
+      if (focus) setFocus(null);
+      return;
+    }
     if (focus.source === "map") {
       // The pin click also pans/zooms the map, and every settled viewport
       // re-splits the list and MOVES the card — a scroll fired during that
@@ -792,31 +1064,126 @@ export default function Explore({
     }
     const map = mapRef.current;
     const marker = markersRef.current[focus.id];
-    if (!map || !marker) return;
-    focusMapOnMarker(map, marker);
-    const t = setTimeout(() => marker.openPopup(), 850);
-    return () => clearTimeout(t);
-  }, [focus, showMap, viewBounds]);
+    if (!map) return;
+    if (marker) {
+      if (isDesktop) focusMapOnMarker(map, marker);
+      else {
+        map.setView(marker.getLatLng(), placeFocusZoom(map.getZoom()), {
+          animate: false,
+        });
+      }
+    } else {
+      const restaurant = filtered.find((item) => item.place_id === focus.id);
+      if (!restaurant || restaurant.lat == null || restaurant.lng == null) return;
+      const nextCenter = [restaurant.lat, restaurant.lng];
+      const nextZoom = placeFocusZoom(map.getZoom());
+      if (isDesktop) map.flyTo(nextCenter, nextZoom, { duration: 0.8 });
+      else map.setView(nextCenter, nextZoom, { animate: false });
+    }
+    let cancelled = false;
+    let retryTimer = null;
+    let popupTimer = null;
+    let firstFrame = null;
+    let secondFrame = null;
+    const openFocusedPopup = (attempt = 0) => {
+      if (cancelled) return;
+      const currentMarker = markersRef.current[focus.id];
+      if (currentMarker) {
+        currentMarker.openPopup();
+        setFocus((current) => (current === focus ? null : current));
+        return;
+      }
+      if (attempt < 20) {
+        retryTimer = window.setTimeout(
+          () => openFocusedPopup(attempt + 1),
+          75
+        );
+      }
+    };
+    if (isDesktop) {
+      popupTimer = window.setTimeout(openFocusedPopup, 850);
+    } else {
+      // The map jump is instant. Wait only for the same two paint frames used
+      // by the mobile layout effect to resize Leaflet, then show the popup.
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => openFocusedPopup());
+      });
+    }
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(popupTimer);
+      if (firstFrame != null) window.cancelAnimationFrame(firstFrame);
+      if (secondFrame != null) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [focus, showMap, focusViewportRevision, filtered, isDesktop]);
 
   function focusRestaurant(r) {
     if (r.lat == null || r.lng == null) return;
-    if (!isDesktop) setView("map");
+    if (!isDesktop) enterMobileMap();
+    setSelectedRestaurantId(r.place_id);
     setFocus({ id: r.place_id, ts: Date.now(), source: "card" });
   }
 
   // Split the list by the map viewport: what you can see on the map sits on
   // top; everything else drops to a "Not on the map" section below (never
   // hidden). Before the map has ever reported bounds, show a single list.
-  const inBounds = (r) =>
-    viewBounds != null &&
-    r.lat != null &&
-    r.lng != null &&
-    r.lat >= viewBounds.s &&
-    r.lat <= viewBounds.n &&
-    r.lng >= viewBounds.w &&
-    r.lng <= viewBounds.e;
-  const onMap = viewBounds ? filtered.filter(inBounds) : filtered;
-  const offMap = viewBounds ? filtered.filter((r) => !inBounds(r)) : [];
+  const { onMap, offMap } = useMemo(() => {
+    if (!viewBounds) return { onMap: filtered, offMap: [] };
+    const visible = [];
+    const outside = [];
+    for (const restaurant of filtered) {
+      (isWithinMapBounds(restaurant, viewBounds) ? visible : outside).push(
+        restaurant
+      );
+    }
+    return { onMap: visible, offMap: outside };
+  }, [filtered, viewBounds]);
+  const progressiveSections = useMemo(
+    () =>
+      progressiveRestaurantSections({
+        onMap,
+        offMap,
+        filtered,
+        visibleLimit,
+        selectedRestaurantId,
+      }),
+    [onMap, offMap, filtered, visibleLimit, selectedRestaurantId]
+  );
+
+  // A fly-to changes the viewport split and can move the clicked card. Keep
+  // the durable selection visible after the new sections have been laid out.
+  // `nearest` is intentionally a no-op while the card is already on screen.
+  useEffect(() => {
+    if (!selectedRestaurantId || (!isDesktop && view !== "list")) return;
+    const timer = window.setTimeout(() => {
+      document
+        .getElementById(`vf-card-${selectedRestaurantId}`)
+        ?.scrollIntoView({
+          behavior: isDesktop ? "smooth" : "auto",
+          block: "nearest",
+          inline: "nearest",
+        });
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [selectedRestaurantId, viewBounds, isDesktop, view]);
+
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || visibleLimit >= filtered.length) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisibleLimit((current) =>
+            Math.min(current + RESTAURANT_PAGE_SIZE, filtered.length)
+          );
+        }
+      },
+      { rootMargin: "400px" }
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [filtered.length, visibleLimit, view]);
 
   const renderCard = (r) => (
     <div
@@ -824,11 +1191,11 @@ export default function Explore({
       id={`vf-card-${r.place_id}`}
       onClick={() => focusRestaurant(r)}
       title={r.lat != null ? "Show on map" : undefined}
-      className={`group relative flex cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
+      className={`group relative flex scroll-mb-24 scroll-mt-32 cursor-pointer flex-col rounded-2xl border bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md lg:scroll-mb-10 ${
         scoreOpenFor === r.place_id ? "z-40" : ""
       } ${
-        focus != null && focus.id != null && focus.id === r.place_id
-          ? "border-emerald-600 ring-1 ring-emerald-600"
+        selectedRestaurantId === r.place_id
+          ? "border-emerald-600 bg-emerald-50/40 shadow-md ring-2 ring-emerald-500/25"
           : "border-stone-200/80"
       }`}
     >
@@ -928,10 +1295,8 @@ export default function Explore({
             </div>
           );
         }
-        const openState = currentOpenState(
-          r.open_now, r.enriched_at, r.opening_hours
-        );
-        const todayHours = todayOpeningHours(r.opening_hours);
+        const openState = r.openState;
+        const todayHours = r.todayHours;
         if (openState == null && !todayHours) return null;
         return (
           <div className="mt-2 text-xs font-medium text-stone-600">
@@ -1157,7 +1522,6 @@ export default function Explore({
       <div className="relative min-w-0 flex-1">
         <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl text-stone-400" aria-hidden="true">⌕</span>
         <input
-          autoFocus
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -1205,11 +1569,16 @@ export default function Explore({
 
       {/* Floating view flip (phones/tablets) — thumb-reachable and
           unmissable; desktop shows both panes so it doesn't render. */}
-      <VenueKindFilter value={placeType} onChange={setPlaceType} />
+      <div ref={mobileMapAnchorRef} className="scroll-mt-32">
+        <VenueKindFilter value={placeType} onChange={setPlaceType} />
+      </div>
 
       <button
-        onClick={() => setView(view === "list" ? "map" : "list")}
-        className="fixed inset-x-0 bottom-5 z-30 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+        onClick={() => (view === "list" ? enterMobileMap() : enterMobileList())}
+        className="fixed inset-x-0 z-40 mx-auto w-fit rounded-full bg-stone-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl lg:hidden"
+        style={{
+          bottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))",
+        }}
       >
         {view === "list" ? "🗺 Map" : "☰ List"}
       </button>
@@ -1223,7 +1592,7 @@ export default function Explore({
       <div className="lg:grid lg:grid-cols-2 lg:items-start lg:gap-5">
         {/* List pane */}
         <div className={!isDesktop && view === "map" ? "hidden" : ""}>
-          {loading ? (
+          {!isDesktop && view === "map" ? null : loading ? (
             <div className="p-10 text-center text-stone-400">Loading…</div>
           ) : filtered.length === 0 ? (
             <div className="p-10 text-center text-stone-400">
@@ -1231,6 +1600,16 @@ export default function Explore({
             </div>
           ) : (
             <>
+              {progressiveSections.pinnedFocused && (
+                <div className="mb-5">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-emerald-700">
+                    Selected restaurant
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                    {renderCard(progressiveSections.pinnedFocused)}
+                  </div>
+                </div>
+              )}
               <div className="mb-2 text-xs font-medium uppercase tracking-wide text-stone-400">
                 {viewBounds
                   ? `🗺 On the map (${onMap.length})`
@@ -1242,18 +1621,27 @@ export default function Explore({
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                  {onMap.map(renderCard)}
+                  {progressiveSections.visibleOnMap.map(renderCard)}
                 </div>
               )}
-              {offMap.length > 0 && (
+              {progressiveSections.visibleOffMap.length > 0 && (
                 <>
                   <div className="mb-2 mt-8 text-xs font-medium uppercase tracking-wide text-stone-400">
                     Not on the map ({offMap.length})
                   </div>
                   <div className="grid grid-cols-1 gap-3 opacity-90 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                    {offMap.map(renderCard)}
+                    {progressiveSections.visibleOffMap.map(renderCard)}
                   </div>
                 </>
+              )}
+              {visibleLimit < filtered.length && (
+                <div
+                  ref={loadMoreRef}
+                  className="py-4 text-center text-xs font-medium text-stone-400"
+                >
+                  Showing {Math.min(visibleLimit, filtered.length).toLocaleString()} of{" "}
+                  {filtered.length.toLocaleString()} — loading more as you scroll…
+                </div>
               )}
             </>
           )}
@@ -1268,31 +1656,38 @@ export default function Explore({
           <div className="relative z-0 isolate">
             <div
               ref={mapEl}
-              className="h-[70vh] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm lg:h-[calc(100vh-11rem)]"
+              className="h-[calc(100dvh-12.75rem)] min-h-[17rem] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm lg:h-[calc(100vh-11rem)] lg:min-h-0"
             />
-            {/* Legend */}
-            <div className="pointer-events-none absolute bottom-4 left-4 z-[500] w-[13.5rem] rounded-xl border border-stone-200 bg-white/95 px-3 py-2 shadow-md">
-              <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
-                Place type
-              </div>
-              <VenueTypeLegend />
-              <div className="mb-1 mt-2 border-t border-stone-100 pt-1.5 text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
-                Number &amp; color = vegan options
-              </div>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                {OPTION_LEGEND.map((item) => (
-                  <div key={item.label} className="flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-2.5 w-2.5 rounded-full border border-white shadow"
-                      style={{ background: item.color }}
-                    />
-                    <span className="text-[11px] font-medium text-stone-600">
-                      {item.label}
-                    </span>
+            <MapLegend isDesktop={isDesktop}>
+              {mapZoom < MAP_INDIVIDUAL_MARKER_ZOOM ? (
+                <div className="text-[11px] font-semibold text-stone-600">
+                  Cluster number = nearby places
+                </div>
+              ) : (
+                <>
+                  <div className="text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                    Place type
                   </div>
-                ))}
-              </div>
-            </div>
+                  <VenueTypeLegend />
+                  <div className="mb-1 mt-2 border-t border-stone-100 pt-1.5 text-[10px] font-extrabold uppercase tracking-wide text-stone-400">
+                    Number &amp; color = vegan options
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    {OPTION_LEGEND.map((item) => (
+                      <div key={item.label} className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full border border-white shadow"
+                          style={{ background: item.color }}
+                        />
+                        <span className="text-[11px] font-medium text-stone-600">
+                          {item.label}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </MapLegend>
           </div>
         </div>
       </div>
@@ -1370,8 +1765,11 @@ export default function Explore({
             setDishesTab(null);
             setDishesMention(null);
             setDishesCommentFilter(null);
-            if (!isDesktop) setView("map");
-            if (placeId) setFocus({ id: placeId, ts: Date.now(), source: "card" });
+            if (!isDesktop) enterMobileMap();
+            if (placeId) {
+              setSelectedRestaurantId(placeId);
+              setFocus({ id: placeId, ts: Date.now(), source: "card" });
+            }
           }}
         />
       )}

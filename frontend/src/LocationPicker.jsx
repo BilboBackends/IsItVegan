@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 
 // Shared origin picker for the Explore views: type an address OR use browser
 // geolocation. Geocoding calls Nominatim (OpenStreetMap) straight from the
@@ -12,14 +12,31 @@ const NOMINATIM = "https://nominatim.openstreetmap.org/search";
 // another state. left,top,right,bottom around greater Orlando.
 const ORLANDO_VIEWBOX = "-81.65,28.85,-81.15,28.30";
 
+function geolocationErrorMessage(error) {
+  if (error?.code === 1) {
+    return "Location access is blocked. Allow location for DishTune in your browser settings, then try again.";
+  }
+  if (error?.code === 3) {
+    return "Getting your location timed out. Try again somewhere with a clearer signal.";
+  }
+  return "Couldn’t get your location. Check location services and try again.";
+}
+
 // Compact one-tap "use my location" button for MOBILE, where the full
 // LocationPicker sits behind the collapsed filter sidebar — near-me must be
 // immediately reachable, not two taps deep.
 export function NearMeIconButton({ onOrigin, className = "" }) {
   const [locating, setLocating] = useState(false);
+  const [error, setError] = useState(null);
+  const errorId = useId();
 
   function locate() {
-    if (!navigator.geolocation || locating) return;
+    if (locating) return;
+    if (!navigator.geolocation) {
+      setError("Location is not available in this browser.");
+      return;
+    }
+    setError(null);
     setLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -29,26 +46,51 @@ export function NearMeIconButton({ onOrigin, className = "" }) {
         );
         setLocating(false);
       },
-      () => setLocating(false),
-      { timeout: 8000 }
+      (reason) => {
+        setLocating(false);
+        setError(geolocationErrorMessage(reason));
+      },
+      { timeout: 10000, maximumAge: 300000 }
     );
   }
 
   return (
-    <button
-      type="button"
-      onClick={locate}
-      disabled={locating}
-      title="Use my location"
-      aria-label="Use my location"
-      className={`flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-2xl border border-stone-300 bg-white text-xl shadow-sm transition active:scale-95 disabled:opacity-50 ${className}`}
-    >
-      {locating ? (
-        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
-      ) : (
-        "📍"
+    <div className={`relative shrink-0 ${className}`}>
+      <button
+        type="button"
+        onClick={locate}
+        disabled={locating}
+        title="Use my location"
+        aria-label="Use my location"
+        aria-busy={locating}
+        aria-describedby={error ? errorId : undefined}
+        className="flex h-[50px] w-[50px] items-center justify-center rounded-2xl border border-stone-300 bg-white text-xl shadow-sm transition active:scale-95 disabled:opacity-50"
+      >
+        {locating ? (
+          <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-emerald-600 border-t-transparent" />
+        ) : (
+          "📍"
+        )}
+      </button>
+      {error && (
+        <div
+          id={errorId}
+          role="status"
+          aria-live="polite"
+          className="absolute right-0 top-full z-[1000] mt-2 w-64 rounded-xl border border-rose-200 bg-white py-2 pl-3 pr-9 text-xs font-medium leading-relaxed text-rose-700 shadow-lg"
+        >
+          {error}
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss location error"
+            className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full text-lg leading-none text-rose-500 hover:bg-rose-50 hover:text-rose-700"
+          >
+            &times;
+          </button>
+        </div>
       )}
-    </button>
+    </div>
   );
 }
 
@@ -70,8 +112,11 @@ export default function LocationPicker({ originLabel, onOrigin, compact = false 
         onOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude }, "your location");
         setLocating(false);
       },
-      () => setLocating(false),
-      { timeout: 8000 }
+      (reason) => {
+        setLocating(false);
+        setError(geolocationErrorMessage(reason));
+      },
+      { timeout: 10000, maximumAge: 300000 }
     );
   }
 
@@ -145,7 +190,21 @@ export default function LocationPicker({ originLabel, onOrigin, compact = false 
         </button>
       )}
       {error && (
-        <div className="mt-1 text-center text-xs text-rose-500">{error}</div>
+        <div
+          role="status"
+          aria-live="polite"
+          className="mt-1 flex items-start justify-center gap-1 text-center text-xs text-rose-500"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="Dismiss location error"
+            className="-mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-base leading-none hover:bg-rose-50 hover:text-rose-700"
+          >
+            &times;
+          </button>
+        </div>
       )}
       {!compact && (
         <div className="mt-1 text-center text-xs text-stone-400">

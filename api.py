@@ -40,6 +40,86 @@ app = Flask(__name__)
 CORS(app)
 
 
+# Admin restaurant summaries need two values derived from raw menu text: the
+# explainable menu score and whether the menu advertises a plant protein.  A
+# previous implementation reopened SQLite and rescanned the full text once
+# per restaurant on every request.  Keep only the small derived values here,
+# keyed by source metadata that changes whenever a menu snapshot changes.
+_admin_menu_metric_cache: dict[tuple[str, int], tuple[tuple, dict]] = {}
+_admin_menu_metric_lock = threading.Lock()
+
+
+def _menu_metric_signature(restaurant: dict) -> tuple:
+    return (
+        restaurant.get("crawl_content_hash"),
+        restaurant.get("menu_source_max_id"),
+        restaurant.get("menu_source_count"),
+        restaurant.get("menu_fetched_at"),
+        restaurant.get("menu_chars"),
+    )
+
+
+def _admin_menu_metrics(
+    restaurants: list[dict], db_path: str | None = None
+) -> dict[int, dict]:
+    """Return cached menu-derived Admin metrics, batch-reading cache misses."""
+    path = os.path.abspath(db_path or settings.database_path)
+    with _admin_menu_metric_lock:
+        missing: list[dict] = []
+        result: dict[int, dict] = {}
+        for restaurant in restaurants:
+            if not restaurant.get("has_menu_text"):
+                continue
+            cache_key = (path, restaurant["id"])
+            cached = _admin_menu_metric_cache.get(cache_key)
+            signature = _menu_metric_signature(restaurant)
+            if cached is not None and cached[0] == signature:
+                result[restaurant["id"]] = cached[1]
+            else:
+                missing.append(restaurant)
+
+        # One connection (and at most two chunked SELECTs for very large
+        # databases) replaces one connection per restaurant.
+        menu_texts = (
+            db.get_menu_texts(
+                [restaurant["id"] for restaurant in missing], db_path=db_path
+            )
+            if missing
+            else {}
+        )
+        for restaurant in missing:
+            menu_source = menu_texts.get(restaurant["id"])
+            if menu_source is None:
+                metrics = {
+                    "menu_score": None,
+                    "menu_score_reason": None,
+                    "menu_score_is_menu": None,
+                    "plant_protein_menu": False,
+                }
+            else:
+                content = menu_source["content"]
+                menu_score = score_menu_text(content)
+                metrics = {
+                    "menu_score": menu_score.score,
+                    "menu_score_reason": menu_score.reason,
+                    "menu_score_is_menu": menu_score.is_menu,
+                    "plant_protein_menu": menu_offers_plant_protein(content),
+                }
+            cache_key = (path, restaurant["id"])
+            _admin_menu_metric_cache[cache_key] = (
+                _menu_metric_signature(restaurant),
+                metrics,
+            )
+            result[restaurant["id"]] = metrics
+        return result
+
+
+def _clear_admin_menu_metric_cache() -> None:
+    """Test/server-maintenance hook; normal invalidation is fingerprinted."""
+    with _admin_menu_metric_lock:
+        _admin_menu_metric_cache.clear()
+
+
 @app.after_request
 def compress_dish_database(response):
     """Compress the large cross-restaurant read model for remote browsers.
@@ -135,16 +215,12 @@ def get_restaurants() -> object:
     if not include_excluded:
         restaurants = [r for r in restaurants if r["is_consumer_venue"]]
     counts = db.verdict_counts_by_restaurant()
+    menu_metrics = _admin_menu_metrics(restaurants)
     for r in restaurants:
-        menu_source = db.get_menu_text(r["id"]) if r.get("has_menu_text") else None
-        menu_score = (
-            score_menu_text(menu_source["content"])
-            if menu_source is not None
-            else None
-        )
-        r["menu_score"] = menu_score.score if menu_score else None
-        r["menu_score_reason"] = menu_score.reason if menu_score else None
-        r["menu_score_is_menu"] = menu_score.is_menu if menu_score else None
+        metrics = menu_metrics.get(r["id"], {})
+        r["menu_score"] = metrics.get("menu_score")
+        r["menu_score_reason"] = metrics.get("menu_score_reason")
+        r["menu_score_is_menu"] = metrics.get("menu_score_is_menu")
         c = counts.get(r["id"])
         r["dish_count"] = c["total"] if c else 0
         # Strict standard: vegan verdicts, or likely_vegan at high
@@ -161,9 +237,7 @@ def get_restaurants() -> object:
             google_rating=r.get("rating"),
             rating_count=r.get("user_rating_count"),
             dessert_venue=r.get("primary_type") in db.DESSERT_VENUE_TYPES,
-            plant_protein_menu=menu_offers_plant_protein(
-                menu_source["content"] if menu_source else None
-            ),
+            plant_protein_menu=bool(metrics.get("plant_protein_menu")),
         )
         r["vegan_score"] = score["score"]
         r["vegan_score_parts"] = score
@@ -174,6 +248,12 @@ def get_restaurants() -> object:
             if r.get("has_menu_text") and r.get("menu_chars")
             else None
         )
+        # These fields are cache fingerprints, not part of the API contract.
+        r.pop("crawl_content_hash", None)
+        r.pop("crawl_menu_score", None)
+        r.pop("crawl_last_success_at", None)
+        r.pop("menu_source_count", None)
+        r.pop("menu_source_max_id", None)
     if not include_excluded:
         restaurants = [
             restaurant
