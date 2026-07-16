@@ -106,6 +106,26 @@ const CATEGORIES = [
   { key: "drink", label: "Drinks" },
 ];
 
+// Allergen-avoidance pills. Field order mirrors the badge order on cards.
+const AVOID_OPTIONS = [
+  ["dairy_status", "Dairy"],
+  ["gluten_status", "Gluten"],
+  ["nut_status", "Nuts"],
+  ["egg_status", "Egg"],
+  ["soy_status", "Soy"],
+  ["sesame_status", "Sesame"],
+];
+
+const SPICE_MATCHES = {
+  none: new Set(["none"]),
+  any_heat: new Set(["mild", "medium", "hot"]),
+  hot: new Set(["medium", "hot"]),
+};
+
+function formatLabel(value) {
+  return value ? value.replaceAll("_", " ") : "";
+}
+
 const VERDICT_ORDER = {
   vegan: 0,
   likely_vegan: 1,
@@ -266,6 +286,12 @@ export default function DishExplore({
   const [verdicts, setVerdicts] = useState(() => new Set());
   const [categories, setCategories] = useState(() => new Set(["food"]));
   const [servingRole, setServingRole] = useState("all"); // all | meal | side
+  const [dishFormat, setDishFormat] = useState("all"); // enrichment dish_format
+  // Allergen avoidance is strict: with a pill active, only dishes whose
+  // status is a confirmed "free" pass — "unclear" is not safe enough.
+  const [avoid, setAvoid] = useState(() => new Set());
+  const [spiceFilter, setSpiceFilter] = useState("all"); // all|none|any_heat|hot
+  const [fakeMeat, setFakeMeat] = useState("all"); // all | only | exclude
   const [maxPrice, setMaxPrice] = useState(0); // 0 = any; else dollar cap
   const [restaurant, setRestaurant] = useState("all");
   const [cuisine, setCuisine] = useState("all");
@@ -599,6 +625,16 @@ export default function DishExplore({
         if (servingRole === "meal" && dish.serving_role === "side") return false;
         if (servingRole === "side" && dish.serving_role !== "side") return false;
       }
+      if (dishFormat !== "all" && dish.dish_format !== dishFormat) return false;
+      for (const field of avoid) {
+        if (dish[field] !== "free") return false;
+      }
+      if (
+        spiceFilter !== "all" &&
+        !SPICE_MATCHES[spiceFilter].has(dish.spice_level)
+      ) return false;
+      if (fakeMeat === "only" && dish.protein_source !== "meat_analogue") return false;
+      if (fakeMeat === "exclude" && dish.protein_source === "meat_analogue") return false;
       // A price cap only keeps dishes we can PRICE — "Market Price" and
       // unpriced items can't honestly claim to be under $15.
       if (maxPrice > 0 && (dish.priceValue == null || dish.priceValue > maxPrice)) return false;
@@ -692,6 +728,10 @@ export default function DishExplore({
     categories,
     foodOnly,
     servingRole,
+    dishFormat,
+    avoid,
+    spiceFilter,
+    fakeMeat,
     maxPrice,
     restaurant,
     cuisine,
@@ -709,6 +749,10 @@ export default function DishExplore({
     verdicts,
     categories,
     servingRole,
+    dishFormat,
+    avoid,
+    spiceFilter,
+    fakeMeat,
     maxPrice,
     restaurant,
     cuisine,
@@ -752,6 +796,19 @@ export default function DishExplore({
     [dishes]
   );
 
+  // Dish-type options come from the data so the dropdown never lists a
+  // format with zero results. "other"/"unclear" stay out — they're
+  // fallbacks, not something anyone craves.
+  const dishFormats = useMemo(() => {
+    const counts = new Map();
+    for (const dish of dishes) {
+      const format = dish.dish_format;
+      if (!format || format === "unclear" || format === "other") continue;
+      counts.set(format, (counts.get(format) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [dishes]);
+
   const selectedRestaurant =
     restaurant === "all"
       ? null
@@ -759,6 +816,8 @@ export default function DishExplore({
   const categoriesActive = !foodOnly;
   const hasActiveFilters =
     verdicts.size > 0 || categoriesActive || servingRole !== "all" ||
+    dishFormat !== "all" || avoid.size > 0 || spiceFilter !== "all" ||
+    fakeMeat !== "all" ||
     maxPrice > 0 || restaurant !== "all" || cuisine !== "all" ||
     placeType !== "all" || openFilter !== "all" || maxMiles > 0;
 
@@ -1282,6 +1341,10 @@ export default function DishExplore({
     dessertCategoriesAutoRef.current = false;
     setCategories(new Set(["food"]));
     setServingRole("all");
+    setDishFormat("all");
+    setAvoid(new Set());
+    setSpiceFilter("all");
+    setFakeMeat("all");
     setMaxPrice(0);
     setRestaurant("all");
     setCuisine("all");
@@ -1294,6 +1357,10 @@ export default function DishExplore({
     Number(verdicts.size > 0) +
     Number(categoriesActive) +
     Number(servingRole !== "all") +
+    Number(dishFormat !== "all") +
+    Number(avoid.size > 0) +
+    Number(spiceFilter !== "all") +
+    Number(fakeMeat !== "all") +
     Number(maxPrice > 0) +
     Number(restaurant !== "all") +
     Number(cuisine !== "all") +
@@ -1382,6 +1449,45 @@ export default function DishExplore({
                 <option value="side">Sides & small plates</option>
               </select>
             )}
+            {dishFormats.length > 0 && (
+              <select
+                value={dishFormat}
+                onChange={(event) => setDishFormat(event.target.value)}
+                className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm capitalize"
+                aria-label="Filter by dish type"
+                title="What the dish is like to eat — bowls, burritos, sushi, soups…"
+              >
+                <option value="all">Any dish type</option>
+                {dishFormats.map(([format, count]) => (
+                  <option key={format} value={format}>
+                    {formatLabel(format)} ({count.toLocaleString()})
+                  </option>
+                ))}
+              </select>
+            )}
+            <select
+              value={spiceFilter}
+              onChange={(event) => setSpiceFilter(event.target.value)}
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
+              aria-label="Filter by spice level"
+              title="From heat markers and dish names on the menu; unmarked dishes only match 'Any'"
+            >
+              <option value="all">Any spice level</option>
+              <option value="none">No heat</option>
+              <option value="any_heat">Spicy 🌶</option>
+              <option value="hot">Extra hot 🌶🌶</option>
+            </select>
+            <select
+              value={fakeMeat}
+              onChange={(event) => setFakeMeat(event.target.value)}
+              className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm"
+              aria-label="Filter by plant-based meat"
+              title="Explicit meat substitutes: Impossible, Beyond, plant-based chick'n…"
+            >
+              <option value="all">Plant-based meat: any</option>
+              <option value="only">Only plant-based meat</option>
+              <option value="exclude">No plant-based meat</option>
+            </select>
             <select
               value={maxPrice}
               onChange={(e) => setMaxPrice(Number(e.target.value))}
@@ -1478,6 +1584,44 @@ export default function DishExplore({
                 );
               })}
             </div>
+          </div>
+          <div>
+            <div className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-stone-400">
+              Avoid · confirmed-free only
+            </div>
+            <div className="grid grid-cols-3 gap-1 rounded-xl border border-stone-200 bg-stone-50 p-1">
+              {AVOID_OPTIONS.map(([field, label]) => {
+                const active = avoid.has(field);
+                return (
+                  <button
+                    key={field}
+                    onClick={() =>
+                      setAvoid((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(field)) next.delete(field);
+                        else next.add(field);
+                        return next;
+                      })
+                    }
+                    aria-pressed={active}
+                    title={`Show only dishes whose ingredients appear ${label.toLowerCase()}-free — always confirm allergies with the restaurant`}
+                    className={`rounded-lg px-1 py-1.5 text-xs font-bold transition ${
+                      active
+                        ? "bg-rose-700 text-white shadow-sm"
+                        : "text-stone-600 hover:bg-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            {avoid.size > 0 && (
+              <p className="mt-1.5 text-[11px] leading-snug text-stone-400">
+                Menu-based inference, not an allergy guarantee — confirm
+                cross-contact with the restaurant.
+              </p>
+            )}
           </div>
         </div>
       </FilterSidebar>
@@ -1587,6 +1731,53 @@ export default function DishExplore({
               title="Remove meal/side filter"
             >
               Serving: {servingRole === "meal" ? "Meals only" : "Sides & small plates"}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {dishFormat !== "all" && (
+            <button
+              onClick={() => setDishFormat("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove dish-type filter"
+            >
+              Type: <span className="capitalize">{formatLabel(dishFormat)}</span>
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {avoid.size > 0 && (
+            <button
+              onClick={() => setAvoid(new Set())}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove avoid filters"
+            >
+              Avoiding:{" "}
+              {AVOID_OPTIONS.filter(([field]) => avoid.has(field))
+                .map(([, label]) => label)
+                .join(" + ")}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {spiceFilter !== "all" && (
+            <button
+              onClick={() => setSpiceFilter("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove spice filter"
+            >
+              {spiceFilter === "none"
+                ? "No heat"
+                : spiceFilter === "hot"
+                  ? "Extra hot 🌶🌶"
+                  : "Spicy 🌶"}
+              <span aria-hidden="true" className="text-base leading-none">×</span>
+            </button>
+          )}
+          {fakeMeat !== "all" && (
+            <button
+              onClick={() => setFakeMeat("all")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs font-bold text-emerald-800 shadow-sm ring-1 ring-emerald-200 hover:bg-emerald-100"
+              title="Remove plant-based meat filter"
+            >
+              {fakeMeat === "only" ? "Only plant-based meat" : "No plant-based meat"}
               <span aria-hidden="true" className="text-base leading-none">×</span>
             </button>
           )}
@@ -1856,6 +2047,11 @@ export default function DishExplore({
                             )}
                             <DietaryBadges dish={dish} maxBadges={4} />
                           </div>
+                          {dish.vegan_adaptation && (
+                            <p className="mt-2 text-xs font-semibold text-sky-700">
+                              Make it vegan: {dish.vegan_adaptation}
+                            </p>
+                          )}
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
                           <ThumbVote

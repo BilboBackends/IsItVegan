@@ -553,6 +553,11 @@ export default function DishModal({
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     <DietaryBadges dish={d} maxBadges={3} />
                   </div>
+                  {d.vegan_adaptation && (
+                    <div className="mt-1 text-xs font-semibold text-sky-700">
+                      Make it vegan: {d.vegan_adaptation}
+                    </div>
+                  )}
                   {d.reasoning && (
                     <div className="mt-1 text-xs text-slate-400">{d.reasoning}</div>
                   )}

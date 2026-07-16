@@ -332,6 +332,28 @@ _MIGRATIONS = {
         # alcoholic | non_alcoholic | unclear — a Coke and a Negroni are not
         # the same kind of "drink"; the Drinks tab sections on this.
         "alcohol_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        # Second-pass discovery attributes (dish_attributes.py backfill;
+        # drinks are skipped). 'unclear' / '[]' also means "not enriched
+        # yet" — attributes_enriched_at is the authoritative marker.
+        "vegetarian_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "protein_source": "TEXT NOT NULL DEFAULT 'unclear'",
+        "egg_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "soy_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        "sesame_status": "TEXT NOT NULL DEFAULT 'unclear'",
+        # JSON array of the meats present ("beef", "pork", "fish", …).
+        # Named meat_sources, NOT meat_types — one letter from the existing
+        # meal_types column is a typo trap.
+        "meat_sources": "TEXT NOT NULL DEFAULT '[]'",
+        "spice_level": "TEXT NOT NULL DEFAULT 'unclear'",
+        "cooking_method": "TEXT NOT NULL DEFAULT 'unclear'",
+        "dish_format": "TEXT NOT NULL DEFAULT 'unclear'",
+        "flavor_profile": "TEXT NOT NULL DEFAULT '[]'",
+        "ingredient_tags": "TEXT NOT NULL DEFAULT '[]'",
+        # One imperative sentence for vegan_adaptable dishes ("Ask for no
+        # cheese."); NULL otherwise.
+        "vegan_adaptation": "TEXT",
+        "attributes_enriched_at": "TEXT",
+        "attributes_model": "TEXT",
     },
     "reports": {
         "dish_name": "TEXT",
@@ -1318,6 +1340,10 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    c.dairy_status, c.gluten_status, c.nut_status,
                    c.protein_level, c.serving_role, c.meal_types,
                    c.key_ingredients, c.alcohol_status,
+                   c.vegetarian_status, c.protein_source, c.egg_status,
+                   c.soy_status, c.sesame_status, c.spice_level,
+                   c.cooking_method, c.dish_format, c.meat_sources,
+                   c.flavor_profile, c.vegan_adaptation,
                    (SELECT COUNT(*) FROM dish_votes v
                      WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
                    (SELECT COUNT(*) FROM dish_votes v
@@ -1348,6 +1374,8 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
     for row in out:
         row["meal_types"] = _decode_json_list(row.get("meal_types"))
         row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
+        row["meat_sources"] = _decode_json_list(row.get("meat_sources"))
+        row["flavor_profile"] = _decode_json_list(row.get("flavor_profile"))
     return out
 
 
@@ -1368,6 +1396,10 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    c.dairy_status, c.gluten_status, c.nut_status,
                    c.protein_level, c.serving_role, c.meal_types,
                    c.key_ingredients, c.alcohol_status,
+                   c.vegetarian_status, c.protein_source, c.egg_status,
+                   c.soy_status, c.sesame_status, c.spice_level,
+                   c.cooking_method, c.dish_format, c.meat_sources,
+                   c.flavor_profile, c.vegan_adaptation,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
                    r.archived,
@@ -1402,6 +1434,8 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
         row["opening_hours"] = _decode_json_list(row.get("opening_hours"))
         row["meal_types"] = _decode_json_list(row.get("meal_types"))
         row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
+        row["meat_sources"] = _decode_json_list(row.get("meat_sources"))
+        row["flavor_profile"] = _decode_json_list(row.get("flavor_profile"))
     return out
 
 

@@ -15,6 +15,11 @@ const ISSUES = [
   ["other", "Something else"],
 ];
 
+// Enum values render as words: "pancake_waffle" -> "pancake waffle".
+function enumLabel(value) {
+  return value ? value.replaceAll("_", " ") : null;
+}
+
 function splitReasoning(value) {
   if (!value) return { reasoning: null, evidence: null };
   const marker = " | evidence: ";
@@ -137,6 +142,17 @@ export default function DishDetail({
             {dish.distance != null && <span className="text-xs text-stone-500">{dish.distance.toFixed(1)} mi away</span>}
           </div>
 
+          {dish.vegan_adaptation && (
+            <section className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
+              <h3 className="text-xs font-bold uppercase tracking-wide text-sky-800">
+                Make it vegan
+              </h3>
+              <p className="mt-0.5 text-sm font-semibold text-sky-950">
+                {dish.vegan_adaptation}
+              </p>
+            </section>
+          )}
+
           {dish.raw_description && (
             <section className="rounded-2xl border border-stone-200 bg-white p-4">
               <h3 className="text-xs font-bold uppercase tracking-wide text-stone-400">Menu description</h3>
@@ -187,6 +203,27 @@ export default function DishDetail({
               )}
               {dish.meal_types?.length > 0 && (
                 <span><strong>Meals:</strong> {dish.meal_types.join(", ")}</span>
+              )}
+              {dish.dish_format &&
+                !["unclear", "other"].includes(dish.dish_format) && (
+                  <span><strong>Type:</strong> {enumLabel(dish.dish_format)}</span>
+                )}
+              {dish.cooking_method && dish.cooking_method !== "unclear" && (
+                <span>
+                  <strong>Preparation:</strong> {enumLabel(dish.cooking_method)}
+                </span>
+              )}
+              {dish.meat_sources?.length > 0 && (
+                <span>
+                  <strong>Meat:</strong>{" "}
+                  {dish.meat_sources.map(enumLabel).join(", ")}
+                </span>
+              )}
+              {dish.flavor_profile?.length > 0 && (
+                <span>
+                  <strong>Character:</strong>{" "}
+                  {dish.flavor_profile.map(enumLabel).join(", ")}
+                </span>
               )}
             </div>
             {dish.key_ingredients?.length > 0 && (

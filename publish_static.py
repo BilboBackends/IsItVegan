@@ -62,6 +62,11 @@ _GLOBAL_DISH_FIELDS = (
     "gluten_status", "nut_status", "protein_level", "serving_role",
     "meal_types", "key_ingredients", "alcohol_status", "up_votes",
     "down_votes", "menu_url",
+    # Second-pass enrichment (dish_attributes.py): filters, badges, and the
+    # "Make it vegan" line. Enum strings gzip to almost nothing at 60k rows.
+    "vegetarian_status", "protein_source", "egg_status", "soy_status",
+    "sesame_status", "spice_level", "cooking_method", "dish_format",
+    "meat_sources", "flavor_profile", "vegan_adaptation",
 )
 
 
