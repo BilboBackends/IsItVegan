@@ -14,15 +14,9 @@ const DAYPARTS = ["breakfast", "brunch", "lunch", "dinner"];
 export default function DietaryBadges({ dish, maxBadges = Infinity }) {
   const badges = [];
   // A side/accompaniment is not a meal — surface that up front so a bag of
-  // chips can't masquerade as a dinner option.
-  if (dish.serving_role === "meal") {
-    badges.push({
-      key: "serving-role",
-      label: "Full meal",
-      style: "bg-emerald-100 text-emerald-800",
-      title: "Classified as substantial enough to be a main meal",
-    });
-  } else if (dish.serving_role === "side") {
+  // chips can't masquerade as a dinner option. (A full meal is the normal
+  // case and doesn't need a badge.)
+  if (dish.serving_role === "side") {
     badges.push({
       key: "serving-role",
       label: "Side / small plate",

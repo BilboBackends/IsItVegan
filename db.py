@@ -1343,7 +1343,7 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
                    c.vegetarian_status, c.protein_source, c.egg_status,
                    c.soy_status, c.sesame_status, c.spice_level,
                    c.cooking_method, c.dish_format, c.meat_sources,
-                   c.flavor_profile, c.vegan_adaptation,
+                   c.flavor_profile, c.ingredient_tags, c.vegan_adaptation,
                    (SELECT COUNT(*) FROM dish_votes v
                      WHERE v.dish_id = d.id AND v.vote = 'up') AS up_votes,
                    (SELECT COUNT(*) FROM dish_votes v
@@ -1376,6 +1376,7 @@ def list_dishes(restaurant_id: int, db_path: str | None = None) -> list[dict]:
         row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
         row["meat_sources"] = _decode_json_list(row.get("meat_sources"))
         row["flavor_profile"] = _decode_json_list(row.get("flavor_profile"))
+        row["ingredient_tags"] = _decode_json_list(row.get("ingredient_tags"))
     return out
 
 
@@ -1399,7 +1400,7 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
                    c.vegetarian_status, c.protein_source, c.egg_status,
                    c.soy_status, c.sesame_status, c.spice_level,
                    c.cooking_method, c.dish_format, c.meat_sources,
-                   c.flavor_profile, c.vegan_adaptation,
+                   c.flavor_profile, c.ingredient_tags, c.vegan_adaptation,
                    r.name AS restaurant_name, r.address,
                    r.website_url, r.lat, r.lng, r.consumer_hidden,
                    r.archived,
@@ -1436,6 +1437,7 @@ def list_all_dishes(db_path: str | None = None) -> list[dict]:
         row["key_ingredients"] = _decode_json_list(row.get("key_ingredients"))
         row["meat_sources"] = _decode_json_list(row.get("meat_sources"))
         row["flavor_profile"] = _decode_json_list(row.get("flavor_profile"))
+        row["ingredient_tags"] = _decode_json_list(row.get("ingredient_tags"))
     return out
 
 

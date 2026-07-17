@@ -66,7 +66,7 @@ _GLOBAL_DISH_FIELDS = (
     # "Make it vegan" line. Enum strings gzip to almost nothing at 60k rows.
     "vegetarian_status", "protein_source", "egg_status", "soy_status",
     "sesame_status", "spice_level", "cooking_method", "dish_format",
-    "meat_sources", "flavor_profile", "vegan_adaptation",
+    "meat_sources", "flavor_profile", "ingredient_tags", "vegan_adaptation",
 )
 
 
