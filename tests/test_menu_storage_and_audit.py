@@ -106,6 +106,42 @@ def test_audit_flags_tiny_and_priceless_menus(test_db):
     assert "Healthy Menu" not in findings
 
 
+def test_audit_flags_small_classified_menus(test_db):
+    # A full-looking menu that classified to only 3 dishes is the signature
+    # of an incomplete capture that went live; a normally classified menu
+    # (>= MIN_PLAUSIBLE_DISHES) and a never-classified one must not flag.
+    def classify_dishes(rid: int, count: int) -> None:
+        source = db.get_menu_text(rid, db_path=test_db)
+        for i in range(count):
+            dish_id = db.upsert_dish(
+                rid, f"Dish {i}", None, "$9.95", db_path=test_db
+            )
+            db.insert_classification(
+                dish_id=dish_id, verdict="vegan", confidence=0.9,
+                reasoning="r", source_id=source["id"], model_version="m",
+                created_at="2026-07-03T00:00:00+00:00", db_path=test_db,
+            )
+
+    for rid, name in (
+        (1, "Three Dish Cafe"), (2, "Fully Classified"), (3, "Not Yet Run")
+    ):
+        _add_restaurant(test_db, rid, name, f"https://r{rid}.example")
+        # Unique text per restaurant so the duplicate-menu check stays quiet.
+        db.replace_menu_texts(
+            rid, [(f"https://r{rid}.example/menu", f"{name}\n{REAL_MENU}")],
+            fetched_at="2026-07-03T00:00:00+00:00", db_path=test_db,
+        )
+    classify_dishes(1, 3)
+    classify_dishes(2, 12)
+
+    findings = {f["name"]: f["flags"] for f in audit_menus(test_db)}
+    assert any(
+        "only 3 dishes extracted" in fl for fl in findings["Three Dish Cafe"]
+    )
+    assert "Fully Classified" not in findings
+    assert "Not Yet Run" not in findings
+
+
 def test_audit_flags_unresolved_dynamic_menu_loader(test_db):
     _add_restaurant(test_db, 1, "Dynamic Menu Cafe", "https://dynamic.example")
     db.replace_menu_texts(

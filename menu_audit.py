@@ -36,6 +36,12 @@ MIN_PLAUSIBLE_CHARS = 1200
 # marketing copy that squeaked past on section names (the Pickles case).
 WEAK_SCORE = 0.60
 
+# A menu that was CLASSIFIED but yielded fewer dishes than this is usually an
+# incomplete capture that went live (teaser page, single daypart) — even when
+# the fragment reads well enough to pass the text checks above. Genuinely
+# tiny menus get one "Menu is correct" review and stay hidden.
+MIN_PLAUSIBLE_DISHES = 10
+
 _PRICE_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{2})?")
 _DYNAMIC_MENU_PLACEHOLDER_RE = re.compile(
     r"\b(?:loading\s+(?:our\s+)?menus?|menus?\s+(?:are\s+)?loading)\b",
@@ -101,6 +107,10 @@ def _audit_menus_uncached(db_path: str | None = None) -> list[dict]:
     sources_by_restaurant = db.get_menu_sources_by_restaurant(
         [restaurant["id"] for restaurant in restaurants], db_path=db_path
     )
+    classified_totals = {
+        rid: entry["total"]
+        for rid, entry in db.verdict_counts_by_restaurant(db_path).items()
+    }
     content_owner: dict[str, tuple[int, str]] = {}  # hash -> (id, name)
     findings: list[dict] = []
 
@@ -166,6 +176,17 @@ def _audit_menus_uncached(db_path: str | None = None) -> list[dict]:
                 flags.append(f"identical menu text as “{owner[1]}”")
             else:
                 content_owner[digest] = (rid, r["name"])
+
+        # Classification producing only a handful of dishes is its own
+        # signature: the capture was incomplete but read well enough to be
+        # classified and go live. Unclassified restaurants aren't flagged —
+        # "never classified" is already visible in the table.
+        classified = classified_totals.get(rid, 0)
+        if 0 < classified < MIN_PLAUSIBLE_DISHES:
+            flags.append(
+                f"classified from a small menu — only {classified} "
+                f"dish{'es' if classified != 1 else ''} extracted"
+            )
 
         if flags:
             fingerprint = hashlib.sha256(

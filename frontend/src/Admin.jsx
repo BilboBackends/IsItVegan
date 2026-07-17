@@ -3265,7 +3265,9 @@ export default function Admin() {
                     No unreviewed menu warnings.
                   </div>
                 )}
-                {activeMenuQuality.map((f) => (
+                {activeMenuQuality.map((f) => {
+                  const restaurant = restaurants.find((item) => item.id === f.restaurant_id);
+                  return (
                   <div key={f.restaurant_id} className="rounded-lg bg-white p-3 text-sm shadow-sm">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
@@ -3276,10 +3278,69 @@ export default function Admin() {
                       </div>
                       <div className="flex gap-2 max-sm:snap-x max-sm:overflow-x-auto max-sm:pb-1 max-sm:[&>*]:shrink-0 sm:flex-wrap sm:justify-end">
                         <button
-                          onClick={() => {
-                            const restaurant = restaurants.find((item) => item.id === f.restaurant_id);
-                            if (restaurant) runRowAction(restaurant, "ingest");
-                          }}
+                          onClick={() => restaurant && openMenu(restaurant)}
+                          disabled={!restaurant?.has_menu_text}
+                          title={
+                            restaurant?.has_menu_text
+                              ? "View the stored (scraped) menu text and menu score"
+                              : "No menu text has been stored"
+                          }
+                          className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Scraped menu
+                        </button>
+                        <button
+                          onClick={() => restaurant && setDishesFor(restaurant)}
+                          disabled={!restaurant || !(restaurant.dish_count > 0)}
+                          title={
+                            restaurant?.dish_count > 0
+                              ? "View the classified dishes and their verdicts"
+                              : "No classified dishes yet"
+                          }
+                          className="rounded-lg border border-emerald-300 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Classified menu
+                        </button>
+                        <button
+                          onClick={() => restaurant && startDoctor(restaurant, "claude")}
+                          disabled={
+                            !restaurant?.website_url ||
+                            Boolean(doctor?.running) ||
+                            rowBusy !== null ||
+                            qualityBusy !== null
+                          }
+                          title={
+                            restaurant?.website_url
+                              ? "Deep-dive this menu with Claude (your Claude subscription): inspect the live site, fix the scraper if needed, re-scrape and classify with DeepSeek"
+                              : "A website is required for a menu deep dive"
+                          }
+                          className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-bold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {doctor?.running && doctor.restaurant_id === f.restaurant_id && doctor.agent === "claude"
+                            ? "Diving…"
+                            : "Claude dive"}
+                        </button>
+                        <button
+                          onClick={() => restaurant && startDoctor(restaurant, "codex")}
+                          disabled={
+                            !restaurant?.website_url ||
+                            Boolean(doctor?.running) ||
+                            rowBusy !== null ||
+                            qualityBusy !== null
+                          }
+                          title={
+                            restaurant?.website_url
+                              ? "Deep-dive this menu with Codex (your ChatGPT subscription): inspect the live site, fix the scraper if needed, re-scrape and classify with DeepSeek"
+                              : "A website is required for a menu deep dive"
+                          }
+                          className="rounded-lg border border-sky-300 px-3 py-1.5 text-xs font-bold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {doctor?.running && doctor.restaurant_id === f.restaurant_id && doctor.agent === "codex"
+                            ? "Diving…"
+                            : "Codex dive"}
+                        </button>
+                        <button
+                          onClick={() => restaurant && runRowAction(restaurant, "ingest")}
                           disabled={rowBusy !== null || qualityBusy !== null}
                           className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                         >
@@ -3306,7 +3367,8 @@ export default function Admin() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
 
                 {knownMenuIssues.length > 0 && (
                   <details className="rounded-lg border border-amber-200 bg-amber-50/70 p-3">
@@ -3844,7 +3906,7 @@ export default function Admin() {
                             view menu
                           </button>
                           <button
-                            onClick={() => startDoctor(r)}
+                            onClick={() => startDoctor(r, "claude")}
                             disabled={
                               !r.website_url ||
                               Boolean(doctor?.running) ||
@@ -3855,14 +3917,35 @@ export default function Admin() {
                             }
                             title={
                               r.website_url
-                                ? "Deep-dive an incomplete or incorrect menu with Codex. It inspects the live site, may fix the scraper, then re-scrapes and classifies with DeepSeek."
+                                ? "Deep-dive an incomplete or incorrect menu with Claude (your Claude subscription). It inspects the live site, may fix the scraper, then re-scrapes and classifies with DeepSeek."
+                                : "A website is required for a menu deep dive"
+                            }
+                            className="rounded border border-violet-200 px-2 py-0.5 text-xs font-semibold text-violet-700 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {doctor?.running && doctor.restaurant_id === r.id && doctor.agent === "claude"
+                              ? "diving…"
+                              : "claude dive"}
+                          </button>
+                          <button
+                            onClick={() => startDoctor(r, "codex")}
+                            disabled={
+                              !r.website_url ||
+                              Boolean(doctor?.running) ||
+                              rowBusy !== null ||
+                              ingesting ||
+                              classifying ||
+                              deleting
+                            }
+                            title={
+                              r.website_url
+                                ? "Deep-dive an incomplete or incorrect menu with Codex (your ChatGPT subscription). It inspects the live site, may fix the scraper, then re-scrapes and classifies with DeepSeek."
                                 : "A website is required for a menu deep dive"
                             }
                             className="rounded border border-sky-200 px-2 py-0.5 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            {doctor?.running && doctor.restaurant_id === r.id
+                            {doctor?.running && doctor.restaurant_id === r.id && doctor.agent === "codex"
                               ? "diving…"
-                              : "deep dive"}
+                              : "codex dive"}
                           </button>
                           <button
                             onClick={() => setHistoryFor(r)}
