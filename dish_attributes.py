@@ -40,9 +40,11 @@ ENUM_FIELDS: dict[str, list[str]] = {
     "soy_status": ["contains", "free", "unclear"],
     "sesame_status": ["contains", "free", "unclear"],
     "spice_level": ["none", "mild", "medium", "hot", "unclear"],
+    # roasted/stir_fry joined after the first full pass: the model kept
+    # (correctly) insisting on them for rotisserie and wok dishes.
     "cooking_method": [
-        "fried", "grilled", "baked", "raw", "steamed", "boiled_simmered",
-        "sauteed", "mixed", "unclear",
+        "fried", "grilled", "baked", "roasted", "raw", "steamed",
+        "boiled_simmered", "sauteed", "stir_fry", "mixed", "unclear",
     ],
     # What the dish is like to eat. Recognizable named types stay coarse
     # enough to filter on; "other" is the catch-all (the DB's 'unclear'
