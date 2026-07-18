@@ -24,6 +24,7 @@ import {
 import { calorieLabel } from "./calories.js";
 import { parsePriceValue, priceLevelSymbol } from "./price.js";
 import { isCountedVegan } from "./verdicts.js";
+import { suitabilityTier } from "./dietProfile.js";
 import VenueTypeLegend from "./VenueTypeLegend.jsx";
 import VenueKindFilter from "./VenueKindFilter.jsx";
 import MapLegend from "./MapLegend.jsx";
@@ -126,13 +127,6 @@ function formatLabel(value) {
   return value ? value.replaceAll("_", " ") : "";
 }
 
-const VERDICT_ORDER = {
-  vegan: 0,
-  likely_vegan: 1,
-  vegan_adaptable: 2,
-  unclear: 3,
-  not_vegan: 4,
-};
 
 function prettyType(type) {
   if (!type) return null;
@@ -667,24 +661,34 @@ export default function DishExplore({
         )
       : null;
 
-    return out.sort((a, b) => {
+    // Whether the meals-before-sides ordering participates in this view.
+    const roleOf = (dish) =>
+      foodOnly && servingRole === "all"
+        ? Number(dish.serving_role === "side")
+        : 0;
+
+    const sorted = out.sort((a, b) => {
+      // Diet suitability (vegan today — see dietProfile.js) leads, and
+      // relevance, "Closest", or "Cheapest" order dishes WITHIN a tier:
+      // otherwise a strong text match on a beef noodle soup outranks the
+      // vegan ramen the user actually came for. The one thing above it is
+      // the browse view's meals/sides grouping — the section headings
+      // promise two contiguous blocks, so the role split must stay the
+      // outermost key. Searching skips that grouping (and its headings):
+      // a relevance-ranked list isn't role-grouped.
       if (q) {
+        const tierOrder = suitabilityTier(a) - suitabilityTier(b);
+        if (tierOrder) return tierOrder;
         const relevance = relevanceScores.get(b.id) - relevanceScores.get(a.id);
         if (relevance) return relevance;
-      }
-      // The default food list remains complete, but substantial meals lead;
-      // sides and small plates follow instead of being mixed alphabetically.
-      if (foodOnly && servingRole === "all") {
-        const roleOrder = Number(a.serving_role === "side") - Number(b.serving_role === "side");
+        const roleOrder = roleOf(a) - roleOf(b);
         if (roleOrder) return roleOrder;
+      } else {
+        const roleOrder = roleOf(a) - roleOf(b);
+        if (roleOrder) return roleOrder;
+        const tierOrder = suitabilityTier(a) - suitabilityTier(b);
+        if (tierOrder) return tierOrder;
       }
-      // Vegan always leads, whatever sort is active: the chosen sort orders
-      // dishes WITHIN each verdict group. Otherwise "Closest" (set by
-      // near-me) or "Cheapest" would rank not-vegan dishes above vegan ones
-      // — useless on a vegan finder.
-      const verdictOrder =
-        (VERDICT_ORDER[a.verdict] ?? 5) - (VERDICT_ORDER[b.verdict] ?? 5);
-      if (verdictOrder) return verdictOrder;
       if (sortBy === "recommended") {
         return (
           (b.rating ?? -1) - (a.rating ?? -1) ||
@@ -719,6 +723,31 @@ export default function DishExplore({
       }
       return a.name.localeCompare(b.name) || a.restaurant_name.localeCompare(b.restaurant_name);
     });
+
+    // Default browse interleaves restaurants: the quality order above still
+    // decides who leads, but one well-rated menu may not monopolize the
+    // first screens with dozens of consecutive rows. Each dish is keyed by
+    // how many earlier dishes its restaurant already placed in its own
+    // tier/role group; the stable re-sort then rotates restaurants while
+    // preserving the quality order at equal counts.
+    if (!q && sortBy === "recommended" && restaurant === "all") {
+      const groupOf = (dish) =>
+        `${suitabilityTier(dish)}|${roleOf(dish)}|${dish.restaurant_id}`;
+      const seen = new Map();
+      const occurrence = new Map();
+      for (const dish of sorted) {
+        const count = seen.get(groupOf(dish)) || 0;
+        occurrence.set(dish.id, count);
+        seen.set(groupOf(dish), count + 1);
+      }
+      sorted.sort(
+        (a, b) =>
+          roleOf(a) - roleOf(b) ||
+          suitabilityTier(a) - suitabilityTier(b) ||
+          occurrence.get(a.id) - occurrence.get(b.id)
+      );
+    }
+    return sorted;
   }, [
     derivedDishes,
     deferredQuery,
@@ -1921,9 +1950,13 @@ export default function DishExplore({
               const isExpanded = expandedIds.has(dish.id);
               const isSide = dish.serving_role === "side";
               const previousWasSide = visibleDishes[index - 1]?.serving_role === "side";
+              // Role headings only when the list is actually role-grouped:
+              // search results are ranked by relevance, where a heading at
+              // every meal/side flip would repeat down the list.
               const showRoleHeading =
                 foodOnly &&
                 servingRole === "all" &&
+                !deferredQuery.trim() &&
                 (index === 0 || isSide !== previousWasSide);
               return (
                 <Fragment key={dish.id}>
