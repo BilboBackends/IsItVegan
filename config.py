@@ -22,6 +22,7 @@ class Settings:
     anthropic_api_key: str | None
     classifier_provider: str
     anthropic_classifier_model: str
+    photo_menu_vision_model: str
     claude_classifier_model: str | None
     claude_classifier_timeout_seconds: int
     codex_cli_path: str | None
@@ -71,6 +72,12 @@ def load_settings() -> Settings:
         anthropic_classifier_model=os.environ.get(
             "ANTHROPIC_CLASSIFIER_MODEL",
             os.environ.get("CLASSIFIER_MODEL", "claude-sonnet-5"),
+        ),
+        # Menu-image transcription (photo_menu.py). Reading a dense, sometimes
+        # stylized menu photograph accurately is exactly the kind of vision
+        # task worth the strongest model — one call per unscrapeable venue.
+        photo_menu_vision_model=os.environ.get(
+            "PHOTO_MENU_VISION_MODEL", "claude-opus-4-8"
         ),
         # Pin the CLI model explicitly: subscription defaults can be Opus
         # (bigger and slower than this extraction needs) and internal helper
