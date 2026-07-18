@@ -18,6 +18,13 @@ from dataclasses import dataclass
 # Prices are the single strongest menu signal: "$9", "$12.50", "12.00".
 _PRICE_RE = re.compile(r"(?:\$\s?\d{1,3}(?:\.\d{2})?)|(?:\b\d{1,3}\.\d{2}\b)")
 
+# Cocktail/coffee menus often write "espresso martini - 15" or "Buns . . . 9":
+# a bare 1-3 digit number at line end after a dash or dot leader. Anchored to
+# the separator + line end so years, addresses, and "Suite 201" never match.
+_TRAILING_PRICE_RE = re.compile(
+    r"(?:\s[-–—]\s?|\.{2,}\s?|\.\s\.\s)(\d{1,3})(?:\.\d{2})?\s*$", re.M
+)
+
 # Menu-section headers. Their presence strongly implies a structured menu.
 _SECTION_WORDS = (
     "appetizer",
@@ -110,7 +117,9 @@ def score_menu_text(text: str) -> MenuScore:
     line_count = len(lines)
     low = text.lower()
 
-    price_count = len(_PRICE_RE.findall(text))
+    price_count = len(_PRICE_RE.findall(text)) + len(
+        _TRAILING_PRICE_RE.findall(text)
+    )
     food_hits = _count_food_words(low)
     section_hits = _count_sections(low)
 
