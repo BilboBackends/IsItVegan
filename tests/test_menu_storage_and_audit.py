@@ -195,7 +195,7 @@ def test_quality_review_persists_but_reopens_when_menu_changes(test_db):
 def test_audit_flags_duplicate_menus_across_restaurants(test_db):
     # Two locations storing byte-identical text = a generic platform page
     # (the 7-Eleven case), not either restaurant's menu.
-    for rid, name in [(1, "Chain Store A"), (2, "Chain Store B")]:
+    for rid, name in [(1, "Gas Mart Deli"), (2, "Corner Bodega")]:
         _add_restaurant(test_db, rid, name, f"https://chain{rid}.com")
         db.replace_menu_texts(
             rid, [(f"https://chain.com/menu?loc={rid}"[:30], REAL_MENU)],
@@ -213,3 +213,35 @@ def test_audit_flags_website_without_menu(test_db):
     _add_restaurant(test_db, 1, "Unscraped Diner", "https://x.com")
     findings = {f["name"]: f["flags"] for f in audit_menus(test_db)}
     assert any("no menu scraped" in fl for fl in findings["Unscraped Diner"])
+
+
+def test_same_brand_locations_may_share_identical_menus(test_db):
+    # Two First Watch locations share one national menu — that's correct,
+    # not a copy-paste signal. Unrelated venues with identical text still
+    # flag (the platform-boilerplate case).
+    for rid, name in (
+        (1, "First Watch"), (2, "First Watch"),
+        (3, "Tainos Longwood"), (4, "Tainos Bakery & Deli (Casselberry)"),
+        (5, "Corner Diner"),
+    ):
+        _add_restaurant(test_db, rid, name, f"https://r{rid}.example")
+    shared = f"Shared Brand Menu\n{REAL_MENU}"
+    for rid in (1, 2):
+        db.replace_menu_texts(rid, [(f"https://r{rid}.example/menu", shared)],
+                              fetched_at="2026-07-18T00:00:00+00:00", db_path=test_db)
+    tainos = f"Tainos Menu\n{REAL_MENU}"
+    for rid in (3, 4):
+        db.replace_menu_texts(rid, [(f"https://r{rid}.example/menu", tainos)],
+                              fetched_at="2026-07-18T00:00:00+00:00", db_path=test_db)
+    # Corner Diner and Lakeside Grill share text: platform boilerplate.
+    boilerplate = f"Boilerplate Platform Menu\n{REAL_MENU}"
+    _add_restaurant(test_db, 6, "Lakeside Grill", "https://r6.example")
+    for rid in (5, 6):
+        db.replace_menu_texts(rid, [(f"https://r{rid}.example/menu", boilerplate)],
+                              fetched_at="2026-07-18T00:00:00+00:00", db_path=test_db)
+
+    by_id = {f["restaurant_id"]: f["flags"] for f in audit_menus(test_db)}
+    dup = lambda rid: any("identical menu text" in fl for fl in by_id.get(rid, []))
+    assert not dup(1) and not dup(2)  # First Watch pair: same brand
+    assert not dup(3) and not dup(4)  # Tainos family: same brand
+    assert dup(5) or dup(6)           # unrelated venues still flag

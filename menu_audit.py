@@ -42,6 +42,27 @@ WEAK_SCORE = 0.60
 # tiny menus get one "Menu is correct" review and stay hidden.
 MIN_PLAUSIBLE_DISHES = 10
 
+def _same_brand(name_a: str, name_b: str) -> bool:
+    """Two restaurant names that share a leading brand token sequence.
+
+    "First Watch" == "First Watch"; "Tainos Longwood" matches "Tainos Bakery
+    & Deli (Casselberry)" on the shared first token. Single very generic
+    words ("the", "cafe") can't establish a brand on their own.
+    """
+    tokens_a = re.findall(r"[a-z0-9']+", name_a.lower())
+    tokens_b = re.findall(r"[a-z0-9']+", name_b.lower())
+    shared = 0
+    for token_a, token_b in zip(tokens_a, tokens_b):
+        if token_a != token_b:
+            break
+        shared += 1
+    if not shared:
+        return False
+    lead = tokens_a[:shared]
+    generic = {"the", "cafe", "café", "el", "la", "los", "las", "orlando"}
+    return any(token not in generic for token in lead)
+
+
 _PRICE_RE = re.compile(r"\$\s?\d{1,3}(?:\.\d{2})?")
 _DYNAMIC_MENU_PLACEHOLDER_RE = re.compile(
     r"\b(?:loading\s+(?:our\s+)?menus?|menus?\s+(?:are\s+)?loading)\b",
@@ -169,11 +190,14 @@ def _audit_menus_uncached(db_path: str | None = None) -> list[dict]:
                 )
 
             # Identical text stored for two different restaurants means a
-            # generic chain/platform page, not either restaurant's menu.
+            # generic chain/platform page, not either restaurant's menu —
+            # unless they're two locations of the same brand (First Watch x2,
+            # the Tainos family), where a shared menu is exactly right.
             digest = hashlib.sha256(combined.encode()).hexdigest()
             owner = content_owner.get(digest)
             if owner is not None and owner[0] != rid:
-                flags.append(f"identical menu text as “{owner[1]}”")
+                if not _same_brand(owner[1], r["name"]):
+                    flags.append(f"identical menu text as “{owner[1]}”")
             else:
                 content_owner[digest] = (rid, r["name"])
 
