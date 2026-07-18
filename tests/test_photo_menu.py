@@ -85,8 +85,54 @@ def _stub_pipeline(monkeypatch, transcription: photo_menu.Transcription):
         photo_menu, "_download_image", lambda url: (b"x" * 40_000, "image/jpeg")
     )
     monkeypatch.setattr(
-        photo_menu, "transcribe_menu_image", lambda *a, **k: transcription
+        photo_menu, "read_menu_image", lambda *a, **k: transcription
     )
+
+
+def test_ladder_prefers_ocr_when_text_scores_like_a_menu(monkeypatch):
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=True, text=MENU_TEXT, cost_estimate=0.0015, method="ocr"
+        ),
+    )
+    def boom(*a, **k):  # Claude must not be called for a clean OCR read
+        raise AssertionError("escalated despite good OCR")
+    monkeypatch.setattr(photo_menu, "transcribe_menu_image", boom)
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert result.method == "ocr" and result.is_menu
+    assert result.cost_estimate == 0.0015
+
+
+def test_ladder_escalates_to_claude_when_ocr_is_garbled_or_missing(monkeypatch):
+    claude = photo_menu.Transcription(
+        ok=True, is_menu=True, text=MENU_TEXT, cost_estimate=0.05
+    )
+    monkeypatch.setattr(
+        photo_menu, "transcribe_menu_image", lambda *a, **k: claude
+    )
+    # Garbled OCR: plenty of characters, no prices/dish structure.
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=True, text="lorem ipsum " * 40, cost_estimate=0.0015, method="ocr"
+        ),
+    )
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert result.method == "claude"
+    assert result.cost_estimate == pytest.approx(0.0515)  # failed OCR still billed
+
+    # No OCR key at all: straight to Claude, no OCR charge.
+    claude.cost_estimate = 0.05
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=False, error="No Google Vision API key", method="ocr"
+        ),
+    )
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert result.method == "claude"
+    assert result.cost_estimate == pytest.approx(0.05)
 
 
 def test_run_persists_like_a_text_scrape(test_db, monkeypatch):

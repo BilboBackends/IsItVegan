@@ -23,6 +23,7 @@ class Settings:
     classifier_provider: str
     anthropic_classifier_model: str
     photo_menu_vision_model: str
+    google_vision_api_key: str | None
     claude_classifier_model: str | None
     claude_classifier_timeout_seconds: int
     codex_cli_path: str | None
@@ -78,6 +79,13 @@ def load_settings() -> Settings:
         # task worth the strongest model — one call per unscrapeable venue.
         photo_menu_vision_model=os.environ.get(
             "PHOTO_MENU_VISION_MODEL", "claude-opus-4-8"
+        ),
+        # Cheap OCR tier for menu images (~$1.50/1000 vs ~$0.05/image for
+        # Claude vision). Falls back to the Places key — same Google Cloud
+        # project, just needs the Vision API enabled on it.
+        google_vision_api_key=(
+            os.environ.get("GOOGLE_VISION_API_KEY")
+            or os.environ.get("GOOGLE_PLACES_API_KEY")
         ),
         # Pin the CLI model explicitly: subscription defaults can be Opus
         # (bigger and slower than this extraction needs) and internal helper

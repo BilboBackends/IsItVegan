@@ -8,7 +8,14 @@ module closes the gap:
 
 1. Fetch the restaurant's known menu pages (learned crawl route first, site
    root as fallback) and mine their HTML for menu-looking <img> tags.
-2. Download each candidate and have Claude transcribe the menu verbatim.
+2. Read each candidate image, cheapest capable tier first (mirroring
+   pdf_menu.py's local-then-Claude ladder):
+   a. Google Cloud Vision OCR (~$1.50/1000 images). The downstream DeepSeek
+      classification already reasons over messy scraped text, so raw OCR
+      text is a perfectly good source when it scores like a menu.
+   b. Claude vision transcription (~$0.05/image) only when OCR is
+      unavailable or its text doesn't score like a menu (multi-column
+      scrambling, stylized fonts, or a non-menu image).
 3. Score, persist, and record the crawl exactly like a text scrape, so
    downstream classification (DeepSeek), menu versioning, and the Admin
    pipeline treat a photo menu like any other menu.
@@ -46,6 +53,14 @@ _IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 # A transcription shorter than this is a sign the "menu" image was a teaser
 # (hours board, single special) — reject rather than classify a fragment.
 _MIN_MENU_CHARS = 200
+
+# OCR text below this menu score doesn't get trusted — it's either a non-menu
+# image (OCR can't judge that; Claude's is_menu gate can) or a layout OCR
+# scrambled badly enough to defeat price/dish pairing. Matches the audit's
+# WEAK_SCORE bar for "reads like a menu".
+_OCR_ACCEPT_SCORE = 0.60
+
+_OCR_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
 _MENU_WORDS = ("menu", "carte", "speisekarte")
 _NOT_MENU_WORDS = ("logo", "icon", "sprite", "banner-home", "favicon")
@@ -94,6 +109,7 @@ class Transcription:
     text: str = ""
     error: str | None = None
     cost_estimate: float = 0.0
+    method: str = "claude"  # "ocr" | "claude"
 
 
 @dataclass
@@ -175,6 +191,80 @@ def _download_image(url: str) -> tuple[bytes, str] | None:
     if not (_MIN_IMAGE_BYTES <= len(data) <= _MAX_IMAGE_BYTES):
         return None
     return data, media_type
+
+
+def ocr_menu_image(image_bytes: bytes) -> Transcription:
+    """Cheap tier: Google Cloud Vision document OCR.
+
+    Returns ok=False when the API is unavailable/unauthorized (key without
+    the Vision API enabled) so the caller falls through to Claude. is_menu
+    is decided by the caller via menu scoring — OCR has no judgment.
+    """
+    if not settings.google_vision_api_key:
+        return Transcription(ok=False, error="No Google Vision API key",
+                             method="ocr")
+    import base64
+
+    try:
+        response = httpx.post(
+            _OCR_ENDPOINT,
+            params={"key": settings.google_vision_api_key},
+            json={
+                "requests": [
+                    {
+                        "image": {
+                            "content": base64.standard_b64encode(
+                                image_bytes
+                            ).decode("utf-8")
+                        },
+                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                    }
+                ]
+            },
+            timeout=60,
+        )
+    except httpx.HTTPError as exc:
+        return Transcription(ok=False, error=f"OCR request failed: {exc}",
+                             method="ocr")
+    if response.status_code != 200:
+        return Transcription(
+            ok=False, method="ocr",
+            error=f"OCR HTTP {response.status_code}: {response.text[:200]}",
+        )
+    body = response.json().get("responses", [{}])[0]
+    if body.get("error"):
+        return Transcription(
+            ok=False, method="ocr",
+            error=f"OCR error: {body['error'].get('message', 'unknown')}",
+        )
+    text = (body.get("fullTextAnnotation") or {}).get("text", "").strip()
+    # $1.50 per 1000 images after the monthly free tier.
+    return Transcription(ok=True, text=text, cost_estimate=0.0015,
+                         method="ocr")
+
+
+def read_menu_image(
+    image_bytes: bytes, media_type: str, *, model: str | None = None
+) -> Transcription:
+    """Cheapest capable reader for one menu image.
+
+    OCR text is accepted when it both looks substantial and scores like a
+    menu; anything else escalates to Claude vision, whose transcription
+    quality and is_menu judgment are worth the ~30x price on the residue.
+    """
+    ocr = ocr_menu_image(image_bytes)
+    if ocr.ok:
+        if (
+            len(ocr.text) >= _MIN_MENU_CHARS
+            and score_menu_text(ocr.text).score >= _OCR_ACCEPT_SCORE
+        ):
+            ocr.is_menu = True
+            return ocr
+    elif ocr.error and "No Google Vision API key" not in ocr.error:
+        print(f"  [photo] OCR tier unavailable: {ocr.error}")
+    claude = transcribe_menu_image(image_bytes, media_type, model=model)
+    claude.cost_estimate += ocr.cost_estimate  # the failed OCR try still billed
+    return claude
 
 
 def transcribe_menu_image(
@@ -290,12 +380,13 @@ def run(
             continue
         seen += 1
         image_bytes, media_type = downloaded
-        result = transcribe_menu_image(image_bytes, media_type)
+        result = read_menu_image(image_bytes, media_type)
         cost += result.cost_estimate
         if result.ok and result.is_menu and len(result.text) >= _MIN_MENU_CHARS:
+            print(f"  [photo] {url[:80]}: kept via {result.method}")
             pages.append((url, result.text))
         elif result.error:
-            print(f"  [photo] {url}: {result.error}")
+            print(f"  [photo] {url[:80]}: {result.error}")
     if not pages:
         return PhotoMenuResult(
             ok=False,
