@@ -936,3 +936,47 @@ def test_completeness_rejects_unresolved_dynamic_menu_loader():
 
     assert not checked.ok
     assert checked.completeness_error == "dynamic menu loader never resolved"
+
+
+def test_square_online_catalog_mined_from_public_api(monkeypatch):
+    # Nifty's Korean BBQ: a square.site landing shows 4 category tiles while
+    # the platform's public products API carries all 84 items. Any page
+    # embedding editmysite ids yields the catalog as a canonical pseudo-page.
+    html = (
+        '<script src="https://cdn3.editmysite.com/app/site.js"></script>'
+        '<script>var cfg = {"user_id": "124870934",'
+        '"site_id": "294717148660725181"};</script>'
+        "<p>Ramen Ichiraku $16.00 Shop Now</p>"
+    )
+    scraper._square_catalog_text.cache_clear()
+    calls = []
+
+    def fake_catalog(user_id, site_id):
+        calls.append((user_id, site_id))
+        return "Ramen Tonkotsu  rich pork broth  $16.00\nBibimbap  $14.00"
+
+    monkeypatch.setattr(scraper, "_square_catalog_text", fake_catalog)
+    pages = scraper._pages_from_html("https://x.square.site/food", html)
+    assert calls == [("124870934", "294717148660725181")]
+    assert pages[-1][0] == "https://x.square.site/#square-catalog"
+    assert "Ramen Tonkotsu" in pages[-1][1]
+
+    # Non-Square pages never trigger the collector.
+    pages = scraper._pages_from_html("https://x.com/", "<p>menu $5 fries</p>")
+    assert all("#square-catalog" not in u for u, _ in pages)
+
+
+def test_finish_dedupes_repeated_canonical_pseudo_pages():
+    menu = "\n".join(f"Dish {i} with beans and rice ${i}.95" for i in range(1, 25))
+    result = scraper._finish(
+        "https://x.square.site/",
+        [
+            ("https://x.square.site/", "Shopping Cart\nCheckout"),
+            ("https://x.square.site/#square-catalog", menu),
+            ("https://x.square.site/#square-catalog", menu),
+        ],
+        [],
+        status_code=200,
+    )
+    assert result.ok
+    assert result.scraped_urls.count("https://x.square.site/#square-catalog") == 1

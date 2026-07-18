@@ -29,6 +29,7 @@ import hashlib
 import html as html_lib
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
@@ -274,7 +275,106 @@ def _pages_from_html(page_url: str, html: str) -> list[tuple[str, str]]:
         structured = None  # never let a weird page break the scrape
     if structured:
         pages.append((page_url.split("#")[0] + "#structured-menu", structured))
+    try:
+        catalog = _square_catalog_pseudo_page(page_url, html)
+    except Exception:
+        catalog = None  # catalog mining must never break the scrape
+    if catalog:
+        pages.append(catalog)
     return pages
+
+
+# ---------------------------------------------------------------------------
+# Square Online (Weebly/editmysite) catalog API
+# ---------------------------------------------------------------------------
+# Square Online sites render their menu client-side and paginate /s/shop, so
+# both DOM text and link-following capture a fraction at best (Nifty's Korean
+# BBQ: 4 category tiles stored, 84 real products). But every page embeds the
+# site's user/site ids, and the platform serves the complete product catalog
+# from a public, unauthenticated API — one request instead of N renders.
+
+_SQUARE_ONLINE_MARKER = "editmysite.com"
+_SQUARE_USER_ID_RE = re.compile(r"user_?[iI]d[\"']?\s*[:=]\s*[\"']?(\d{6,})")
+_SQUARE_SITE_ID_RE = re.compile(r"site_?[iI]d[\"']?\s*[:=]\s*[\"']?(\d{10,})")
+_SQUARE_CATALOG_API = (
+    "https://cdn5.editmysite.com/app/store/api/v28/editor"
+    "/users/{user_id}/sites/{site_id}/products"
+)
+_MAX_SQUARE_CATALOG_PAGES = 3  # 100 products per page
+_MIN_SQUARE_CATALOG_ITEMS = 4  # fewer reads like a gift-card shop, not a menu
+
+
+def _square_price(price) -> str:
+    if not isinstance(price, dict):
+        return str(price or "").strip()
+    low = price.get("low_formatted")
+    high = price.get("high_formatted")
+    if low and high and low != high:
+        return f"{low} - {high}"
+    return str(
+        high or low or price.get("regular_formatted") or price.get("formatted")
+        or ""
+    ).strip()
+
+
+@lru_cache(maxsize=64)
+def _square_catalog_text(user_id: str, site_id: str) -> str:
+    """Complete product catalog rendered as menu-ish text lines.
+
+    Cached per site so one crawl touching many pages of the same site costs
+    a single catalog fetch. Empty string when the API declines or the shop
+    is too thin to be a menu.
+    """
+    lines: list[str] = []
+    try:
+        with httpx.Client(
+            timeout=20.0, headers=_HTTP_HEADERS, follow_redirects=True
+        ) as client:
+            for page in range(1, _MAX_SQUARE_CATALOG_PAGES + 1):
+                response = client.get(
+                    _SQUARE_CATALOG_API.format(user_id=user_id, site_id=site_id),
+                    params={"per_page": 100, "page": page},
+                )
+                if response.status_code != 200:
+                    break
+                items = response.json().get("data") or []
+                for item in items:
+                    name = str(item.get("name") or "").strip()
+                    if not name:
+                        continue
+                    parts = [name]
+                    description = str(item.get("description") or "").strip()
+                    if description:
+                        parts.append(description)
+                    price = _square_price(item.get("price"))
+                    if price:
+                        parts.append(price)
+                    lines.append("  ".join(parts))
+                if len(items) < 100:
+                    break
+    except httpx.HTTPError:
+        return ""
+    if len(lines) < _MIN_SQUARE_CATALOG_ITEMS:
+        return ""
+    return "\n".join(lines)
+
+
+def _square_catalog_pseudo_page(
+    page_url: str, html: str
+) -> tuple[str, str] | None:
+    if _SQUARE_ONLINE_MARKER not in (html or ""):
+        return None
+    user_id = _SQUARE_USER_ID_RE.search(html)
+    site_id = _SQUARE_SITE_ID_RE.search(html)
+    if not (user_id and site_id):
+        return None
+    text = _square_catalog_text(user_id.group(1), site_id.group(1))
+    if not text:
+        return None
+    # Canonical per-site URL: every page of the site yields the same pseudo
+    # page, and _finish dedupes identical URLs.
+    parsed = urlparse(page_url)
+    return f"{parsed.scheme}://{parsed.netloc}/#square-catalog", text
 
 
 @dataclass
@@ -1607,6 +1707,15 @@ def _finish(
     every page that independently clears the threshold is kept and combined —
     keeping only the best page silently dropped the rest of the menu.
     """
+    # Canonical pseudo-pages (the Square catalog) can be emitted once per
+    # fetched page of the same site — keep the first of each URL.
+    deduped: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for page_url, text in pages:
+        if page_url not in seen_urls:
+            seen_urls.add(page_url)
+            deduped.append((page_url, text))
+    pages = deduped
     scraped_urls = [p[0] for p in pages]
 
     # Score each page; pick the highest menu score.
