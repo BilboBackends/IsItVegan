@@ -53,13 +53,32 @@ def test_finds_menu_images_and_skips_logos_and_icons():
     urls = photo_menu.find_menu_image_urls(
         "https://example.com/food-menu", NEIGHBORS_HTML
     )
-    # The alt-matched menu image and the src-matched lazy-loaded drink menu
-    # qualify; the logo (anti-signal), nav icon (anti-signal), and interior
-    # shot (no signal) do not.
+    # Named matches lead; the interior shot rides along only because the
+    # page itself is a menu path; the logo and nav icon never qualify.
     assert urls == [
         "https://example.com/uploads/abc/food-menu-2026.jpg",
         "https://example.com/uploads/abc/drink-menu.png",
+        "https://example.com/uploads/abc/interior.jpg",
     ]
+
+
+def test_menu_page_context_admits_unnamed_images():
+    # Tacos Los Campeones: the /menu page serves its menu photo under a UUID
+    # filename with empty alt. On a menu-path page every non-anti-signal
+    # image qualifies; named matches still order first.
+    html = """
+    <img src="/uploads/2e7f0e52-7d64.jpeg" alt="">
+    <img src="/uploads/food-menu.jpg" alt="menu">
+    <img src="/uploads/logo.png" alt="logo">
+    """
+    urls = photo_menu.find_menu_image_urls("https://tacos.example/menu", html)
+    assert urls == [
+        "https://tacos.example/uploads/food-menu.jpg",
+        "https://tacos.example/uploads/2e7f0e52-7d64.jpeg",
+    ]
+    # Same images on a non-menu page: only the named match qualifies.
+    urls = photo_menu.find_menu_image_urls("https://tacos.example/", html)
+    assert urls == ["https://tacos.example/uploads/food-menu.jpg"]
 
 
 def test_relative_urls_resolve_against_the_final_page_url():
@@ -235,7 +254,7 @@ def test_run_persists_like_a_text_scrape(test_db, monkeypatch):
     )
     result = photo_menu.run(1, db_path=test_db)
     assert result.ok
-    assert len(result.pages) == 2  # both candidate images transcribed
+    assert len(result.pages) == 3  # every candidate image transcribed
 
     source = db.get_menu_text(1, db_path=test_db)
     assert "chickpeas and tahini" in source["content"]

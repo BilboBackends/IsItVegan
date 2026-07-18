@@ -34,7 +34,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -260,24 +260,34 @@ def find_menu_image_urls(page_url: str, html: str) -> list[str]:
 
     Generic on purpose: an image is a candidate when 'menu' (or a cognate)
     appears in its alt text or src filename and no anti-signal ('logo',
-    'icon', …) does. Size/type junk is filtered later at download time.
+    'icon', …) does. On a page whose own URL says menu, every non-anti-signal
+    image qualifies — site builders serve menu photos under UUID filenames
+    with empty alt (Tacos Los Campeones' /menu page), and the downstream
+    is_menu gate rejects the decorative food shots that ride along. Name-
+    matched images order first so the per-restaurant cap spends wisely.
     """
+    page_is_menu = any(
+        word in urlparse(page_url).path.lower() for word in _MENU_WORDS
+    )
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
-    urls: list[str] = []
+    named: list[str] = []
+    contextual: list[str] = []
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or ""
         alt = img.get("alt") or ""
         haystack = f"{alt} {src}".lower()
-        if not any(word in haystack for word in _MENU_WORDS):
-            continue
         if any(word in haystack for word in _NOT_MENU_WORDS):
             continue
+        name_match = any(word in haystack for word in _MENU_WORDS)
+        if not name_match and not page_is_menu:
+            continue
         absolute = urljoin(page_url, src)
-        if absolute not in seen:
-            seen.add(absolute)
-            urls.append(absolute)
-    return urls
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        (named if name_match else contextual).append(absolute)
+    return named + contextual
 
 
 def _candidate_page_urls(restaurant: dict, db_path: str | None = None) -> list[str]:
@@ -290,6 +300,13 @@ def _candidate_page_urls(restaurant: dict, db_path: str | None = None) -> list[s
     website = restaurant.get("website_url")
     if website and website not in urls:
         urls.append(website)
+    # The near-universal /menu convention, mirroring scraper.py's probe: menu
+    # images often live on a page the learned route never captured (its text
+    # is worthless, so no route was learned for it).
+    if website:
+        conventional = urljoin(website, "/menu")
+        if conventional not in urls:
+            urls.append(conventional)
     return urls
 
 
