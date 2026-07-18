@@ -285,6 +285,38 @@ def fetch_place_details(
     }
 
 
+def fetch_place_photo_names(
+    place_id: str, *, api_key: str, timeout: float = 30.0
+) -> list[str]:
+    """Photo resource names for a place (places/X/photos/Y), newest first."""
+    headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": "photos"}
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
+        resp.raise_for_status()
+        photos = resp.json().get("photos") or []
+    return [p.get("name") for p in photos if p.get("name")]
+
+
+def download_place_photo(
+    photo_name: str,
+    *,
+    api_key: str,
+    max_width_px: int = 1600,
+    timeout: float = 30.0,
+) -> tuple[bytes, str]:
+    """(bytes, media_type) for one place photo via the media endpoint."""
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(
+            f"https://places.googleapis.com/v1/{photo_name}/media",
+            params={"key": api_key, "maxWidthPx": max_width_px},
+        )
+        resp.raise_for_status()
+    media_type = (
+        resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+    )
+    return resp.content, media_type
+
+
 def _search_circle(
     client: httpx.Client,
     *,

@@ -81,6 +81,28 @@ def test_menu_page_context_admits_unnamed_images():
     assert urls == ["https://tacos.example/uploads/food-menu.jpg"]
 
 
+def test_menus_published_as_linked_image_files_are_found():
+    # The Wellborn: menu JPEGs live behind <a href> links, with only logos
+    # in <img> tags.
+    html = """
+    <img src="/assets/Wellborn+Logo.png" alt="logo">
+    <a href="/s/Wellborn_2026_Q2_Web_Dinner.jpg">Dinner</a>
+    <a href="/s/IMG_2292.jpeg">Specials</a>
+    <a href="/menu.pdf">PDF</a>
+    <a href="/visit">Visit</a>
+    """
+    urls = photo_menu.find_menu_image_urls("https://w.example/menu", html)
+    assert urls == [
+        "https://w.example/s/Wellborn_2026_Q2_Web_Dinner.jpg",
+        "https://w.example/s/IMG_2292.jpeg",
+    ]
+    # Off a menu page, an anchor whose text/href says menu still qualifies.
+    html2 = '<a href="/files/dinner-menu.jpg">Our Menu</a>'
+    assert photo_menu.find_menu_image_urls("https://w.example/", html2) == [
+        "https://w.example/files/dinner-menu.jpg"
+    ]
+
+
 def test_relative_urls_resolve_against_the_final_page_url():
     html = '<img src="../img/menu.jpg" alt="menu">'
     urls = photo_menu.find_menu_image_urls("https://example.com/pages/food", html)
@@ -106,6 +128,7 @@ def _stub_pipeline(monkeypatch, transcription: photo_menu.Transcription):
     monkeypatch.setattr(
         photo_menu, "read_menu_image", lambda *a, **k: transcription
     )
+    monkeypatch.setattr(photo_menu, "_places_photo_candidates", lambda r: [])
 
 
 def test_ladder_prefers_ocr_when_text_scores_like_a_menu(monkeypatch):
@@ -277,6 +300,36 @@ def test_run_rejects_non_menu_and_tiny_transcriptions(test_db, monkeypatch):
         assert not result.ok
     assert db.get_menu_text(1, db_path=test_db) is None
     assert db.get_crawl_profile(1, db_path=test_db) is None
+
+
+def test_places_photos_are_the_last_resort_image_source(test_db, monkeypatch):
+    # Social-only/placeholder websites yield no web images; the restaurant's
+    # Maps listing photos go through the same ladder and gates.
+    _add_restaurant(test_db, 1, "Facebook Only BBQ", "https://nope.example")
+
+    class EmptyPage:
+        status_code = 200
+        url = "https://nope.example/"
+        text = "<html><body><p>Welcome!</p></body></html>"
+
+    monkeypatch.setattr(photo_menu, "_fetch", lambda url: EmptyPage())
+    monkeypatch.setattr(photo_menu, "_fetch_rendered", lambda url: (None, "x"))
+    monkeypatch.setattr(
+        photo_menu, "_places_photo_candidates",
+        lambda r: [("google-places-photo:places/p1/photos/a", b"img", "image/jpeg")],
+    )
+    monkeypatch.setattr(
+        photo_menu, "read_menu_image",
+        lambda *a, **k: photo_menu.Transcription(
+            ok=True, is_menu=True, text=MENU_TEXT, cost_estimate=0.002,
+            method="ocr",
+        ),
+    )
+    result = photo_menu.run(1, db_path=test_db)
+    assert result.ok
+    assert result.pages[0][0].startswith("google-places-photo:")
+    profile = db.get_crawl_profile(1, db_path=test_db)
+    assert profile["crawl_method"] == "photo"
 
 
 def test_dry_run_stores_nothing(test_db, monkeypatch):

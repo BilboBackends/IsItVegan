@@ -48,8 +48,9 @@ from scraper import _HTTP_HEADERS
 # (Square ships a literal menu.svg hamburger) are not.
 _MIN_IMAGE_BYTES = 30_000
 _MAX_IMAGE_BYTES = 12_000_000
-_MAX_IMAGES_PER_RESTAURANT = 4
+_MAX_IMAGES_PER_RESTAURANT = 6
 _IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_IMAGE_HREF_RE = re.compile(r"\.(jpe?g|png|webp|gif)(\?|#|$)", re.I)
 
 # A transcription shorter than this is a sign the "menu" image was a teaser
 # (hours board, single special) — reject rather than classify a fragment.
@@ -197,6 +198,12 @@ def _reattach_detached_prices(lines: list[dict]) -> str | None:
 _MENU_WORDS = ("menu", "carte", "speisekarte")
 _NOT_MENU_WORDS = ("logo", "icon", "sprite", "banner-home", "favicon")
 
+# Google Places photos are the last-resort image source: social-only websites
+# and menu-less placeholder sites often still have menu-board photos in their
+# Maps listing. The is_menu gate rejects the food/interior shots that make up
+# most listing photos, so the cap bounds spend per restaurant.
+_MAX_PLACES_PHOTOS = 6
+
 _SYSTEM = """You transcribe restaurant menu images into plain text.
 
 Rules:
@@ -273,20 +280,27 @@ def find_menu_image_urls(page_url: str, html: str) -> list[str]:
     seen: set[str] = set()
     named: list[str] = []
     contextual: list[str] = []
-    for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
-        alt = img.get("alt") or ""
-        haystack = f"{alt} {src}".lower()
+    def consider(src: str, label: str) -> None:
+        haystack = f"{label} {src}".lower()
         if any(word in haystack for word in _NOT_MENU_WORDS):
-            continue
+            return
         name_match = any(word in haystack for word in _MENU_WORDS)
         if not name_match and not page_is_menu:
-            continue
+            return
         absolute = urljoin(page_url, src)
         if absolute in seen:
-            continue
+            return
         seen.add(absolute)
         (named if name_match else contextual).append(absolute)
+
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or ""
+        consider(src, img.get("alt") or "")
+    # Menus published as image FILES behind links, not <img> tags (The
+    # Wellborn: "Dinner" -> /s/Wellborn_2026_Q2_Web_Dinner.jpg).
+    for anchor in soup.find_all("a", href=True):
+        if _IMAGE_HREF_RE.search(anchor["href"]):
+            consider(anchor["href"], anchor.get_text(" ", strip=True))
     return named + contextual
 
 
@@ -324,6 +338,37 @@ def _fetch_rendered(url: str) -> tuple[str | None, str | None]:
     from headless import fetch_rendered_html
 
     return fetch_rendered_html(url)
+
+
+def _places_photo_candidates(restaurant: dict) -> list[tuple[str, bytes, str]]:
+    """(reference, bytes, media_type) for the restaurant's Maps photos.
+
+    The reference is a non-navigable google-places-photo: URL — provenance
+    without ever exposing a keyed media URL.
+    """
+    place_id = restaurant.get("place_id")
+    if not place_id or not settings.google_places_api_key:
+        return []
+    import places_client
+
+    try:
+        names = places_client.fetch_place_photo_names(
+            place_id, api_key=settings.google_places_api_key
+        )
+    except Exception as exc:
+        print(f"  [photo] places photos unavailable: {exc}")
+        return []
+    out: list[tuple[str, bytes, str]] = []
+    for name in names[:_MAX_PLACES_PHOTOS]:
+        try:
+            data, media_type = places_client.download_place_photo(
+                name, api_key=settings.google_places_api_key
+            )
+        except Exception:
+            continue
+        if media_type in _IMAGE_MEDIA_TYPES and len(data) >= _MIN_IMAGE_BYTES:
+            out.append((f"google-places-photo:{name}", data, media_type))
+    return out
 
 
 def _download_image(url: str) -> tuple[bytes, str] | None:
@@ -544,30 +589,40 @@ def run(
             rendered, _error = _fetch_rendered(page_url)
             if rendered:
                 collect(page_url, rendered)
-    if not image_urls:
-        return PhotoMenuResult(ok=False, error="No menu-looking images found.")
-
-    # 2. Transcribe each candidate; keep the ones Claude confirms are menus.
+    # 2. Transcribe candidates; keep the ones confirmed as menus. Website
+    #    images first; when they yield nothing, the restaurant's Google
+    #    Places listing photos are the last resort (social-only websites,
+    #    menu-less placeholder sites).
     pages: list[tuple[str, str]] = []
     cost = 0.0
     seen = 0
-    for url in image_urls[:_MAX_IMAGES_PER_RESTAURANT]:
-        downloaded = _download_image(url)
-        if downloaded is None:
-            continue
+
+    def read_candidate(ref: str, image_bytes: bytes, media_type: str) -> None:
+        nonlocal cost, seen
         seen += 1
-        image_bytes, media_type = downloaded
         result = read_menu_image(image_bytes, media_type)
         cost += result.cost_estimate
         if result.ok and result.is_menu and len(result.text) >= _MIN_MENU_CHARS:
-            print(f"  [photo] {url[:80]}: kept via {result.method}")
-            pages.append((url, result.text))
+            print(f"  [photo] {ref[:80]}: kept via {result.method}")
+            pages.append((ref, result.text))
         elif result.error:
-            print(f"  [photo] {url[:80]}: {result.error}")
+            print(f"  [photo] {ref[:80]}: {result.error}")
+
+    for url in image_urls[:_MAX_IMAGES_PER_RESTAURANT]:
+        downloaded = _download_image(url)
+        if downloaded is not None:
+            read_candidate(url, *downloaded)
+    if not pages:
+        for ref, image_bytes, media_type in _places_photo_candidates(restaurant):
+            read_candidate(ref, image_bytes, media_type)
     if not pages:
         return PhotoMenuResult(
             ok=False,
-            error="No image transcribed into a plausible menu.",
+            error=(
+                "No image transcribed into a plausible menu."
+                if seen
+                else "No menu-looking images found."
+            ),
             cost_estimate=cost,
             images_seen=seen,
         )
