@@ -74,11 +74,12 @@ def load_settings() -> Settings:
             "ANTHROPIC_CLASSIFIER_MODEL",
             os.environ.get("CLASSIFIER_MODEL", "claude-sonnet-5"),
         ),
-        # Menu-image transcription (photo_menu.py). Reading a dense, sometimes
-        # stylized menu photograph accurately is exactly the kind of vision
-        # task worth the strongest model — one call per unscrapeable venue.
+        # Menu-image transcription (photo_menu.py) when OCR isn't enough.
+        # Haiku is the cheap vision rung (same tier pdf_menu.py uses for
+        # PDF transcription); photo_menu escalates to Opus on its own when
+        # a Haiku read fails the menu gates.
         photo_menu_vision_model=os.environ.get(
-            "PHOTO_MENU_VISION_MODEL", "claude-opus-4-8"
+            "PHOTO_MENU_VISION_MODEL", "claude-haiku-4-5"
         ),
         # Cheap OCR tier for menu images (~$1.50/1000 vs ~$0.05/image for
         # Claude vision). Falls back to the Places key — same Google Cloud

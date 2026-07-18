@@ -63,6 +63,10 @@ _OCR_ACCEPT_SCORE = 0.60
 
 _OCR_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
+# Final rung for images the cheap tiers misread — one Opus retry beats
+# classifying a bad transcription.
+_ESCALATION_MODEL = "claude-opus-4-8"
+
 # Three or more consecutive lines that are nothing but a price means the OCR
 # linearized a two-column layout by splitting the price column away from its
 # dishes (The Neighbors: six dishes, then "8 9 12 10 10 15"). The dish/verdict
@@ -82,6 +86,113 @@ def _price_column_detached(text: str) -> bool:
         else:
             run = 0
     return False
+
+
+# ---------------------------------------------------------------------------
+# Geometry repair: re-attach detached price columns using the word bounding
+# boxes DOCUMENT_TEXT_DETECTION already returns. A price rendered on the same
+# visual row as its dish belongs to that dish — pure deterministic Python,
+# no extra API spend, and the reason most two-column menus never need Claude.
+# ---------------------------------------------------------------------------
+
+def _box_bounds(box: dict) -> tuple[int, int, int]:
+    vertices = box.get("vertices") or [{}]
+    ys = [v.get("y", 0) for v in vertices]
+    xs = [v.get("x", 0) for v in vertices]
+    return min(ys), max(ys), min(xs)
+
+
+def _ocr_lines(annotation: dict) -> list[dict]:
+    """Flatten fullTextAnnotation into OCR's own lines with row geometry."""
+    lines: list[dict] = []
+    words: list[str] = []
+    ymin = ymax = None
+    xmin = None
+
+    def flush() -> None:
+        nonlocal words, ymin, ymax, xmin
+        if words:
+            lines.append(
+                {"text": " ".join(words), "ymin": ymin, "ymax": ymax,
+                 "xmin": xmin}
+            )
+        words, ymin, ymax, xmin = [], None, None, None
+
+    for page in annotation.get("pages", []):
+        for block in page.get("blocks", []):
+            for paragraph in block.get("paragraphs", []):
+                for word in paragraph.get("words", []):
+                    symbols = word.get("symbols", [])
+                    text = "".join(s.get("text", "") for s in symbols)
+                    if text:
+                        words.append(text)
+                        w_ymin, w_ymax, w_xmin = _box_bounds(
+                            word.get("boundingBox", {})
+                        )
+                        ymin = w_ymin if ymin is None else min(ymin, w_ymin)
+                        ymax = w_ymax if ymax is None else max(ymax, w_ymax)
+                        xmin = w_xmin if xmin is None else min(xmin, w_xmin)
+                    brk = (
+                        (symbols[-1].get("property") or {})
+                        .get("detectedBreak", {})
+                        .get("type")
+                        if symbols
+                        else None
+                    )
+                    if brk in ("LINE_BREAK", "EOL_SURE_SPACE"):
+                        flush()
+                flush()
+    return lines
+
+
+def _reattach_detached_prices(lines: list[dict]) -> str | None:
+    """Rejoin price-only lines to the content line sharing their visual row.
+
+    Fail-open by design: a price line that overlaps no content row (the
+    alternating dish-then-price layout) stays exactly where OCR put it, and
+    anything without usable geometry returns None so the raw text stands.
+    """
+    price_lines = [
+        line for line in lines if _BARE_PRICE_RE.match(line["text"].strip())
+    ]
+    content = [
+        line for line in lines
+        if not _BARE_PRICE_RE.match(line["text"].strip())
+    ]
+    if not price_lines or not content:
+        return None
+
+    attached: dict[int, list[str]] = {}
+    placed: set[int] = set()
+    for index, price in enumerate(price_lines):
+        height = max(1, (price["ymax"] or 0) - (price["ymin"] or 0))
+        best, best_overlap = None, 0
+        for target_index, line in enumerate(content):
+            overlap = min(price["ymax"], line["ymax"]) - max(
+                price["ymin"], line["ymin"]
+            )
+            # Same visual row, price sitting to the right of the text.
+            if overlap > best_overlap and (line["xmin"] or 0) < (price["xmin"] or 0):
+                best, best_overlap = target_index, overlap
+        if best is not None and best_overlap >= 0.5 * height:
+            attached.setdefault(best, []).append(price["text"].strip())
+            placed.add(index)
+
+    if not placed:
+        return None
+    out: list[str] = []
+    price_positions = {id(line): i for i, line in enumerate(price_lines)}
+    content_positions = {id(line): i for i, line in enumerate(content)}
+    for line in lines:
+        price_index = price_positions.get(id(line))
+        if price_index is not None:
+            if price_index not in placed:
+                out.append(line["text"])
+            continue
+        content_index = content_positions[id(line)]
+        suffix = " ".join(attached.get(content_index, []))
+        out.append(f"{line['text']} {suffix}".rstrip())
+    return "\n".join(out)
 
 _MENU_WORDS = ("menu", "carte", "speisekarte")
 _NOT_MENU_WORDS = ("logo", "icon", "sprite", "banner-home", "favicon")
@@ -258,20 +369,34 @@ def ocr_menu_image(image_bytes: bytes) -> Transcription:
             ok=False, method="ocr",
             error=f"OCR error: {body['error'].get('message', 'unknown')}",
         )
-    text = (body.get("fullTextAnnotation") or {}).get("text", "").strip()
+    annotation = body.get("fullTextAnnotation") or {}
+    text = annotation.get("text", "").strip()
+    try:
+        repaired = _reattach_detached_prices(_ocr_lines(annotation))
+        if repaired:
+            text = repaired
+    except Exception:
+        pass  # geometry repair is best-effort; the raw text stands
     # $1.50 per 1000 images after the monthly free tier.
     return Transcription(ok=True, text=text, cost_estimate=0.0015,
                          method="ocr")
 
 
+def _passes_menu_gates(result: Transcription) -> bool:
+    return result.ok and result.is_menu and len(result.text) >= _MIN_MENU_CHARS
+
+
 def read_menu_image(
     image_bytes: bytes, media_type: str, *, model: str | None = None
 ) -> Transcription:
-    """Cheapest capable reader for one menu image.
+    """Cheapest capable reader for one menu image, escalating rung by rung.
 
-    OCR text is accepted when it both looks substantial and scores like a
-    menu; anything else escalates to Claude vision, whose transcription
-    quality and is_menu judgment are worth the ~30x price on the residue.
+    1. OCR (+ deterministic geometry repair), accepted when the text is
+       substantial, scores like a menu, and keeps prices with their dishes.
+    2. Claude vision on the configured model (Haiku by default — the
+       pdf_menu.py tier for exactly this transcription job).
+    3. One retry on the escalation model when the cheap read fails the
+       menu gates — stylized or degraded images that defeat Haiku.
     """
     ocr = ocr_menu_image(image_bytes)
     if ocr.ok:
@@ -284,9 +409,17 @@ def read_menu_image(
             return ocr
     elif ocr.error and "No Google Vision API key" not in ocr.error:
         print(f"  [photo] OCR tier unavailable: {ocr.error}")
+
+    model = model or settings.photo_menu_vision_model
     claude = transcribe_menu_image(image_bytes, media_type, model=model)
     claude.cost_estimate += ocr.cost_estimate  # the failed OCR try still billed
-    return claude
+    if _passes_menu_gates(claude) or model == _ESCALATION_MODEL:
+        return claude
+    escalated = transcribe_menu_image(
+        image_bytes, media_type, model=_ESCALATION_MODEL
+    )
+    escalated.cost_estimate += claude.cost_estimate
+    return escalated
 
 
 def transcribe_menu_image(
@@ -301,12 +434,17 @@ def transcribe_menu_image(
         import base64
 
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        with client.messages.stream(
+        kwargs = dict(
             model=model,
             max_tokens=16000,
-            thinking={"type": "adaptive"},
             system=_SYSTEM,
             output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
+        )
+        # Adaptive thinking is a 4.6+ parameter; Haiku rejects it.
+        if "haiku" not in model:
+            kwargs["thinking"] = {"type": "adaptive"}
+        with client.messages.stream(
+            **kwargs,
             messages=[
                 {
                     "role": "user",

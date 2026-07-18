@@ -114,6 +114,87 @@ def test_detached_price_columns_escalate_but_inline_prices_do_not():
     assert not photo_menu._price_column_detached(alternating)
 
 
+def _word(text: str, x: int, y: int, w: int = 40, h: int = 20, brk: str | None = None):
+    symbols = [{"text": ch} for ch in text]
+    if brk:
+        symbols[-1]["property"] = {"detectedBreak": {"type": brk}}
+    return {
+        "symbols": symbols,
+        "boundingBox": {"vertices": [
+            {"x": x, "y": y}, {"x": x + w, "y": y},
+            {"x": x + w, "y": y + h}, {"x": x, "y": y + h},
+        ]},
+    }
+
+
+def _paragraph(words):
+    return {"words": words}
+
+
+def test_geometry_repair_reattaches_price_column_rows():
+    # Two dishes at y=100 and y=140; their prices OCR'd as a separate
+    # right-hand column block on the same rows.
+    annotation = {
+        "pages": [{"blocks": [
+            {"paragraphs": [_paragraph([
+                _word("Garlic", 10, 100), _word("Buns", 60, 100, brk="LINE_BREAK"),
+                _word("Zucchini", 10, 140), _word("Hummus", 80, 140, brk="LINE_BREAK"),
+            ])]},
+            {"paragraphs": [_paragraph([
+                _word("9", 400, 100, brk="LINE_BREAK"),
+                _word("10", 400, 140, brk="LINE_BREAK"),
+            ])]},
+        ]}]
+    }
+    repaired = photo_menu._reattach_detached_prices(
+        photo_menu._ocr_lines(annotation)
+    )
+    assert repaired == "Garlic Buns 9\nZucchini Hummus 10"
+
+
+def test_geometry_repair_leaves_alternating_layouts_alone():
+    # Price on its own row BELOW the dish (no vertical overlap): fail-open,
+    # raw text stands.
+    annotation = {
+        "pages": [{"blocks": [{"paragraphs": [_paragraph([
+            _word("Falafel", 10, 100, brk="LINE_BREAK"),
+            _word("9", 10, 130, brk="LINE_BREAK"),
+        ])]}]}]
+    }
+    repaired = photo_menu._reattach_detached_prices(
+        photo_menu._ocr_lines(annotation)
+    )
+    assert repaired is None
+
+
+def test_claude_rung_escalates_haiku_misreads_to_opus(monkeypatch):
+    calls = []
+
+    def fake_transcribe(image_bytes, media_type, *, model=None):
+        calls.append(model)
+        if model == photo_menu._ESCALATION_MODEL:
+            return photo_menu.Transcription(
+                ok=True, is_menu=True, text=MENU_TEXT, cost_estimate=0.05
+            )
+        # Haiku read a stylized menu into confetti: fails the menu gates.
+        return photo_menu.Transcription(
+            ok=True, is_menu=True, text="???", cost_estimate=0.01
+        )
+
+    monkeypatch.setattr(photo_menu, "transcribe_menu_image", fake_transcribe)
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=False, error="No Google Vision API key", method="ocr"
+        ),
+    )
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert calls == [photo_menu.settings.photo_menu_vision_model,
+                     photo_menu._ESCALATION_MODEL]
+    assert result.text == MENU_TEXT
+    assert result.cost_estimate == pytest.approx(0.06)  # both rungs billed
+
+
 def test_ladder_escalates_to_claude_when_ocr_is_garbled_or_missing(monkeypatch):
     claude = photo_menu.Transcription(
         ok=True, is_menu=True, text=MENU_TEXT, cost_estimate=0.05
