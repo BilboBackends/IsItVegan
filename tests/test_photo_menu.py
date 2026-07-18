@@ -104,6 +104,16 @@ def test_ladder_prefers_ocr_when_text_scores_like_a_menu(monkeypatch):
     assert result.cost_estimate == 0.0015
 
 
+def test_detached_price_columns_escalate_but_inline_prices_do_not():
+    # OCR split a two-column layout: dish block, then a run of bare prices.
+    detached = MENU_TEXT + "\n8\n9\n12\n10"
+    assert photo_menu._price_column_detached(detached)
+    # Inline and alternating dish/price layouts stay on the cheap tier.
+    assert not photo_menu._price_column_detached(MENU_TEXT)
+    alternating = "Falafel Wrap\n$9\nLentil Soup\n$7\nKale Salad\n$11"
+    assert not photo_menu._price_column_detached(alternating)
+
+
 def test_ladder_escalates_to_claude_when_ocr_is_garbled_or_missing(monkeypatch):
     claude = photo_menu.Transcription(
         ok=True, is_menu=True, text=MENU_TEXT, cost_estimate=0.05

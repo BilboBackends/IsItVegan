@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import urljoin
@@ -61,6 +62,26 @@ _MIN_MENU_CHARS = 200
 _OCR_ACCEPT_SCORE = 0.60
 
 _OCR_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
+
+# Three or more consecutive lines that are nothing but a price means the OCR
+# linearized a two-column layout by splitting the price column away from its
+# dishes (The Neighbors: six dishes, then "8 9 12 10 10 15"). The dish/verdict
+# text survives, but every price would be lost or misattributed — that's a
+# Claude-tier image. Alternating dish/price lines never trigger this.
+_BARE_PRICE_RE = re.compile(r"^\$?\d{1,3}(?:\.\d{2})?$")
+_MAX_BARE_PRICE_RUN = 2
+
+
+def _price_column_detached(text: str) -> bool:
+    run = 0
+    for line in text.splitlines():
+        if _BARE_PRICE_RE.match(line.strip()):
+            run += 1
+            if run > _MAX_BARE_PRICE_RUN:
+                return True
+        else:
+            run = 0
+    return False
 
 _MENU_WORDS = ("menu", "carte", "speisekarte")
 _NOT_MENU_WORDS = ("logo", "icon", "sprite", "banner-home", "favicon")
@@ -257,6 +278,7 @@ def read_menu_image(
         if (
             len(ocr.text) >= _MIN_MENU_CHARS
             and score_menu_text(ocr.text).score >= _OCR_ACCEPT_SCORE
+            and not _price_column_detached(ocr.text)
         ):
             ocr.is_menu = True
             return ocr
