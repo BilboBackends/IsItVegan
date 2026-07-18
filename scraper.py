@@ -150,6 +150,24 @@ _DAYPART_SEGMENTS = (
 # Bounds the extra daypart requests per crawl.
 _MAX_DAYPART_PROBES = 12
 
+# Brand location-page subdomains: the Yext-style shells chains list as each
+# store's "website". Their nav links go to ordering flows, and the
+# conventional /menu probe resolves against the WRONG host (locations.
+# qdoba.com/menu is a 404 while www.qdoba.com/menu is the full menu).
+_LOCATION_SUBDOMAINS = ("locations", "restaurants", "stores", "local")
+
+
+def _apex_menu_url(url: str) -> str | None:
+    """https://www.<apex>/menu for a location-subdomain URL, else None."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(":")[0]
+    labels = host.split(".")
+    if len(labels) < 3 or labels[0] not in _LOCATION_SUBDOMAINS:
+        return None
+    apex = ".".join(labels[1:]).removeprefix("www.")
+    return f"{parsed.scheme}://www.{apex}/menu"
+
+
 # Links we never follow even if they look menu-ish (socials / maps / forms).
 # "gift" covers gift-card shops: squareup.com/gift/... ends in /order, which
 # matched the order hint and got a GIFT CARD page stored as Sampaguita's menu
@@ -1141,6 +1159,10 @@ def _collect_http(
         if _norm_url(conventional) not in seen:
             seen.add(_norm_url(conventional))
             queue.append((conventional, 1))
+        apex_menu = _apex_menu_url(landing_url)
+        if apex_menu and _norm_url(apex_menu) not in seen:
+            seen.add(_norm_url(apex_menu))
+            queue.append((apex_menu, 1))
         fetches = 0
         while queue and fetches < _MAX_HTTP_FETCHES:
             link, hop = queue.pop(0)
@@ -1421,6 +1443,15 @@ def _try_learned_context(
     method = (crawl_context or {}).get("crawl_method")
     if not urls or method not in {"http", "headless"}:
         return None
+    # A route learned entirely on a Yext-style location shell is a trap:
+    # its catering/delivery subpages score menu-ish forever while the real
+    # menu is a JS app at the brand apex. Force rediscovery, which probes
+    # the apex /menu and never trusts the shell as confident.
+    if _apex_menu_url(home_url) and all(
+        urlparse(saved_url).netloc.lower() == urlparse(home_url).netloc.lower()
+        for saved_url in urls
+    ):
+        return None
     # Invalidate old weak single-section routes (the Olive Garden /specials
     # failure). A genuinely complete structured capture is much larger and
     # will survive this check on its next learned run.
@@ -1644,6 +1675,15 @@ def scrape_menu_text(
             and _is_single_section_url(next(iter(kept_page_urls)))
         ):
             confident = False
+        # A Yext-style location shell is never the real menu, whatever its
+        # subpages scored — QDOBA's /catering page hits 0.96 while the actual
+        # menu is a JS app at the brand apex. Give headless (seeded with the
+        # apex /menu) a shot and let the better capture win.
+        if confident and _apex_menu_url(url) and all(
+            urlparse(p_url).netloc == urlparse(url).netloc
+            for p_url in kept_page_urls
+        ):
+            confident = False
         if confident or not use_headless or not is_available():
             return http_result
 
@@ -1654,8 +1694,14 @@ def scrape_menu_text(
             url=url, ok=False, status_code=landing.status_code, error=landing.error
         )
 
+    headless_seeds = list(tp_urls)
+    apex_menu = _apex_menu_url(url)
+    if apex_menu:
+        # Location-subdomain shells (locations.qdoba.com): the apex /menu is
+        # often JS-rendered, so the headless pass must know about it too.
+        headless_seeds.append(apex_menu)
     hl_pages, hl_third_party = _collect_headless(
-        url, seed_urls=tp_urls, address=address
+        url, seed_urls=headless_seeds, address=address
     )
     hl_pages = _filter_pages_by_location(hl_pages, address)
     if not hl_pages:

@@ -980,3 +980,34 @@ def test_finish_dedupes_repeated_canonical_pseudo_pages():
     )
     assert result.ok
     assert result.scraped_urls.count("https://x.square.site/#square-catalog") == 1
+
+
+def test_apex_menu_probe_for_location_subdomains():
+    # Chains list Yext location shells as each store's website; the real
+    # menu lives at the brand apex (QDOBA / Jimmy John's / Subway pattern).
+    assert scraper._apex_menu_url(
+        "https://locations.qdoba.com/us/fl/cape-coral/537-sw-pine-island-rd"
+    ) == "https://www.qdoba.com/menu"
+    assert scraper._apex_menu_url(
+        "https://restaurants.subway.com/united-states/fl/longwood/x"
+    ) == "https://www.subway.com/menu"
+    # Same-apex location paths and plain domains need no apex hop.
+    assert scraper._apex_menu_url("https://www.firstwatch.com/locations/x") is None
+    assert scraper._apex_menu_url("https://qdoba.com/menu") is None
+
+
+def test_learned_route_on_location_shell_forces_rediscovery():
+    # QDOBA: a route learned on locations.qdoba.com subpages (catering
+    # scores 0.96!) must not lock out the apex-menu discovery probe.
+    context = {
+        "menu_urls": [
+            "https://locations.qdoba.com/us/fl/cape-coral/537/catering",
+        ],
+        "crawl_method": "http",
+        "menu_score": 0.96,
+        "char_count": 5299,
+    }
+    assert scraper._try_learned_context(
+        "https://locations.qdoba.com/us/fl/cape-coral/537",
+        context, timeout=5.0, use_headless=False,
+    ) is None
