@@ -921,7 +921,15 @@ def classify_menu(
             )
     except Exception as exc:
         return ClassificationResult(ok=False, error=f"{type(exc).__name__}: {exc}")
-    if not response.ok and _hit_output_cap(response):
+    # Malformed JSON on a menu big enough to chunk is the same failure as an
+    # explicit cap hit: very long outputs degrade before finish_reason says
+    # "length" (CFS Coffee's 39k-char menu broke mid-object at char 55903).
+    # Small menus with malformed output still surface the error unchunked.
+    retriable_overflow = _hit_output_cap(response) or (
+        "malformed json" in (response.error or "").lower()
+        and len(menu) > _CHUNK_TARGET_CHARS
+    )
+    if not response.ok and retriable_overflow:
         # The menu overflowed the provider's output cap (DeepSeek most
         # often). Re-run as a full extraction in parts and merge; a delta
         # that overflowed had a menu-sized change set anyway.

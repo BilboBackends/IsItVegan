@@ -166,6 +166,47 @@ def test_output_cap_overflow_retries_in_chunks(monkeypatch):
     assert result.cost_estimate == pytest.approx(0.001 * (len(calls) - 1))
 
 
+def test_malformed_json_on_large_menu_retries_in_chunks(monkeypatch):
+    # CFS Coffee: a 39k-char menu made DeepSeek emit broken JSON mid-object
+    # WITHOUT finish_reason="length" — same overflow, different symptom.
+    import classifier
+    from classification_providers import ProviderResponse
+
+    calls = []
+
+    def fake_run_provider(*, requested, system_prompt, user_prompt, schema):
+        calls.append(user_prompt)
+        if len(calls) == 1:
+            return ProviderResponse(
+                ok=False, provider="deepseek", model="deepseek-chat",
+                billing="deepseek_api",
+                error="Malformed JSON from DeepSeek: Expecting ',' delimiter",
+            )
+        return ProviderResponse(
+            ok=True, provider="deepseek", model="deepseek-chat",
+            billing="deepseek_api",
+            data={"dishes": [dict(_raw(f"Dish {len(calls)}", "vegan"))]},
+            input_tokens=100, output_tokens=50, cost_estimate=0.001,
+        )
+
+    monkeypatch.setattr(classifier, "run_provider", fake_run_provider)
+    monkeypatch.setattr(classifier, "_CHUNK_TARGET_CHARS", 40)
+
+    menu = "\n".join(f"Line {i} with some menu text here" for i in range(6))
+    result = classifier.classify_menu(
+        menu, restaurant_name="Big Menu Cafe", provider="deepseek"
+    )
+    assert result.ok
+    assert len(calls) > 2
+    # A short menu with malformed output still surfaces the error unchunked.
+    calls.clear()
+    monkeypatch.setattr(classifier, "_CHUNK_TARGET_CHARS", 10_000)
+    result = classifier.classify_menu(
+        menu, restaurant_name="Small Menu Cafe", provider="deepseek"
+    )
+    assert not result.ok and "Malformed" in result.error
+
+
 def test_plain_batter_dishes_never_stay_likely_vegan():
     # Standard pancake/waffle batter contains buttermilk and eggs even when
     # the menu only lists toppings — hedged vegan verdicts become unclear.
