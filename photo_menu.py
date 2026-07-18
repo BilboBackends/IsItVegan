@@ -62,6 +62,12 @@ _MIN_MENU_CHARS = 200
 # WEAK_SCORE bar for "reads like a menu".
 _OCR_ACCEPT_SCORE = 0.60
 
+# OCR reads printed text reliably. An image it finds almost no text in has
+# no menu on it — food/interior photos end here for a tenth of a cent, and
+# Claude vision is never consulted. (A sweep without this gate burned a
+# Haiku + Opus call per glamour shot just to hear "not a menu".)
+_MIN_OCR_CHARS_TO_ESCALATE = 150
+
 _OCR_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
 
 # Final rung for images the cheap tiers misread — one Opus retry beats
@@ -455,10 +461,13 @@ def read_menu_image(
 
     1. OCR (+ deterministic geometry repair), accepted when the text is
        substantial, scores like a menu, and keeps prices with their dishes.
+       An image OCR finds almost NO text in is a photo, not a menu —
+       rejected here for free, Claude never consulted.
     2. Claude vision on the configured model (Haiku by default — the
-       pdf_menu.py tier for exactly this transcription job).
-    3. One retry on the escalation model when the cheap read fails the
-       menu gates — stylized or degraded images that defeat Haiku.
+       pdf_menu.py tier for exactly this transcription job). Its
+       "not a menu" verdict is final — no pricier second opinion.
+    3. One retry on the escalation model only when the cheap model says
+       this IS a menu but couldn't transcribe it (stylized layouts).
     """
     ocr = ocr_menu_image(image_bytes)
     if ocr.ok:
@@ -469,13 +478,21 @@ def read_menu_image(
         ):
             ocr.is_menu = True
             return ocr
+        if len(ocr.text) < _MIN_OCR_CHARS_TO_ESCALATE:
+            ocr.is_menu = False  # a photo of food, not of a menu
+            return ocr
     elif ocr.error and "No Google Vision API key" not in ocr.error:
         print(f"  [photo] OCR tier unavailable: {ocr.error}")
 
     model = model or settings.photo_menu_vision_model
     claude = transcribe_menu_image(image_bytes, media_type, model=model)
     claude.cost_estimate += ocr.cost_estimate  # the failed OCR try still billed
-    if _passes_menu_gates(claude) or model == _ESCALATION_MODEL:
+    if (
+        _passes_menu_gates(claude)
+        or model == _ESCALATION_MODEL
+        or not claude.ok          # an API error won't improve on a pricier model
+        or not claude.is_menu     # the cheap model's "no" is a final answer
+    ):
         return claude
     escalated = transcribe_menu_image(
         image_bytes, media_type, model=_ESCALATION_MODEL

@@ -209,6 +209,46 @@ def test_geometry_repair_leaves_alternating_layouts_alone():
     assert repaired is None
 
 
+def test_photos_with_no_ocr_text_never_reach_claude(monkeypatch):
+    # A food/interior photo OCRs to almost nothing — that IS the verdict.
+    # A sweep without this gate paid Haiku + Opus per glamour shot.
+    def boom(*a, **k):
+        raise AssertionError("Claude called for a text-less photo")
+    monkeypatch.setattr(photo_menu, "transcribe_menu_image", boom)
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=True, text="Grand Opening!", cost_estimate=0.0015, method="ocr"
+        ),
+    )
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert result.ok and not result.is_menu
+    assert result.cost_estimate == 0.0015
+
+
+def test_cheap_models_not_a_menu_verdict_is_final(monkeypatch):
+    # Haiku confidently saying is_menu=false must not buy an Opus retry.
+    calls = []
+
+    def fake_transcribe(image_bytes, media_type, *, model=None):
+        calls.append(model)
+        return photo_menu.Transcription(
+            ok=True, is_menu=False, text="", cost_estimate=0.01
+        )
+
+    monkeypatch.setattr(photo_menu, "transcribe_menu_image", fake_transcribe)
+    monkeypatch.setattr(
+        photo_menu, "ocr_menu_image",
+        lambda image_bytes: photo_menu.Transcription(
+            ok=True, text="storefront sign daily specials board " * 10,
+            cost_estimate=0.0015, method="ocr",
+        ),
+    )
+    result = photo_menu.read_menu_image(b"img", "image/jpeg")
+    assert len(calls) == 1  # one cheap call, no escalation
+    assert not result.is_menu
+
+
 def test_claude_rung_escalates_haiku_misreads_to_opus(monkeypatch):
     calls = []
 
