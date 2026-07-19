@@ -36,3 +36,15 @@ export function venueMarkerHtml({
 
 export const VENUE_MARKER_SIZE = [44, 28];
 export const VENUE_MARKER_ANCHOR = [22, 14];
+
+// The search-origin marker: a small plump blue balloon pin,
+// click-transparent so it never steals taps from venue pins underneath (its
+// Leaflet marker is also created with interactive: false). Anchor at the
+// tip: [9, 23].
+export const ORIGIN_PIN_HTML =
+  '<svg width="18" height="24" viewBox="0 0 20 26" style="pointer-events:none;filter:drop-shadow(0 1px 3px rgba(15,23,42,.35));overflow:visible" aria-hidden="true">' +
+  '<path d="M10 25C10 25 2 16 2 9.2a8 8 0 1 1 16 0C18 16 10 25 10 25z" fill="#2563eb" stroke="#fff" stroke-width="1.6"/>' +
+  '<circle cx="10" cy="9.2" r="3.1" fill="#fff"/>' +
+  "</svg>";
+export const ORIGIN_PIN_SIZE = [18, 24];
+export const ORIGIN_PIN_ANCHOR = [9, 23];

@@ -29,6 +29,9 @@ import VenueTypeLegend from "./VenueTypeLegend.jsx";
 import VenueKindFilter from "./VenueKindFilter.jsx";
 import MapLegend from "./MapLegend.jsx";
 import {
+  ORIGIN_PIN_ANCHOR,
+  ORIGIN_PIN_HTML,
+  ORIGIN_PIN_SIZE,
   VENUE_MARKER_ANCHOR,
   VENUE_MARKER_SIZE,
   venueMarkerHtml,
@@ -954,31 +957,23 @@ export default function DishExplore({
     markersRef.current = {};
 
     const bounds = mappedRestaurants.map((item) => [item.lat, item.lng]);
+    // Origin marker (small blue pin). Drawn above venue pins so it stays
+    // visible, but fully click-transparent (interactive: false) so taps on
+    // an overlapping pin register on the pin; the origin label lives in the
+    // filter panel, so the marker needs no tooltip of its own.
     if (!originMarkerRef.current) {
       originMarkerRef.current = L.marker([origin.lat, origin.lng], {
         icon: L.divIcon({
           className: "",
-          html: '<div style="display:flex;width:32px;height:32px;align-items:center;justify-content:center"><div class="vf-pin vf-pin--dot" style="background:#2563eb"></div></div>',
-          iconSize: [32, 32],
-          iconAnchor: [16, 16],
+          html: ORIGIN_PIN_HTML,
+          iconSize: ORIGIN_PIN_SIZE,
+          iconAnchor: ORIGIN_PIN_ANCHOR,
         }),
         zIndexOffset: 1000,
-        riseOnHover: true,
+        interactive: false,
       }).addTo(map);
-      originMarkerRef.current.on("click", () => {
-        originMarkerRef.current?.openTooltip();
-      });
     }
     originMarkerRef.current.setLatLng([origin.lat, origin.lng]);
-    const originTip = document.createElement("span");
-    originTip.textContent = isDesktop
-      ? originLabel
-      : `Distances measured from ${originLabel}`;
-    originMarkerRef.current.unbindPopup().unbindTooltip().bindTooltip(originTip, {
-      className: "vf-tooltip",
-      direction: "top",
-      offset: [0, -8],
-    });
 
     const focusedRestaurant =
       focusedRestaurantId == null
