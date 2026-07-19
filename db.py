@@ -517,9 +517,15 @@ def update_food_signals(
     opening_hours: list[str],
     enriched_at: str,
     business_status: str | None = None,
+    website_url: str | None = None,
     db_path: str | None = None,
 ) -> None:
-    """Store Google-sourced structured food signals on a restaurant."""
+    """Store Google-sourced structured food signals on a restaurant.
+
+    website_url only FILLS a missing website (search masks no longer request
+    websiteUri, so sweep-added rows arrive without one); an existing website —
+    possibly hand-corrected — is never overwritten by Google's.
+    """
     with connect(db_path) as conn:
         conn.execute(
             """
@@ -534,7 +540,8 @@ def update_food_signals(
                 opening_hours     = :opening_hours,
                 hours_enriched_at = :enriched,
                 enriched_at       = :enriched,
-                business_status   = :business_status
+                business_status   = :business_status,
+                website_url       = COALESCE(website_url, :website_url)
             WHERE id = :id
             """,
             {
@@ -550,6 +557,7 @@ def update_food_signals(
                 "opening_hours": json.dumps(opening_hours),
                 "enriched": enriched_at,
                 "business_status": business_status,
+                "website_url": website_url,
             },
         )
 

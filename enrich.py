@@ -106,6 +106,7 @@ def run(
                 opening_hours=details["opening_hours"],
                 enriched_at=now,
                 business_status=details.get("business_status"),
+                website_url=details.get("website_url"),
             )
             # Google says it's gone for good — retire the listing so it
             # leaves consumer views and pipeline runs (data kept; Admin's

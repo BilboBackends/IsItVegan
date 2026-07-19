@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import math
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -54,9 +56,9 @@ RADIUS_FOOD_TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 RADIUS_SWEEP_CELL_METERS = 1_000.0
 RADIUS_SWEEP_MAX_CALLS = 1_500
-# FIELD_MASK includes websiteUri so candidates can enter the scraper without a
-# second details lookup. Google prices that as Nearby Search Enterprise.
-RADIUS_SWEEP_PRICE_PER_CALL = 0.035  # Current list price: $35/1k calls.
+# FIELD_MASK is all Pro-tier fields, so the Nearby sweep bills as Nearby
+# Search Pro (5k free calls/month). Websites come from enrichment instead.
+RADIUS_SWEEP_PRICE_PER_CALL = 0.032  # Current list price: $32/1k calls.
 
 
 def _meters_per_deg_lng(lat: float) -> float:
@@ -64,16 +66,31 @@ def _meters_per_deg_lng(lat: float) -> float:
 
 NEARBY_SEARCH_URL = "https://places.googleapis.com/v1/places:searchNearby"
 
-# Only the fields we store in Phase 0. Adding fields here can change billing.
+# Search-result fields for prospect/sweep/resolve flows. All Pro-tier: the
+# field mask decides the billing SKU, and websiteUri would bump every search
+# to Enterprise (1k free calls/month vs Pro's 5k). Websites now arrive via
+# the enrichment Details call instead (websiteUri is BELOW that call's
+# existing Enterprise+Atmosphere tier, so it rides along free there).
 FIELD_MASK = ",".join(
     [
         "places.id",
         "places.displayName",
         "places.formattedAddress",
-        "places.websiteUri",
         "places.location",
         "places.primaryType",
     ]
+)
+
+# Text Search "Essentials (IDs Only)" SKU — unlimited free. The ID sweep
+# uses this to discover WHAT exists at zero cost; only ids never seen before
+# get a paid (free-tier Pro) Details hydration.
+IDS_ONLY_FIELD_MASK = "places.id,nextPageToken"
+
+# Pro-tier Place Details mask for hydrating unknown ids: everything the
+# Prospect list displays, nothing from the Enterprise tiers.
+SUMMARY_FIELD_MASK = ",".join(
+    ["id", "displayName", "formattedAddress", "location", "primaryType",
+     "businessStatus"]
 )
 
 
@@ -109,6 +126,10 @@ _DETAILS_FIELD_MASK = ",".join(
         # notice a restaurant went out of business (Ethos) without a human
         # stumbling onto it.
         "businessStatus",
+        # Search masks stopped requesting websiteUri (it forced the Enterprise
+        # SKU there); this call already bills Enterprise+Atmosphere, so the
+        # website rides along at no extra tier and enrichment persists it.
+        "websiteUri",
     ]
 )
 
@@ -282,6 +303,7 @@ def fetch_place_details(
         "open_now": hours.get("openNow"),
         "opening_hours": hours.get("weekdayDescriptions") or [],
         "business_status": data.get("businessStatus"),
+        "website_url": data.get("websiteUri"),
     }
 
 
@@ -533,6 +555,228 @@ def radius_food_sweep(
         "errors": errors,
         "estimate": estimate,
     }
+
+
+# ---------------------------------------------------------------------------
+# Free ID sweep: discovery decoupled from data.
+#
+# Phase 1 (free, unlimited): tile the area with Text Search rectangles using
+# the IDs-only mask and a category battery, collecting place ids.
+# Phase 2 (caller): diff ids against the DB — only ids we've never seen need
+# hydration (Details, Pro tier, 5k free/month), and only places the user
+# ADDS trigger the full enrichment call. Cost scales with new restaurants,
+# not with area swept, and every result is Google-live (no stale entries).
+# ---------------------------------------------------------------------------
+
+# Battery tuned empirically against the Maitland ground truth (DB rows from
+# exhaustive paid Nearby sweeps): this set + 1 km tiles re-found 33/33
+# operational restaurants (100% recall). Two hard-won findings baked in:
+# singular "restaurant" outperforms "restaurants", and mealtime/intent words
+# ("lunch", "takeout") surface venues that category words rank out. Text
+# Search returns RELEVANT matches, not all matches — even below the 60-result
+# cap — so recall comes from query diversity, not bigger tiles.
+ID_SWEEP_QUERIES: tuple[str, ...] = (
+    "restaurant",
+    "food",
+    "places to eat",
+    "takeout",
+    "lunch",
+    "dinner",
+    "breakfast",
+    "fast food",
+    "coffee shops",
+    "bakery",
+    "dessert",
+    "bars",
+    "sandwiches",
+)
+
+# Rectangle side. Smaller tiles reduce per-tile ranking competition (which,
+# not saturation, is what loses venues); 1 km scored 100% recall where
+# 1.5 km missed two. Calls are free — tile count only costs time.
+ID_SWEEP_TILE_METERS = 1_000.0
+
+# One query on one tile pages up to this many results (Google's ceiling).
+_ID_SWEEP_MAX_PER_QUERY = 60
+
+# The IDs-only SKU is free of CHARGE but not of QUOTA: Text Search allows
+# ~600 requests/minute per project, and an unthrottled multi-worker sweep
+# 429s across the board (observed live: 3,133/3,133 failures). Pace below
+# the quota and leave headroom for concurrent hydration/prospect calls.
+ID_SWEEP_REQUESTS_PER_SECOND = 8.0
+
+
+class _RateGate:
+    """Serialize request starts to a fixed rate across worker threads."""
+
+    def __init__(self, per_second: float):
+        self._interval = 1.0 / per_second
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next - now
+            self._next = max(now, self._next) + self._interval
+        if delay > 0:
+            time.sleep(delay)
+
+
+def id_sweep_tiles(
+    lat: float,
+    lng: float,
+    radius_meters: float,
+    tile_meters: float = ID_SWEEP_TILE_METERS,
+) -> list[tuple[float, float, float, float]]:
+    """(lo_lat, lo_lng, hi_lat, hi_lng) rectangles covering the sweep circle.
+
+    Text Search restricts by rectangle (not circle), so the circle's bbox is
+    cut into a grid and tiles whose center is beyond radius + half a tile
+    diagonal are skipped.
+    """
+    dlat = tile_meters / _METERS_PER_DEG_LAT
+    dlng = tile_meters / _meters_per_deg_lng(lat)
+    n = max(1, math.ceil(radius_meters / tile_meters))
+    reach = radius_meters + tile_meters * 0.75
+    tiles = []
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            c_lat = lat + i * dlat
+            c_lng = lng + j * dlng
+            if distance_meters(lat, lng, c_lat, c_lng) > reach:
+                continue
+            tiles.append(
+                (c_lat - dlat / 2, c_lng - dlng / 2,
+                 c_lat + dlat / 2, c_lng + dlng / 2)
+            )
+    return tiles
+
+
+def text_search_ids(
+    client: httpx.Client,
+    query: str,
+    rect: tuple[float, float, float, float],
+    *,
+    api_key: str,
+    timeout: float = 30.0,
+    gate: _RateGate | None = None,
+) -> tuple[list[str], int]:
+    """(place ids, requests made) for one query on one tile. IDs-only = free."""
+    lo_lat, lo_lng, hi_lat, hi_lng = rect
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": IDS_ONLY_FIELD_MASK,
+    }
+    body = {
+        "textQuery": query,
+        "pageSize": 20,
+        "locationRestriction": {
+            "rectangle": {
+                "low": {"latitude": lo_lat, "longitude": lo_lng},
+                "high": {"latitude": hi_lat, "longitude": hi_lng},
+            }
+        },
+    }
+    ids: list[str] = []
+    calls = 0
+    page_token: str | None = None
+    while len(ids) < _ID_SWEEP_MAX_PER_QUERY:
+        payload = dict(body)
+        if page_token:
+            payload["pageToken"] = page_token
+        for attempt in range(4):
+            if gate is not None:
+                gate.wait()
+            resp = client.post(
+                TEXT_SEARCH_URL, headers=headers, json=payload, timeout=timeout
+            )
+            calls += 1
+            # Free-of-charge is not free-of-quota: burst over ~600 req/min
+            # answers 429. Back off and retry instead of losing the tile.
+            if resp.status_code == 429:
+                time.sleep(min(30.0, 5.0 * (2**attempt)))
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            raise RuntimeError("still rate-limited after 4 attempts")
+        data = resp.json()
+        ids.extend(p["id"] for p in data.get("places", []) if p.get("id"))
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+    return ids, calls
+
+
+def id_sweep(
+    *,
+    api_key: str,
+    lat: float,
+    lng: float,
+    radius_meters: float,
+    tile_meters: float = ID_SWEEP_TILE_METERS,
+    queries: tuple[str, ...] = ID_SWEEP_QUERIES,
+    timeout: float = 30.0,
+    workers: int = 4,
+) -> dict:
+    """Collect every food-place id in the circle via free IDs-only searches."""
+    if not -90 <= lat <= 90 or not -180 <= lng <= 180:
+        raise ValueError("Sweep center is outside valid latitude/longitude bounds.")
+    if not 250 <= radius_meters <= 80_000:
+        raise ValueError("Sweep radius must be between 250 m and 80 km.")
+    tiles = id_sweep_tiles(lat, lng, radius_meters, tile_meters)
+    tasks = [(tile, query) for tile in tiles for query in queries]
+    ids: set[str] = set()
+    calls_run = 0
+    saturated = 0
+    errors: list[str] = []
+
+    gate = _RateGate(ID_SWEEP_REQUESTS_PER_SECOND)
+
+    def search(client: httpx.Client, task):
+        tile, query = task
+        return text_search_ids(
+            client, query, tile, api_key=api_key, timeout=timeout, gate=gate
+        )
+
+    with httpx.Client(timeout=timeout) as client:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as pool:
+            futures = {pool.submit(search, client, task): task for task in tasks}
+            for future in as_completed(futures):
+                tile, query = futures[future]
+                try:
+                    found, calls = future.result()
+                except Exception as exc:
+                    errors.append(f"{query} at {tile[0]:.4f},{tile[1]:.4f}: {exc}")
+                    continue
+                calls_run += calls
+                if len(found) >= _ID_SWEEP_MAX_PER_QUERY:
+                    saturated += 1
+                ids.update(found)
+
+    return {
+        "place_ids": sorted(ids),
+        "id_count": len(ids),
+        "tiles": len(tiles),
+        "queries": len(queries),
+        "calls_run": calls_run,
+        "saturated_queries": saturated,
+        "errors": errors,
+    }
+
+
+def fetch_place_summary(place_id: str, *, api_key: str, timeout: float = 30.0) -> dict:
+    """Hydrate one unknown id — Pro-tier Details (5k free calls/month)."""
+    headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": SUMMARY_FIELD_MASK}
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    place = _normalize_place(data)
+    place["business_status"] = data.get("businessStatus")
+    return place
 
 
 def _in_city(restaurant: dict, city: str) -> bool:

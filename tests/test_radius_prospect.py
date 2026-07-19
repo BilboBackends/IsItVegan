@@ -37,7 +37,7 @@ def test_estimate_is_pure_and_exposes_cost_and_limit():
     assert estimate["base_calls"] == estimate["cells"] * 2
     assert estimate["call_budget"] == estimate["base_calls"]
     assert estimate["estimated_list_cost"] == round(
-        estimate["base_calls"] * 0.035, 2
+        estimate["base_calls"] * pc.RADIUS_SWEEP_PRICE_PER_CALL, 2
     )
     assert estimate["within_call_limit"] is True
 

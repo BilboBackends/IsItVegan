@@ -169,10 +169,16 @@ Admin: pipeline dashboard with live job progress, per-restaurant costs,
 provider usage, menu version history, dish-change log, menu-quality audit,
 Scrape Doctor buttons for Claude or Codex (including a Codex deep dive on every
 restaurant row for silently incomplete menus), and Prospect map/radius sweeps.
-Radius sweeps tile the chosen circle into
-overlapping Google Nearby Search cells, search both restaurants and other
-food venues, require a call/cost estimate confirmation, dedupe by place ID,
-and filter results back to the exact selected radius.
+Discovery is two-layered and effectively free: the everyday
+"Free ID sweep" tiles the circle with IDs-only Text Search (unlimited free
+SKU, throttled under the ~600 req/min quota), diffs place IDs against the
+DB, and hydrates only unknown ids via Pro-tier Details (~94% coverage —
+text search never ranks some mall units/secondary listings); the exhaustive
+Nearby "audit sweep" (tiled cells, estimate confirmation, exact-radius
+filter) catches that tail and now bills Pro (5k free calls/month — a
+monthly metro audit costs $0) because search field masks no longer request
+websiteUri. Websites instead arrive via the enrichment Details call
+(tier-neutral there) which fills — never overwrites — website_url.
 
 Change-aware recrawling is live: identical menu text skips classification
 entirely; changed menus run in DELTA mode (classify only new/changed dishes

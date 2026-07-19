@@ -44,6 +44,18 @@ const EXCLUDED_SWEEP_TYPES = new Set([
 
 const isFoodVenue = (place) => !EXCLUDED_SWEEP_TYPES.has(place.primary_type);
 
+// Great-circle distance, for sorting hydrated ID-sweep rows by proximity
+// (the backend returns them without distances).
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLng = (lng2 - lng1) * rad;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) ** 2;
+  return 6371008.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // Backend caps a names-only add at 60 places per request; larger sets are
 // split into sequential batches.
 const ADD_BATCH_SIZE = 60;
@@ -642,6 +654,10 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   const [sweepEstimate, setSweepEstimate] = useState(null);
   const [estimating, setEstimating] = useState(false);
   const [sweeping, setSweeping] = useState(false);
+  // Free ID sweep state: {new_ids, id_count, known_count, calls_run, ...}
+  const [idSweep, setIdSweep] = useState(null);
+  const [idSweeping, setIdSweeping] = useState(false);
+  const [hydrating, setHydrating] = useState(false);
   const [onlyNew, setOnlyNew] = useState(false);
   const [places, setPlaces] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
@@ -747,6 +763,85 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     }
   }
 
+  // Phase 1 of the free sweep: collect place IDs only (unlimited-free SKU)
+  // and diff them against the DB. No place data is fetched yet.
+  async function runIdSweep() {
+    if (idSweeping || sweeping || hydrating) return;
+    setIdSweeping(true);
+    setIdSweep(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/prospect/ids", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: sweepCenter.lat,
+          lng: sweepCenter.lng,
+          radius_meters: radiusMeters,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `ID sweep failed (${res.status})`);
+      setIdSweep(data);
+      setNotice(
+        `Free ID sweep: ${data.id_count} food places seen in ${data.calls_run} ` +
+          `free searches — ${data.known_count} already tracked, ` +
+          `${data.new_count} unknown.` +
+          (data.saturated_queries
+            ? ` ${data.saturated_queries} dense tile queries hit the 60-result cap.`
+            : "") +
+          (data.new_count === 0 ? " Nothing new here 🎉" : "")
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIdSweeping(false);
+    }
+  }
+
+  // Phase 2: hydrate ONLY the unknown ids into reviewable rows (Pro-tier
+  // Details, 5k free calls/month — spent per new restaurant, not per area).
+  async function hydrateNewIds() {
+    if (!idSweep?.new_ids?.length || hydrating) return;
+    setHydrating(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/prospect/ids/hydrate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ place_ids: idSweep.new_ids.slice(0, 500) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Hydrate failed (${res.status})`);
+      const withDistance = data.places.map((p) => ({
+        ...p,
+        distance_meters:
+          p.lat != null && p.lng != null
+            ? Math.round(haversineMeters(sweepCenter.lat, sweepCenter.lng, p.lat, p.lng))
+            : null,
+      }));
+      withDistance.sort(
+        (a, b) => (a.distance_meters ?? Infinity) - (b.distance_meters ?? Infinity)
+      );
+      setPlaces(withDistance);
+      setSelected(new Set());
+      setOnlyNew(data.new_count > 0);
+      const closed = withDistance.filter(
+        (p) => p.business_status && p.business_status !== "OPERATIONAL"
+      ).length;
+      setNotice(
+        `Fetched ${data.count} new places (${data.count} free-tier detail calls)` +
+          (closed ? ` — ${closed} marked closed by Google.` : ".") +
+          (data.errors?.length ? ` ${data.errors.length} lookups failed.` : "")
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setHydrating(false);
+    }
+  }
+
   function toggle(place) {
     if (place.already_added_id) return;
     setSelected((current) => {
@@ -769,10 +864,13 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     const kept = [];
     const dropped = new Map();
     for (const p of newPlaces) {
-      if (isFoodVenue(p)) {
+      if (isFoodVenue(p) && p.business_status !== "CLOSED_PERMANENTLY") {
         kept.push(p);
       } else {
-        const t = p.primary_type || "unknown";
+        const t =
+          p.business_status === "CLOSED_PERMANENTLY"
+            ? "permanently closed"
+            : p.primary_type || "unknown";
         dropped.set(t, (dropped.get(t) || 0) + 1);
       }
     }
@@ -1124,17 +1222,43 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
             {sweepCenter.lat.toFixed(5)}, {sweepCenter.lng.toFixed(5)}
           </span>
           <button
-            type="submit"
-            disabled={estimating || sweeping || radiusMiles < 0.25}
-            className="rounded-lg border border-sky-400 bg-white px-3 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+            type="button"
+            onClick={runIdSweep}
+            disabled={idSweeping || sweeping || hydrating || radiusMiles < 0.25}
+            className="rounded-lg bg-sky-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Collect every food-place ID in the circle with unlimited-free searches, then compare against the pipeline. Costs nothing at any radius."
           >
-            {estimating ? "Estimating…" : "Estimate sweep"}
+            {idSweeping ? "ID sweeping…" : "Free ID sweep"}
+          </button>
+          {idSweep?.new_count > 0 && (
+            <button
+              type="button"
+              onClick={hydrateNewIds}
+              disabled={hydrating || idSweeping}
+              className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm font-bold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+              title="One free-tier detail call per unknown place (5,000/month free) — only spent on places not already in the pipeline"
+            >
+              {hydrating
+                ? "Fetching…"
+                : `Fetch ${idSweep.new_count} new (free-tier)`}
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={estimating || sweeping || idSweeping || hydrating || radiusMiles < 0.25}
+            className="rounded-lg border border-sky-400 bg-white px-3 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Exhaustive Nearby audit — catches the ~6% of venues category searches never rank (mall units, secondary listings). Bills the Pro SKU: first 5,000 calls each month are free, so a monthly audit costs $0."
+          >
+            {estimating ? "Estimating…" : "Estimate audit sweep"}
           </button>
         </div>
         <div className="mt-1 text-xs text-sky-800">
-          Click the map or drag its marker, choose a radius, then estimate and
-          confirm. Searches restaurants plus breweries, cafes, bakeries,
-          dessert and ice-cream shops, and other food venues.
+          Click the map or drag its marker, choose a radius, then run the free
+          ID sweep — it finds what exists, compares against your pipeline, and
+          only fetches details for unknown places (~94% coverage; text search
+          never ranks some mall units and secondary listings). The Nearby
+          audit sweep is exhaustive — run it monthly; it stays inside the
+          5,000 free Pro calls/month.
         </div>
         {sweepEstimate && (
           <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-sky-200 bg-white px-3 py-2 text-xs text-slate-700">
@@ -1146,7 +1270,8 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
               <strong>{sweepEstimate.base_calls}</strong> Google calls
             </span>
             <span>
-              list-price estimate <strong>~${sweepEstimate.estimated_list_cost.toFixed(2)}</strong>
+              list price <strong>~${sweepEstimate.estimated_list_cost.toFixed(2)}</strong>{" "}
+              — $0 within the 5k free Pro calls/month
             </span>
             {!sweepEstimate.within_call_limit ? (
               <span className="font-semibold text-red-700">
@@ -1328,6 +1453,14 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                             already added
                           </span>
                         )}
+                        {p.business_status &&
+                          p.business_status !== "OPERATIONAL" && (
+                            <span className="ml-1.5 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-red-700">
+                              {p.business_status === "CLOSED_PERMANENTLY"
+                                ? "closed"
+                                : "temp. closed"}
+                            </span>
+                          )}
                         <span className="block text-xs text-slate-500">
                           {p.address}
                         </span>

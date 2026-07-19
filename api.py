@@ -967,6 +967,98 @@ def prospect_radius_endpoint() -> object:
     return jsonify(result)
 
 
+@app.post("/api/prospect/ids")
+def prospect_id_sweep_endpoint() -> object:
+    """FREE discovery sweep: tiled IDs-only Text Search (unlimited free SKU)
+    diffed against the DB by place_id. Returns only ids — the frontend asks
+    to hydrate the unknown ones (Pro-tier Details, 5k free/month) before the
+    human picks what to add. Discovery cost no longer scales with area."""
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    from places_client import id_sweep
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        lat, lng, radius_meters = _radius_sweep_inputs(payload)
+        result = id_sweep(
+            api_key=settings.google_places_api_key,
+            lat=lat,
+            lng=lng,
+            radius_meters=radius_meters,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    db.init_db()
+    known = {r["place_id"]: r for r in db.list_restaurants()}
+    new_ids = [pid for pid in result.pop("place_ids") if pid not in known]
+    swept_known = result["id_count"] - len(new_ids)
+    result["new_ids"] = new_ids
+    result["new_count"] = len(new_ids)
+    result["known_count"] = swept_known
+    return jsonify(result)
+
+
+@app.post("/api/prospect/ids/hydrate")
+def prospect_hydrate_endpoint() -> object:
+    """Turn unknown place ids into reviewable rows — one Pro-tier Details
+    call each (5k free/month), spent only on ids we've never seen."""
+    if not settings.google_places_api_key:
+        return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
+    from concurrent.futures import ThreadPoolExecutor
+
+    from places_client import fetch_place_summary
+
+    payload = request.get_json(silent=True) or {}
+    place_ids = payload.get("place_ids")
+    if (
+        not isinstance(place_ids, list)
+        or not place_ids
+        or len(place_ids) > 500
+        or any(not isinstance(p, str) or not p for p in place_ids)
+    ):
+        return jsonify({"error": "place_ids must be 1-500 place id strings."}), 400
+
+    places: list[dict] = []
+    errors: list[str] = []
+
+    def hydrate(pid: str):
+        return fetch_place_summary(pid, api_key=settings.google_places_api_key)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(hydrate, pid): pid for pid in place_ids}
+        for future in futures:
+            pid = futures[future]
+            try:
+                places.append(future.result())
+            except Exception as exc:
+                errors.append(f"{pid}: {exc}")
+
+    # The free-text sweep also matches non-food businesses; their hydrated
+    # primaryType reveals them, and the food-type allowlist drops them here.
+    from venue_filter import is_food_primary_type
+
+    dropped_non_food = sum(
+        1 for p in places if not is_food_primary_type(p.get("primary_type"))
+    )
+    places = [p for p in places if is_food_primary_type(p.get("primary_type"))]
+
+    db.init_db()
+    new_count = _mark_existing_prospects(places)
+    places.sort(key=lambda p: (p.get("name") or "").lower())
+    return jsonify(
+        {
+            "count": len(places),
+            "new_count": new_count,
+            "dropped_non_food": dropped_non_food,
+            "errors": errors,
+            "places": places,
+        }
+    )
+
+
 # Category battery for the area sweep. Text Search tops out around 60
 # results per query, so one "restaurants in Orlando" can never show the
 # whole city — a spread of cuisine/venue queries pulls distinct slices and
