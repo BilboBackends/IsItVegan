@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator
 
 from config import settings
-from dish_identity import dish_identity_key, preferred_dish_name
+from dish_identity import dish_identity_key, dishes_compatible, preferred_dish_name
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS restaurants (
@@ -1131,16 +1131,27 @@ def upsert_dish(
             """,
             (restaurant_id,),
         ).fetchall()
-        existing = next(
+        keyed = [
             (
-                row
-                for row in existing_rows
-                if dish_identity_key(
+                dish_identity_key(
                     row["name"], row["price"], row["raw_description"], row["calories"]
-                ) == identity
-            ),
+                ),
+                row,
+            )
+            for row in existing_rows
+        ]
+        existing = next(
+            (row for key, row in keyed if key == identity),
             None,
         )
+        if existing is None:
+            # A recapture that lost (or gained) descriptions must update the
+            # dish it obviously is, not duplicate the menu — compatible =
+            # same name+price, detail missing on one side.
+            existing = next(
+                (row for key, row in keyed if dishes_compatible(key, identity)),
+                None,
+            )
         if existing is not None:
             display_name = preferred_dish_name(existing["name"], name)
             conn.execute(
@@ -1151,9 +1162,9 @@ def upsert_dish(
                 """,
                 (
                     display_name,
-                    raw_description,
+                    raw_description or existing["raw_description"],
                     price,
-                    calories,
+                    calories if calories is not None else existing["calories"],
                     category,
                     existing["id"],
                 ),
@@ -2174,3 +2185,116 @@ def restaurants_needing_ingest(db_path: str | None = None) -> list[dict]:
             """
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def dedupe_dishes(db_path: str | None = None) -> dict:
+    """Merge dish rows that are the same dish under canonical identity.
+
+    Historic captures duplicated dishes when price formatting ($2.50 vs
+    $2.5) or a missing description defeated the old identity key. For each
+    compatible group the survivor is the row with the newest
+    classification; every referencing row is repointed and the duplicates
+    deleted. Votes/reviews that would collide are dropped rather than
+    double-counted.
+    """
+    merged = removed = 0
+    with connect(db_path) as conn:
+        restaurant_ids = [
+            r[0] for r in conn.execute("SELECT id FROM restaurants")
+        ]
+        for rid in restaurant_ids:
+            rows = conn.execute(
+                """
+                SELECT d.id, d.name, d.raw_description, d.price, d.calories,
+                       (SELECT MAX(c.id) FROM classifications c
+                        WHERE c.dish_id = d.id) AS latest_classification
+                FROM dishes d WHERE d.restaurant_id = ?
+                """,
+                (rid,),
+            ).fetchall()
+            keyed = [
+                (
+                    dish_identity_key(
+                        r["name"], r["price"], r["raw_description"], r["calories"]
+                    ),
+                    r,
+                )
+                for r in rows
+            ]
+            consumed: set[int] = set()
+            for i, (key_a, row_a) in enumerate(keyed):
+                if row_a["id"] in consumed:
+                    continue
+                group = [row_a]
+                for key_b, row_b in keyed[i + 1:]:
+                    if row_b["id"] in consumed:
+                        continue
+                    if dishes_compatible(key_a, key_b):
+                        group.append(row_b)
+                if len(group) < 2:
+                    continue
+                survivor = max(
+                    group,
+                    key=lambda r: (
+                        r["latest_classification"] or -1,
+                        len(r["raw_description"] or ""),
+                        -r["id"],
+                    ),
+                )
+                dup_ids = [r["id"] for r in group if r["id"] != survivor["id"]]
+                consumed.update(r["id"] for r in group)
+                best_name = survivor["name"]
+                best_desc = survivor["raw_description"]
+                best_cal = survivor["calories"]
+                for r in group:
+                    best_name = preferred_dish_name(best_name, r["name"])
+                    best_desc = best_desc or r["raw_description"]
+                    best_cal = best_cal if best_cal is not None else r["calories"]
+                marks = ",".join("?" for _ in dup_ids)
+                for table in ("classifications", "sources", "reports"):
+                    conn.execute(
+                        f"UPDATE {table} SET dish_id = ? "
+                        f"WHERE dish_id IN ({marks})",
+                        [survivor["id"], *dup_ids],
+                    )
+                # One live vote per client survives the merge: drop a dup
+                # row's vote when that client already voted on the survivor.
+                conn.execute(
+                    f"""
+                    DELETE FROM dish_votes
+                    WHERE dish_id IN ({marks}) AND client_id IS NOT NULL
+                      AND client_id IN (
+                        SELECT client_id FROM dish_votes
+                        WHERE dish_id = ? AND client_id IS NOT NULL
+                      )
+                    """,
+                    [*dup_ids, survivor["id"]],
+                )
+                conn.execute(
+                    f"UPDATE dish_votes SET dish_id = ? "
+                    f"WHERE dish_id IN ({marks})",
+                    [survivor["id"], *dup_ids],
+                )
+                conn.execute(
+                    f"UPDATE OR IGNORE dish_audit_reviews SET dish_id = ? "
+                    f"WHERE dish_id IN ({marks})",
+                    [survivor["id"], *dup_ids],
+                )
+                conn.execute(
+                    f"DELETE FROM dish_audit_reviews WHERE dish_id IN ({marks})",
+                    dup_ids,
+                )
+                # Delete the twins BEFORE renaming the survivor — the
+                # preferred display name is usually one of theirs, and
+                # (restaurant_id, name) is unique.
+                conn.execute(
+                    f"DELETE FROM dishes WHERE id IN ({marks})", dup_ids
+                )
+                conn.execute(
+                    "UPDATE dishes SET name = ?, raw_description = ?, "
+                    "calories = ? WHERE id = ?",
+                    (best_name, best_desc, best_cal, survivor["id"]),
+                )
+                merged += 1
+                removed += len(dup_ids)
+    return {"groups_merged": merged, "rows_removed": removed}
