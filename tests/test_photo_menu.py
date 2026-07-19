@@ -292,7 +292,7 @@ def test_ladder_escalates_to_claude_when_ocr_is_garbled_or_missing(monkeypatch):
         ),
     )
     result = photo_menu.read_menu_image(b"img", "image/jpeg")
-    assert result.method == "claude"
+    assert result.method == "haiku"
     assert result.cost_estimate == pytest.approx(0.0515)  # failed OCR still billed
 
     # No OCR key at all: straight to Claude, no OCR charge.
@@ -304,7 +304,7 @@ def test_ladder_escalates_to_claude_when_ocr_is_garbled_or_missing(monkeypatch):
         ),
     )
     result = photo_menu.read_menu_image(b"img", "image/jpeg")
-    assert result.method == "claude"
+    assert result.method == "haiku"
     assert result.cost_estimate == pytest.approx(0.05)
 
 

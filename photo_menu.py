@@ -254,7 +254,7 @@ class Transcription:
     text: str = ""
     error: str | None = None
     cost_estimate: float = 0.0
-    method: str = "claude"  # "ocr" | "claude"
+    method: str = "haiku"  # "ocr" | "haiku" | "opus"
 
 
 @dataclass
@@ -266,6 +266,14 @@ class PhotoMenuResult:
     char_count: int = 0
     cost_estimate: float = 0.0
     images_seen: int = 0
+    tier: str | None = None  # priciest reader a kept page needed
+
+
+_TIER_RANK = {"ocr": 0, "haiku": 1, "opus": 2}
+
+
+def _model_tier(model: str) -> str:
+    return "opus" if "opus" in model else "haiku"
 
 
 def find_menu_image_urls(page_url: str, html: str) -> list[str]:
@@ -508,6 +516,7 @@ def transcribe_menu_image(
     if not settings.anthropic_api_key:
         return Transcription(ok=False, error="ANTHROPIC_API_KEY not set")
     model = model or settings.photo_menu_vision_model
+    tier = _model_tier(model)
     try:
         import anthropic
         import base64
@@ -548,7 +557,8 @@ def transcribe_menu_image(
         ) as stream:
             response = stream.get_final_message()
     except Exception as exc:
-        return Transcription(ok=False, error=f"{type(exc).__name__}: {exc}")
+        return Transcription(ok=False, error=f"{type(exc).__name__}: {exc}",
+                             method=tier)
 
     usage = getattr(response, "usage", None)
     input_price, output_price = _VISION_PRICES.get(model, (5.0, 25.0))
@@ -557,7 +567,8 @@ def transcribe_menu_image(
         + (getattr(usage, "output_tokens", 0) or 0) * output_price
     ) / 1_000_000
     if response.stop_reason == "refusal":
-        return Transcription(ok=False, error="Model refused", cost_estimate=cost)
+        return Transcription(ok=False, error="Model refused", cost_estimate=cost,
+                             method=tier)
     text = next((b.text for b in response.content if b.type == "text"), "")
     try:
         data = json.loads(text)
@@ -566,10 +577,12 @@ def transcribe_menu_image(
             is_menu=bool(data.get("is_menu")),
             text=str(data.get("menu_text") or "").strip(),
             cost_estimate=cost,
+            method=tier,
         )
     except (json.JSONDecodeError, AttributeError) as exc:
         return Transcription(
-            ok=False, error=f"Malformed response: {exc}", cost_estimate=cost
+            ok=False, error=f"Malformed response: {exc}", cost_estimate=cost,
+            method=tier,
         )
 
 
@@ -611,6 +624,7 @@ def run(
     #    Places listing photos are the last resort (social-only websites,
     #    menu-less placeholder sites).
     pages: list[tuple[str, str]] = []
+    kept_methods: list[str] = []
     cost = 0.0
     seen = 0
 
@@ -622,6 +636,7 @@ def run(
         if result.ok and result.is_menu and len(result.text) >= _MIN_MENU_CHARS:
             print(f"  [photo] {ref[:80]}: kept via {result.method}")
             pages.append((ref, result.text))
+            kept_methods.append(result.method)
         elif result.error:
             print(f"  [photo] {ref[:80]}: {result.error}")
 
@@ -646,6 +661,7 @@ def run(
 
     # 3. Persist exactly like a successful text scrape so classification,
     #    versioning, and change tracking need no special photo handling.
+    tier = max(kept_methods, key=lambda m: _TIER_RANK.get(m, 1))
     combined = "\n\n".join(
         f"[menu image: {url}]\n{text}" for url, text in pages
     )
@@ -671,10 +687,12 @@ def run(
             menu_score=score.score,
             char_count=len(combined),
             crawled_at=now,
+            photo_tier=tier,
             db_path=db_path,
         )
     return PhotoMenuResult(
         ok=True,
+        tier=tier,
         pages=pages,
         menu_score=score.score,
         char_count=len(combined),

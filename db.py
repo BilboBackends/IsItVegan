@@ -366,6 +366,10 @@ _MIGRATIONS = {
         # attempt (stage, score, decision, prices, food words) — the "why
         # did this menu fail" evidence for the Admin scrape-failures panel.
         "last_diagnostics": "TEXT",
+        # For crawl_method='photo': the priciest reader the menu needed —
+        # 'ocr' | 'haiku' | 'opus'. NULL for pre-tier captures and for
+        # text crawls. Feeds the Admin pipeline-methods metrics.
+        "photo_tier": "TEXT",
     },
 }
 
@@ -702,6 +706,7 @@ def record_crawl_success(
     menu_score: float,
     char_count: int,
     crawled_at: str | None = None,
+    photo_tier: str | None = None,
     db_path: str | None = None,
 ) -> None:
     """Learn a validated crawl route, replacing an older/stale profile."""
@@ -713,8 +718,8 @@ def record_crawl_success(
             INSERT INTO crawl_profiles
                 (restaurant_id, menu_urls, crawl_method, content_hash,
                  menu_score, char_count, last_attempt_at, last_success_at,
-                 consecutive_failures, last_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                 consecutive_failures, last_error, photo_tier)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
             ON CONFLICT (restaurant_id) DO UPDATE SET
                 menu_urls = excluded.menu_urls,
                 crawl_method = excluded.crawl_method,
@@ -724,7 +729,8 @@ def record_crawl_success(
                 last_attempt_at = excluded.last_attempt_at,
                 last_success_at = excluded.last_success_at,
                 consecutive_failures = 0,
-                last_error = NULL
+                last_error = NULL,
+                photo_tier = excluded.photo_tier
             """,
             (
                 restaurant_id,
@@ -735,6 +741,7 @@ def record_crawl_success(
                 int(char_count),
                 timestamp,
                 timestamp,
+                photo_tier,
             ),
         )
 

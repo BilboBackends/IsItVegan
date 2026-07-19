@@ -550,6 +550,87 @@ function HistoryModal({ restaurant, onClose }) {
 // Ave Orlando"), see everything on a map + list — names only — and pull
 // selected places into the pipeline. Scraping/classification run later from
 // the Active table's bulk tools, so pulling 40 names in stays instant.
+// How every live menu was acquired, cheapest tier to priciest — the census
+// that shows whether scaling stays cheap (HTTP/headless/OCR) or is quietly
+// leaning on Claude vision.
+const METHOD_ROWS = [
+  ["http", "Plain HTTP scrape", "free", "bg-emerald-500"],
+  ["headless", "Headless browser", "free (slow)", "bg-teal-500"],
+  ["photo_ocr", "Photo → Google OCR", "~$0.002/menu", "bg-sky-500"],
+  ["photo_haiku", "Photo → Claude Haiku", "~$0.01/menu", "bg-amber-500"],
+  ["photo_opus", "Photo → Claude Opus", "~$0.05/menu", "bg-rose-500"],
+  ["photo_untiered", "Photo (pre-tier capture)", "unknown", "bg-slate-400"],
+  ["other", "Other", "", "bg-slate-300"],
+];
+
+function PipelineMethodsPanel() {
+  const [metrics, setMetrics] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    fetch("/api/pipeline-metrics")
+      .then((response) => response.json())
+      .then(setMetrics)
+      .catch((exc) => setError(String(exc)));
+  }, []);
+  if (error) return <div className="text-sm text-rose-600">{error}</div>;
+  if (!metrics) return <div className="text-sm text-slate-500">Loading…</div>;
+  const total = metrics.total_with_menu || 1;
+  const rows = METHOD_ROWS.map(([key, label, cost, color]) => ({
+    key, label, cost, color, count: metrics.acquired[key] || 0,
+  })).filter((row) => row.count > 0 || row.key !== "other");
+  const unscraped = metrics.unscraped || {};
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h2 className="mb-1 text-lg font-bold text-slate-800">
+        Menu acquisition methods
+      </h2>
+      <p className="mb-4 text-sm text-slate-500">
+        {metrics.total_with_menu} of {metrics.total_active} active restaurants
+        have a stored menu. Bars show what it took to get each one — the
+        cheaper the tier, the better this scales.
+      </p>
+      <div className="mb-2 flex h-4 w-full overflow-hidden rounded-full">
+        {rows.map((row) => (
+          <div
+            key={row.key}
+            className={row.color}
+            style={{ width: `${(row.count / total) * 100}%` }}
+            title={`${row.label}: ${row.count}`}
+          />
+        ))}
+      </div>
+      <div className="mb-6 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {rows.map((row) => (
+          <div key={row.key} className="flex items-center gap-2 rounded-lg border border-slate-100 px-3 py-2">
+            <span className={`h-3 w-3 shrink-0 rounded-full ${row.color}`} />
+            <span className="text-sm font-semibold text-slate-700">{row.label}</span>
+            <span className="ml-auto text-sm font-bold text-slate-800">{row.count}</span>
+            <span className="w-24 text-right text-xs text-slate-400">{row.cost}</span>
+          </div>
+        ))}
+      </div>
+      <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-slate-500">
+        Still without a menu
+      </h3>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {[
+          ["failed", "Scrape failed", "site has no readable/visible menu"],
+          ["social_profile", "Social-only website", "Facebook/Instagram links"],
+          ["unattempted", "Never attempted", "no crawl recorded yet"],
+          ["no_website", "No website", "listing has no site at all"],
+        ].map(([key, label, hint]) => (
+          <div key={key} className="rounded-lg bg-slate-50 px-3 py-2">
+            <div className="text-lg font-bold text-slate-700">{unscraped[key] ?? 0}</div>
+            <div className="text-xs font-semibold text-slate-600">{label}</div>
+            <div className="text-xs text-slate-400">{hint}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
 function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -3456,6 +3537,7 @@ export default function Admin() {
               ["active", `Active (${restaurants.length - archivedCount})`],
               ["archived", `Archived (${archivedCount})`],
               ["prospect", "🗺 Prospect"],
+              ["methods", "📊 Methods"],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -3470,14 +3552,16 @@ export default function Admin() {
                     ? "Listings you'll never need (7-Eleven and friends): out of this table, Explore, and every bulk run — data kept"
                     : key === "prospect"
                       ? "Search any area on Google Places and pull restaurants into the pipeline — names only, scrape/classify later"
-                      : "The working set"
+                      : key === "methods"
+                        ? "How every live menu was acquired: plain HTTP, headless browser, or photo tiers (Google OCR / Haiku / Opus)"
+                        : "The working set"
                 }
               >
                 {label}
               </button>
             ))}
           </div>
-          {tableView !== "prospect" && (
+          {tableView !== "prospect" && tableView !== "methods" && (
           <>
           <input
             type="text"
@@ -3579,7 +3663,9 @@ export default function Admin() {
           )}
         </div>
 
-        {tableView === "prospect" ? (
+        {tableView === "methods" ? (
+          <PipelineMethodsPanel />
+        ) : tableView === "prospect" ? (
           <ProspectPanel
             onAdded={loadData}
             config={config}

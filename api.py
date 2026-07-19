@@ -644,6 +644,81 @@ def provider_usage() -> object:
     return jsonify(usage_limits.provider_usage())
 
 
+@app.get("/api/pipeline-metrics")
+def pipeline_metrics() -> object:
+    """How each live menu was acquired — the cost-tier census.
+
+    Cheap tiers first: plain HTTP, headless browser, then photo menus by
+    the priciest reader they needed (Google OCR, Claude Haiku, Opus).
+    Pre-tier photo captures (before photo_tier existed) report as
+    photo_untiered until their next photo run stamps them.
+    """
+    db.init_db()
+    with db.connect() as conn:
+        has_menu = (
+            "EXISTS (SELECT 1 FROM sources s WHERE s.restaurant_id = r.id "
+            "AND s.type = 'text' AND (s.url IS NULL OR s.url != "
+            "'google:editorial_summary'))"
+        )
+        acquired: dict[str, int] = {
+            "http": 0, "headless": 0, "photo_ocr": 0, "photo_haiku": 0,
+            "photo_opus": 0, "photo_untiered": 0, "other": 0,
+        }
+        for method, tier, count in conn.execute(
+            f"""
+            SELECT p.crawl_method, p.photo_tier, COUNT(*)
+            FROM restaurants r
+            JOIN crawl_profiles p ON p.restaurant_id = r.id
+            WHERE r.archived = 0 AND {has_menu}
+            GROUP BY 1, 2
+            """
+        ):
+            if method == "photo":
+                key = f"photo_{tier}" if tier else "photo_untiered"
+            elif method in ("http", "headless"):
+                key = method
+            else:
+                key = "other"
+            acquired[key] = acquired.get(key, 0) + count
+
+        unscraped = dict(
+            conn.execute(
+                f"""
+                SELECT
+                  CASE
+                    WHEN p.restaurant_id IS NULL THEN 'unattempted'
+                    WHEN p.last_error LIKE '%social profile%' THEN 'social_profile'
+                    ELSE 'failed'
+                  END AS bucket, COUNT(*)
+                FROM restaurants r
+                LEFT JOIN crawl_profiles p ON p.restaurant_id = r.id
+                WHERE r.archived = 0
+                  AND r.website_url IS NOT NULL AND r.website_url != ''
+                  AND NOT {has_menu}
+                GROUP BY 1
+                """
+            ).fetchall()
+        )
+        no_website = conn.execute(
+            "SELECT COUNT(*) FROM restaurants r WHERE r.archived = 0 AND "
+            "(r.website_url IS NULL OR r.website_url = '')"
+        ).fetchone()[0]
+        total_active = conn.execute(
+            "SELECT COUNT(*) FROM restaurants WHERE archived = 0"
+        ).fetchone()[0]
+    return jsonify({
+        "acquired": acquired,
+        "unscraped": {
+            "social_profile": unscraped.get("social_profile", 0),
+            "failed": unscraped.get("failed", 0),
+            "unattempted": unscraped.get("unattempted", 0),
+            "no_website": no_website,
+        },
+        "total_active": total_active,
+        "total_with_menu": sum(acquired.values()),
+    })
+
+
 @app.get("/api/menu-quality")
 def menu_quality() -> object:
     """Automated audit of stored menus — flags likely-false/incomplete ones."""
