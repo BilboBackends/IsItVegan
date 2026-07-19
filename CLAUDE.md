@@ -172,7 +172,14 @@ restaurant row for silently incomplete menus), and Prospect map/radius sweeps.
 Radius sweeps tile the chosen circle into
 overlapping Google Nearby Search cells, search both restaurants and other
 food venues, require a call/cost estimate confirmation, dedupe by place ID,
-and filter results back to the exact selected radius.
+and filter results back to the exact selected radius. A parallel FREE sweep
+(`overture_client.py`, POST /api/prospect/overture) reads the same circle
+from the Overture Maps open dataset with zero Google calls; its rows have no
+place_id until added, when add_restaurants.resolve_external_place matches
+them to Google via Pro-SKU Text Search (name+distance gated, free-tier).
+Overture adds get discovery_source='overture' and DEFER the metered Details
+enrichment; an amber Admin panel (+ "Overture: pending enrichment" filter)
+shows the queue and drains it with the standard targeted enrich run.
 
 Change-aware recrawling is live: identical menu text skips classification
 entirely; changed menus run in DELTA mode (classify only new/changed dishes

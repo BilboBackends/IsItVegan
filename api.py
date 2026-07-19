@@ -967,6 +967,39 @@ def prospect_radius_endpoint() -> object:
     return jsonify(result)
 
 
+@app.post("/api/prospect/overture")
+def prospect_overture_endpoint() -> object:
+    """FREE radius food-venue sweep from Overture Maps open data — NO Google
+    calls, no estimate/confirm step. Same envelope as /api/prospect/radius so
+    the Prospect panel reuses its map/list/add flow. Rows have place_id: None;
+    the add flow resolves each chosen row to a Google place_id (Pro-tier Text
+    Search, inside the monthly free cap). The S3 scan can take a minute or two.
+    """
+    import overture_client
+
+    payload = request.get_json(silent=True) or {}
+    min_confidence = payload.get("min_confidence", overture_client.DEFAULT_MIN_CONFIDENCE)
+    if isinstance(min_confidence, bool) or not isinstance(min_confidence, (int, float)):
+        return jsonify({"error": "min_confidence must be a number."}), 400
+    if not 0 <= min_confidence <= 1:
+        return jsonify({"error": "min_confidence must be between 0 and 1."}), 400
+    try:
+        lat, lng, radius_meters = _radius_sweep_inputs(payload)
+        result = overture_client.fetch_overture_food_places(
+            lat, lng, radius_meters, min_confidence=float(min_confidence)
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    db.init_db()
+    result["new_count"] = overture_client.mark_known_places(
+        result["places"], db.list_restaurants()
+    )
+    return jsonify(result)
+
+
 # Category battery for the area sweep. Text Search tops out around 60
 # results per query, so one "restaurants in Orlando" can never show the
 # whole city — a spread of cuisine/venue queries pulls distinct slices and
@@ -1102,7 +1135,11 @@ def add_restaurants_endpoint() -> object:
                 or not places
                 or len(places) > max_places
                 or any(
-                    not isinstance(p, dict) or not p.get("place_id") or not p.get("name")
+                    not isinstance(p, dict)
+                    or not p.get("name")
+                    # Overture rows have no place_id yet; add_places resolves
+                    # them to one before anything is written.
+                    or not (p.get("place_id") or p.get("overture_id"))
                     for p in places
                 )
             ):

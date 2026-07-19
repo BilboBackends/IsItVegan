@@ -6,3 +6,4 @@ beautifulsoup4>=4.12
 playwright>=1.40
 anthropic>=0.40
 pypdf>=4.0
+overturemaps>=1.0

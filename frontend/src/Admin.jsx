@@ -44,6 +44,11 @@ const EXCLUDED_SWEEP_TYPES = new Set([
 
 const isFoodVenue = (place) => !EXCLUDED_SWEEP_TYPES.has(place.primary_type);
 
+// Selection/render key for prospect rows. Google rows have a place_id;
+// Overture free-sweep rows only carry an overture_id until they're added
+// (the backend resolves them to a Google place then).
+const keyOf = (place) => place.place_id || place.overture_id;
+
 // Backend caps a names-only add at 60 places per request; larger sets are
 // split into sequential batches.
 const ADD_BATCH_SIZE = 60;
@@ -642,6 +647,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   const [sweepEstimate, setSweepEstimate] = useState(null);
   const [estimating, setEstimating] = useState(false);
   const [sweeping, setSweeping] = useState(false);
+  const [overtureSweeping, setOvertureSweeping] = useState(false);
   const [onlyNew, setOnlyNew] = useState(false);
   const [places, setPlaces] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
@@ -747,12 +753,50 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     }
   }
 
+  // Free discovery from the Overture open dataset: same circle, same result
+  // list, zero Google calls — so no estimate/confirm gate. The S3 scan runs
+  // a minute or two server-side.
+  async function runOvertureSweep() {
+    if (overtureSweeping || sweeping) return;
+    setOvertureSweeping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/prospect/overture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lat: sweepCenter.lat,
+          lng: sweepCenter.lng,
+          radius_meters: radiusMeters,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Overture sweep failed (${res.status})`);
+      setPlaces(data.places);
+      setSelected(new Set());
+      setOnlyNew(data.new_count > 0);
+      setNotice(
+        `Overture free sweep found ${data.count} food venues with zero Google ` +
+          `calls — ${data.new_count} not in the pipeline yet. Adding a row ` +
+          `matches it to Google first (cheap call, free-tier). Skipped ` +
+          `${data.dropped_low_confidence} low-confidence and ` +
+          `${data.dropped_closed} closed entries.`
+      );
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setOvertureSweeping(false);
+    }
+  }
+
   function toggle(place) {
     if (place.already_added_id) return;
     setSelected((current) => {
       const next = new Set(current);
-      if (next.has(place.place_id)) next.delete(place.place_id);
-      else next.add(place.place_id);
+      const key = keyOf(place);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -792,6 +836,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
     setNotice(null);
     try {
       const addedIds = new Map();
+      const unresolved = [];
       let added = 0;
       for (let i = 0; i < keepers.length; i += ADD_BATCH_SIZE) {
         const batch = keepers.slice(i, i + ADD_BATCH_SIZE);
@@ -808,20 +853,30 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
-        batch.forEach((p, j) => addedIds.set(p.place_id, data.added?.[j]?.id ?? true));
+        batch.forEach((p, j) => {
+          const entry = data.added?.[j];
+          if (entry && !entry.id) unresolved.push(p.name);
+          else addedIds.set(keyOf(p), entry?.id ?? true);
+        });
         added += batch.length;
       }
       setPlaces((current) =>
         (current || []).map((p) =>
-          addedIds.has(p.place_id)
-            ? { ...p, already_added_id: addedIds.get(p.place_id) }
+          addedIds.has(keyOf(p))
+            ? { ...p, already_added_id: addedIds.get(keyOf(p)) }
             : p
         )
       );
       setSelected(new Set());
       setNotice(
-        `Added ${added} food venue(s)${
+        `Added ${added - unresolved.length} food venue(s)${
           droppedCount ? ` (skipped ${droppedCount} non-food)` : ""
+        }${
+          unresolved.length
+            ? ` — ${unresolved.length} had no confident Google match: ${unresolved
+                .slice(0, 5)
+                .join(", ")}${unresolved.length > 5 ? "…" : ""}`
+            : ""
         } — scrape & classify them from the Active table when ready.`
       );
       onAdded?.();
@@ -833,12 +888,13 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   }
 
   async function addSelected() {
-    const chosen = (places || []).filter((p) => selected.has(p.place_id));
+    const chosen = (places || []).filter((p) => selected.has(keyOf(p)));
     if (chosen.length === 0) return;
     setAdding(true);
     setError(null);
     try {
-      const byPlaceId = new Map();
+      const byKey = new Map();
+      const unresolved = [];
       let added = 0;
       for (let i = 0; i < chosen.length; i += ADD_BATCH_SIZE) {
         const batch = chosen.slice(i, i + ADD_BATCH_SIZE);
@@ -853,22 +909,29 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || `Add failed (${res.status})`);
-        batch.forEach((p, index) =>
-          byPlaceId.set(p.place_id, data.added?.[index]?.id ?? true)
-        );
+        batch.forEach((p, index) => {
+          const entry = data.added?.[index];
+          if (entry && !entry.id) unresolved.push(p.name);
+          else byKey.set(keyOf(p), entry?.id ?? true);
+        });
         added += batch.length;
       }
       setPlaces((current) =>
         (current || []).map((p) =>
-          byPlaceId.has(p.place_id)
-            ? { ...p, already_added_id: byPlaceId.get(p.place_id) }
+          byKey.has(keyOf(p))
+            ? { ...p, already_added_id: byKey.get(keyOf(p)) }
             : p
         )
       );
       setSelected(new Set());
       setNotice(
-        `Added ${chosen.length} restaurant(s) — scrape & classify them from ` +
-          `the Active table when ready.`
+        `Added ${chosen.length - unresolved.length} restaurant(s)${
+          unresolved.length
+            ? ` — ${unresolved.length} had no confident Google match: ${unresolved
+                .slice(0, 5)
+                .join(", ")}${unresolved.length > 5 ? "…" : ""}`
+            : ""
+        } — scrape & classify them from the Active table when ready.`
       );
       onAdded?.();
     } catch (e) {
@@ -884,7 +947,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
   async function addAndRunAll(explicitPlaces = null) {
     const chosen = Array.isArray(explicitPlaces)
       ? explicitPlaces
-      : (places || []).filter((p) => selected.has(p.place_id));
+      : (places || []).filter((p) => selected.has(keyOf(p)));
     if (chosen.length === 0 || pipeline) return;
     if (chosen.length > 1000) {
       setError("One-go runs support up to 1,000 places. Narrow the selection.");
@@ -935,14 +998,15 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
         (addData.added || []).forEach((entry) => {
           if (entry.id) ids.push(entry.id);
         });
-        batch.forEach((p, index) =>
-          byPlaceId.set(p.place_id, addData.added?.[index]?.id ?? true)
-        );
+        batch.forEach((p, index) => {
+          const entry = addData.added?.[index];
+          if (!entry || entry.id) byPlaceId.set(keyOf(p), entry?.id ?? true);
+        });
       }
       setPlaces((current) =>
         (current || []).map((p) =>
-          byPlaceId.has(p.place_id)
-            ? { ...p, already_added_id: byPlaceId.get(p.place_id) }
+          byPlaceId.has(keyOf(p))
+            ? { ...p, already_added_id: byPlaceId.get(keyOf(p)) }
             : p
         )
       );
@@ -1042,7 +1106,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
       bounds.extend([p.lat, p.lng]);
       const color = p.already_added_id
         ? "#a8a29e"
-        : selected.has(p.place_id)
+        : selected.has(keyOf(p))
           ? "#047857"
           : "#ffffff";
       const marker = L.marker([p.lat, p.lng], {
@@ -1125,15 +1189,25 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
           </span>
           <button
             type="submit"
-            disabled={estimating || sweeping || radiusMiles < 0.25}
+            disabled={estimating || sweeping || overtureSweeping || radiusMiles < 0.25}
             className="rounded-lg border border-sky-400 bg-white px-3 py-1.5 text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {estimating ? "Estimating…" : "Estimate sweep"}
           </button>
+          <button
+            type="button"
+            onClick={runOvertureSweep}
+            disabled={estimating || sweeping || overtureSweeping || radiusMiles < 0.25}
+            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Sweep the same circle against the Overture Maps open dataset — $0, no Google calls. The scan takes a minute or two; results resolve to Google only when added."
+          >
+            {overtureSweeping ? "Free sweeping… (~1–2 min)" : "Free sweep (Overture)"}
+          </button>
         </div>
         <div className="mt-1 text-xs text-sky-800">
           Click the map or drag its marker, choose a radius, then estimate and
-          confirm. Searches restaurants plus breweries, cafes, bakeries,
+          confirm — or run the free Overture sweep (open data, $0, slightly
+          staler). Searches restaurants plus breweries, cafes, bakeries,
           dessert and ice-cream shops, and other food venues.
         </div>
         {sweepEstimate && (
@@ -1191,7 +1265,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() =>
-                setSelected(new Set(newPlaces.map((p) => p.place_id)))
+                setSelected(new Set(newPlaces.map((p) => keyOf(p))))
               }
               className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"
             >
@@ -1306,7 +1380,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
               )}
               <ul className="divide-y divide-slate-100">
                 {displayed.map((p) => (
-                  <li key={p.place_id}>
+                  <li key={keyOf(p)}>
                     <label
                       className={`flex cursor-pointer items-start gap-2 px-3 py-2 text-sm ${
                         p.already_added_id ? "opacity-50" : "hover:bg-slate-50"
@@ -1316,7 +1390,7 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                         type="checkbox"
                         className="mt-1"
                         disabled={Boolean(p.already_added_id)}
-                        checked={selected.has(p.place_id)}
+                        checked={selected.has(keyOf(p))}
                         onChange={() => toggle(p)}
                       />
                       <span>
@@ -1338,6 +1412,12 @@ function ProspectPanel({ onAdded, config, defaultProvider = "deepseek" }) {
                             {p.primary_type
                               ? ` · ${p.primary_type.replaceAll("_", " ")}`
                               : ""}
+                            {p.source === "overture" &&
+                              ` · Overture${
+                                p.confidence != null
+                                  ? ` ${Math.round(p.confidence * 100)}%`
+                                  : ""
+                              }`}
                           </span>
                         )}
                       </span>
@@ -1920,6 +2000,7 @@ export default function Admin() {
   const [discovering, setDiscovering] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [enriching, setEnriching] = useState(false);
+  const [enrichingPending, setEnrichingPending] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
@@ -2402,6 +2483,40 @@ export default function Admin() {
     }
   }
 
+  // Targeted enrichment: POST /api/enrich without {all} only touches
+  // restaurants that were never enriched (the deferred-Overture queue plus
+  // any legacy backfills) — one Details call each, not a full re-fetch.
+  async function runEnrichPending() {
+    setEnrichingPending(true);
+    setNotice(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/enrich", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Enrich failed (${res.status})`);
+      setNotice(
+        `Google enrichment of pending restaurants done: ${data.veg_yes} ` +
+          `vegetarian-friendly, ${data.veg_unknown} unknown; ` +
+          `${data.with_editorial} editorial summaries; ${data.with_rating} ratings.`
+      );
+      await loadData();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setEnrichingPending(false);
+    }
+  }
+
+  // Overture-sourced restaurants still waiting on their (deferred) Google
+  // Details call — no hours/rating/businessStatus yet.
+  const overturePending = restaurants.filter(
+    (r) => r.discovery_source === "overture" && !r.enriched_at && !r.archived
+  );
+
   async function openMenu(r) {
     setMenuFor(r);
     setMenuText(null);
@@ -2769,6 +2884,11 @@ export default function Admin() {
       if (operationalFilter === "excluded") return !restaurant.is_consumer_venue;
       if (operationalFilter === "no_website") return !restaurant.website_url;
       if (operationalFilter === "quality") return qualityIds.has(restaurant.id);
+      if (operationalFilter === "overture_pending") {
+        return (
+          restaurant.discovery_source === "overture" && !restaurant.enriched_at
+        );
+      }
       return true;
     });
 
@@ -3613,6 +3733,7 @@ export default function Admin() {
             <option value="quality">Quality warning</option>
             <option value="excluded">Excluded from Explore</option>
             <option value="no_website">No website</option>
+            <option value="overture_pending">Overture: pending enrichment</option>
           </select>
           <select
             value={groupBy}
@@ -3673,6 +3794,39 @@ export default function Admin() {
           />
         ) : (
         <>
+        {overturePending.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 shadow-sm">
+            <div className="min-w-0 text-sm text-amber-900">
+              <span className="font-bold">
+                🌍 {overturePending.length} Overture add
+                {overturePending.length === 1 ? "" : "s"} pending Google
+                enrichment
+              </span>
+              <span className="block text-xs text-amber-800">
+                Added from open data — no hours, rating, or open/closed status
+                yet. Enriching spends one Google Details call each (free cap
+                ~1,000/month):{" "}
+                {overturePending
+                  .slice(0, 6)
+                  .map((r) => r.name)
+                  .join(", ")}
+                {overturePending.length > 6
+                  ? ` +${overturePending.length - 6} more`
+                  : ""}
+              </span>
+            </div>
+            <button
+              onClick={runEnrichPending}
+              disabled={enrichingPending || enriching}
+              className="ml-auto shrink-0 rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+              title="Runs the standard targeted enrichment: only never-enriched restaurants are fetched, so this is one Details call per pending row"
+            >
+              {enrichingPending
+                ? "Enriching…"
+                : `Enrich now (${overturePending.length} calls)`}
+            </button>
+          </div>
+        )}
         <div className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm max-sm:overflow-x-auto max-sm:[&>*]:shrink-0 sm:flex-wrap">
           <span className="mr-1 text-sm font-semibold text-slate-700">
             {selectedIds.length} selected
