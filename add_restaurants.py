@@ -31,52 +31,7 @@ import db
 import enrich
 import ingest
 from config import settings
-from places_client import (
-    RESOLVE_FIELD_MASK,
-    _names_overlap,
-    distance_meters,
-    search_place_by_name,
-    search_place_candidates,
-)
-
-# An open-data row and its Google match must agree on location this tightly;
-# beyond it, Text Search has probably returned a same-name sibling elsewhere.
-_RESOLVE_MAX_DISTANCE_METERS = 400.0
-
-
-def resolve_external_place(place: dict) -> dict | None:
-    """Match a non-Google prospect row (Overture sweep) to a Google place.
-
-    Uses the Pro-tier field mask (no websiteUri — the open-data row already
-    carries its website), so these calls stay inside the 5k/month free cap.
-    A match must overlap on NAME (not address tokens) and, when both sides
-    have coordinates, sit within _RESOLVE_MAX_DISTANCE_METERS. Returns the
-    winning candidate or None — a wrong match here poisons everything
-    downstream, so no confident match means don't add.
-    """
-    query = place["name"]
-    if place.get("address"):
-        query = f"{place['name']}, {place['address']}"
-    candidates = search_place_candidates(
-        query,
-        api_key=settings.google_places_api_key,
-        bias_lat=place.get("lat") if place.get("lat") is not None else settings.discovery_lat,
-        bias_lng=place.get("lng") if place.get("lng") is not None else settings.discovery_lng,
-        bias_radius_meters=5_000.0,
-        field_mask=RESOLVE_FIELD_MASK,
-    )
-    for cand in candidates:
-        if not _names_overlap(place["name"], cand["name"] or ""):
-            continue
-        if (
-            place.get("lat") is not None
-            and cand.get("lat") is not None
-            and distance_meters(place["lat"], place["lng"], cand["lat"], cand["lng"])
-            > _RESOLVE_MAX_DISTANCE_METERS
-        ):
-            continue
-        return cand
-    return None
+from places_client import search_place_by_name, search_place_candidates
 
 
 def _resolve(name: str) -> dict | None:
@@ -127,44 +82,16 @@ def add_places(
     results: list[dict] = []
     for place in places:
         place = dict(place)
-        from_overture = not place.get("place_id")
-        if from_overture:
-            # Open-data (Overture) row: resolve to a Google place first so
-            # place_id-keyed dedupe and enrichment keep working. Google's
-            # canonical name/address/location win; the open-data website URL
-            # is kept (the resolve mask deliberately doesn't fetch one).
-            resolved = resolve_external_place(place)
-            if resolved is None:
-                print(f"  [unresolved] {place.get('name')} — no confident Google match")
-                results.append(
-                    {
-                        "id": None,
-                        "name": place.get("name"),
-                        "error": "No confident Google match; not added.",
-                    }
-                )
-                continue
-            resolved = dict(resolved)
-            resolved["website_url"] = resolved.get("website_url") or place.get("website_url")
-            resolved["discovery_source"] = "overture"
-            place = resolved
         place["last_scraped_at"] = now
         db.upsert_restaurants([place])
         rid = next(
             r["id"] for r in db.list_restaurants() if r["place_id"] == place["place_id"]
         )
         entry = {"id": rid, "name": place.get("name"), "scraped": None, "dishes": None}
-        if from_overture:
-            # Details enrichment costs a metered Google call per restaurant;
-            # bulk open-data adds defer it so the monthly free cap is spent
-            # deliberately — the Admin "pending Google enrichment" panel (or
-            # any normal enrich run) drains the queue.
-            entry["enrich_deferred"] = True
-        else:
-            try:
-                enrich.run(restaurant_id=rid)
-            except Exception as exc:
-                print(f"  enrich failed: {exc}")
+        try:
+            enrich.run(restaurant_id=rid)
+        except Exception as exc:
+            print(f"  enrich failed: {exc}")
         if do_ingest:
             try:
                 summary = ingest.run(restaurant_id=rid)

@@ -43,8 +43,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
     open_now          INTEGER,   -- Google currentOpeningHours.openNow
     opening_hours     TEXT,      -- JSON weekday descriptions
     hours_enriched_at TEXT,      -- tracks one-time opening-hours backfill
-    enriched_at       TEXT,      -- when food signals were last fetched
-    discovery_source  TEXT       -- 'overture' = added from open data (NULL = Google)
+    enriched_at       TEXT       -- when food signals were last fetched
 );
 
 CREATE TABLE IF NOT EXISTS dishes (
@@ -309,9 +308,6 @@ _MIGRATIONS = {
         # Google businessStatus: OPERATIONAL | CLOSED_TEMPORARILY |
         # CLOSED_PERMANENTLY. Enrichment auto-archives permanent closures.
         "business_status": "TEXT",
-        # 'overture' = entered via the free open-data sweep. Those adds defer
-        # Google Details enrichment; the Admin pending panel drains the queue.
-        "discovery_source": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -408,10 +404,10 @@ def upsert_restaurants(
                 """
                 INSERT INTO restaurants
                     (name, address, place_id, website_url, lat, lng,
-                     primary_type, last_scraped_at, discovery_source)
+                     primary_type, last_scraped_at)
                 VALUES
                     (:name, :address, :place_id, :website_url, :lat, :lng,
-                     :primary_type, :last_scraped_at, :discovery_source)
+                     :primary_type, :last_scraped_at)
                 ON CONFLICT(place_id) DO UPDATE SET
                     name            = excluded.name,
                     address         = excluded.address,
@@ -419,8 +415,7 @@ def upsert_restaurants(
                     lat             = excluded.lat,
                     lng             = excluded.lng,
                     primary_type    = COALESCE(excluded.primary_type, restaurants.primary_type),
-                    last_scraped_at = excluded.last_scraped_at,
-                    discovery_source = COALESCE(excluded.discovery_source, restaurants.discovery_source)
+                    last_scraped_at = excluded.last_scraped_at
                 """,
                 {
                     "name": r.get("name"),
@@ -431,7 +426,6 @@ def upsert_restaurants(
                     "lng": r.get("lng"),
                     "primary_type": r.get("primary_type"),
                     "last_scraped_at": r.get("last_scraped_at"),
-                    "discovery_source": r.get("discovery_source"),
                 },
             )
     return len(rows), len(rows)
@@ -456,7 +450,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                    r.serves_vegetarian, r.price_level, r.primary_type,
                    r.editorial_summary, r.rating, r.user_rating_count,
                    r.open_now, r.opening_hours, r.hours_enriched_at,
-                   r.enriched_at, r.business_status, r.discovery_source,
+                   r.enriched_at, r.business_status,
                    (
                        SELECT MAX(s.fetched_at) FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'

@@ -76,20 +76,6 @@ FIELD_MASK = ",".join(
     ]
 )
 
-# FIELD_MASK without websiteUri: websiteUri is what pushes Text Search into
-# the Enterprise SKU (1k free calls/month) — without it the call bills as
-# Pro (5k free calls/month). Used when resolving open-data (Overture) rows
-# that already carry their own website URL.
-RESOLVE_FIELD_MASK = ",".join(
-    [
-        "places.id",
-        "places.displayName",
-        "places.formattedAddress",
-        "places.location",
-        "places.primaryType",
-    ]
-)
-
 
 def _normalize_place(place: dict) -> dict:
     """Map a Places API (New) place object to our restaurant row shape."""
@@ -193,7 +179,6 @@ def search_place_candidates(
     bias_lng: float | None = None,
     bias_radius_meters: float = 50_000.0,
     timeout: float = 30.0,
-    field_mask: str | None = None,
 ) -> list[dict]:
     """All Text Search candidates for a name, best first, for user selection.
 
@@ -207,7 +192,7 @@ def search_place_candidates(
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
-        "X-Goog-FieldMask": field_mask or FIELD_MASK,
+        "X-Goog-FieldMask": FIELD_MASK,
     }
     body: dict = {
         "textQuery": name,
