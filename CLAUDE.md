@@ -199,11 +199,18 @@ The public site is GitHub Pages (fully static: built frontend + JSON
 snapshots via `publish_static.py [--push]`); the live pipeline and Admin
 exist only locally.
 
-**Next: Phase 4 — vision classification.** Google Places photos + Claude
-vision for the restaurants whose menus can't be scraped (social-only
-websites, hard JS walls, photo-only menus) — the audit's "photo fallback
-candidates" list is the queue. Also queued: multi-area expansion (area tag +
-Prospect promotion, "restaurants on Mills" → Orlando).
+**Phase 4 (photo-menu fallback) is live and wired into ingestion:** when a
+real website's text scrape fails (menu served as a JPEG/PNG instead of DOM
+text, or a JS wall the renderer couldn't crack), ingest automatically runs
+photo_menu.py's cost ladder (menu images mined from the site's pages; free
+OCR first, Claude vision only when OCR text doesn't read like a menu; a
+cheap "no" is final). Social-profile "websites" and website-less rows are
+deliberately NOT attempted — that's not what the feature is for; they stay
+in the failures list for manual review. A photo success persists exactly
+like a text scrape (crawl_method 'photo' + photo_tier), so classification
+and versioning need no special handling. Still queued: multi-area
+expansion (area tag + Prospect promotion, "restaurants on Mills" →
+Orlando).
 
 ## Resolved Early Questions (kept for context)
 

@@ -30,6 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import db
+import photo_menu
 from scraper import scrape_menu_text
 from venue_filter import is_consumer_food_venue
 
@@ -189,23 +190,57 @@ def run(
                 "diagnostics": result.diagnostics,
             }})
         else:
-            failed += 1
-            failures.append((t["name"], result.error or "unknown error"))
-            if not dry_run:
-                db.record_crawl_failure(
-                    t["id"],
-                    result.error or "unknown error",
-                    attempted_at=now,
-                    diagnostics=result.diagnostics,
+            # Text path exhausted — try the photo-menu ladder before calling
+            # it a failure. This is for real websites that serve their menu
+            # as an image instead of DOM text (or behind a JS wall the
+            # renderer couldn't crack); social-profile "websites" are NOT
+            # attempted — there's no menu image behind an Instagram link,
+            # and mining Places listing photos for them isn't this feature.
+            # The ladder's gates (free OCR first, vision only when OCR text
+            # doesn't read like a menu, cheap "no" final) bound the cost.
+            # Skipped in dry runs: transcription spends money even without
+            # writes.
+            social_dead_end = "social profile" in (result.error or "")
+            photo = None
+            if not dry_run and not social_dead_end:
+                try:
+                    photo = photo_menu.run(t["id"])
+                except Exception as exc:  # fallback must never kill the batch
+                    print(f"  [photo] fallback error: {exc}")
+            if photo is not None and photo.ok:
+                succeeded += 1
+                print(
+                    f"  [menu] {t['name']}  (photo fallback: "
+                    f"{len(photo.pages)} image(s), score {photo.menu_score:.2f}, "
+                    f"tier {photo.tier}, ~${photo.cost_estimate:.2f})"
                 )
-            print(f"  [fail] {t['name']}  — {result.error}")
-            _emit({"result": {
-                "name": t["name"], "ok": False, "error": result.error,
-            }})
+                _emit({"result": {
+                    "name": t["name"], "ok": True,
+                    "pages": len(photo.pages), "chars": photo.char_count,
+                    "score": photo.menu_score, "method": "photo",
+                    "changed": True,
+                }})
+            else:
+                error = result.error or "unknown error"
+                if photo is not None and photo.error:
+                    error += f"; photo fallback: {photo.error}"
+                failed += 1
+                failures.append((t["name"], error))
+                if not dry_run:
+                    db.record_crawl_failure(
+                        t["id"],
+                        error,
+                        attempted_at=now,
+                        diagnostics=result.diagnostics,
+                    )
+                print(f"  [fail] {t['name']}  — {error}")
+                _emit({"result": {
+                    "name": t["name"], "ok": False, "error": error,
+                }})
 
     print(f"\nDone. {succeeded} succeeded, {failed} failed.")
     if failures:
-        print("Failures (candidates for photo fallback / manual review):")
+        print("Failures (text scrape AND photo fallback exhausted — manual review):")
         for name, err in failures:
             print(f"  - {name}: {err}")
     if dry_run:
