@@ -22,8 +22,23 @@ Authentication → Providers:
   links to sign users straight in (magic link itself proves the address).
 - **Google**: ON. Needs a Google Cloud OAuth client (free):
   console.cloud.google.com → APIs & Services → Credentials → Create OAuth
-  client ID (Web). Authorized redirect URI = the callback URL Supabase shows
-  on the Google provider screen. Paste client id + secret back into Supabase.
+  client ID (Web). Paste client id + secret back into Supabase.
+
+  The frontend signs in with Google Identity Services + `signInWithIdToken`
+  (not the `signInWithOAuth` redirect — that flow's redirect URI lives on
+  `<ref>.supabase.co`, so Google's consent popup names the Supabase domain
+  instead of dishtune.com). That requires, on the same OAuth client:
+  - **Authorized JavaScript origins**: `https://dishtune.com`,
+    `https://www.dishtune.com`, and `http://localhost:5173` (dev).
+  - The client id also goes into the frontend build as
+    `VITE_GOOGLE_CLIENT_ID` (see below). It is public by design; the origin
+    allowlist is what protects it.
+  - In Supabase's Google provider settings, the same client id must be the
+    configured Client ID (or listed under "Authorized Client IDs") so the
+    ID token's audience is accepted, and "Skip nonce checks" stays OFF —
+    the frontend sends a real nonce.
+  - The Authorized redirect URI (the Supabase callback URL) can stay on the
+    client; it is unused by this flow but harmless.
 
 Authentication → URL Configuration:
 - Site URL: `https://dishtune.com/` (the apex is the canonical domain; www
@@ -40,8 +55,10 @@ Local dev — `frontend/.env.local` (gitignored):
 
     VITE_SUPABASE_URL=https://xxxx.supabase.co
     VITE_SUPABASE_ANON_KEY=eyJ...
-    # Add only after the Google provider is configured:
+    # Add only after the Google provider is configured (both are required
+    # for the Google button to render):
     VITE_SUPABASE_GOOGLE_ENABLED=true
+    VITE_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
 
 Published site — the values are compile-time, so add them wherever the
 static build runs (publish_static.py environment or the shell):

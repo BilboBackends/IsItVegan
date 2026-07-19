@@ -41,6 +41,9 @@ jobs:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_SUPABASE_GOOGLE_ENABLED: ${{ vars.VITE_SUPABASE_GOOGLE_ENABLED }}
+          # OAuth client id, not a secret (it is embedded in the page and
+          # visible to every visitor); the origin allowlist protects it.
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
       # Cloudflare Pages caps deployment assets at 25 MiB per file. The raw
       # dish snapshot (60+ MiB) is only the fallback for browsers without
       # DecompressionStream; every modern browser loads dishes.json.gz.

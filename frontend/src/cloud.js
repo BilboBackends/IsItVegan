@@ -19,8 +19,10 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const CLOUD_ENABLED = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 export const GOOGLE_AUTH_ENABLED =
-  import.meta.env.VITE_SUPABASE_GOOGLE_ENABLED === "true";
+  import.meta.env.VITE_SUPABASE_GOOGLE_ENABLED === "true" &&
+  Boolean(GOOGLE_CLIENT_ID);
 
 const COMMENT_AUTH_RETURN_KEY = "dishtune:commentAuthReturn";
 const COMMENT_AUTH_RETURN_MAX_AGE = 60 * 60 * 1000;
@@ -171,13 +173,85 @@ function authRedirectUrl(returnTo) {
     : fallback.toString();
 }
 
-export async function signInWithGoogle(returnTo) {
-  const client = await getClient();
-  const { error } = (await client?.auth.signInWithOAuth({
-    provider: "google",
-    options: { redirectTo: authRedirectUrl(returnTo) },
-  })) || { error: null };
-  if (error) throw new Error(error.message);
+// Google sign-in goes through Google Identity Services + signInWithIdToken
+// rather than signInWithOAuth: the OAuth redirect flow's redirect URI lives
+// on <ref>.supabase.co, so Google's consent popup names the Supabase domain
+// instead of dishtune.com. GIS runs against our own OAuth client (origin =
+// dishtune.com) and hands back an ID token that Supabase exchanges for the
+// same session — no redirect, no page reload.
+
+let gsiScriptPromise = null;
+
+function loadGoogleIdentity() {
+  if (window.google?.accounts?.id) return Promise.resolve(window.google);
+  if (!gsiScriptPromise) {
+    gsiScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.onload = () => resolve(window.google);
+      script.onerror = () => {
+        gsiScriptPromise = null; // ad blockers eat this script; allow retry
+        script.remove();
+        reject(new Error("Could not load Google sign-in."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+  return gsiScriptPromise;
+}
+
+// Replay protection: GIS receives the SHA-256 of a fresh nonce (Google bakes
+// it into the ID token), and Supabase receives the raw nonce to hash and
+// compare against that claim.
+async function generateNonce() {
+  const raw = crypto.randomUUID();
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(raw)
+  );
+  const hashed = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return { raw, hashed };
+}
+
+// Renders Google's official sign-in button into `container` (the ID-token
+// flow cannot be triggered from a custom button). Success needs no callback
+// here: signInWithIdToken fires onAuthStateChange and the UI re-renders
+// signed-in in place, so magic-link-style return URLs don't apply.
+export async function renderGoogleSignInButton(container, { onError } = {}) {
+  if (!GOOGLE_AUTH_ENABLED || !container) return false;
+  const [client, google, nonce] = await Promise.all([
+    getClient(),
+    loadGoogleIdentity(),
+    generateNonce(),
+  ]);
+  if (!client || !google || !container.isConnected) return false;
+  // initialize() is global to the page: the newest call's nonce + callback
+  // pair governs every rendered button, so the two stay consistent even
+  // with both sign-in surfaces (header popover, comments box) mounted.
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    nonce: nonce.hashed,
+    callback: async (response) => {
+      const { error } = await client.auth.signInWithIdToken({
+        provider: "google",
+        token: response.credential,
+        nonce: nonce.raw,
+      });
+      if (error) onError?.(new Error(error.message));
+    },
+  });
+  container.replaceChildren();
+  google.accounts.id.renderButton(container, {
+    type: "standard",
+    theme: "outline",
+    size: "large",
+    text: "continue_with",
+    width: Math.min(container.offsetWidth || 320, 400),
+  });
+  return true;
 }
 
 export async function signInWithMagicLink(email, returnTo) {

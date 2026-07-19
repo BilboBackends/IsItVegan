@@ -4,11 +4,11 @@ import {
   GOOGLE_AUTH_ENABLED,
   fetchProfile,
   onAuthChange,
-  signInWithGoogle,
   signInWithMagicLink,
   signOut,
   updateUsername,
 } from "./cloud.js";
+import GoogleSignInButton from "./GoogleSignInButton.jsx";
 import {
   DEFAULT_PUBLIC_NAME,
   USERNAME_MAX_LENGTH,
@@ -315,12 +315,10 @@ export default function AccountButton({
               </p>
               {GOOGLE_AUTH_ENABLED && (
                 <>
-                  <button
-                    onClick={signInWithGoogle}
-                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300 py-2 text-sm font-bold text-stone-700 hover:bg-stone-50"
-                  >
-                    <span aria-hidden>G</span> Continue with Google
-                  </button>
+                  <GoogleSignInButton
+                    onError={(googleError) => setError(googleError.message)}
+                    className="mt-3 flex justify-center"
+                  />
                   <div className="my-3 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-stone-300">
                     <span className="h-px flex-1 bg-stone-200" /> or{" "}
                     <span className="h-px flex-1 bg-stone-200" />

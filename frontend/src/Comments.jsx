@@ -11,9 +11,9 @@ import {
   rememberCommentAuthReturn,
   reportComment,
   searchUsernames,
-  signInWithGoogle,
   signInWithMagicLink,
 } from "./cloud.js";
+import GoogleSignInButton from "./GoogleSignInButton.jsx";
 import {
   escapeRegExp,
   hasDishMentionToken,
@@ -382,18 +382,6 @@ export default function Comments({
     }
   }
 
-  async function continueWithGoogle() {
-    if (authBusy) return;
-    setAuthBusy(true);
-    setAuthError(null);
-    try {
-      await signInWithGoogle(returnToCommentsUrl());
-    } catch (e) {
-      setAuthError(e.message);
-      setAuthBusy(false);
-    }
-  }
-
   // Only structured selections become interactive. Raw @text stays plain,
   // while legacy dish mentions continue to work unchanged.
   function renderBody(comment) {
@@ -748,14 +736,10 @@ export default function Comments({
           ) : (
             <div className="mt-3">
               {GOOGLE_AUTH_ENABLED && (
-                <button
-                  type="button"
-                  onClick={continueWithGoogle}
-                  disabled={authBusy}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-stone-300 bg-white py-2 text-sm font-bold text-stone-700 hover:bg-stone-50 disabled:text-stone-300"
-                >
-                  <span aria-hidden>G</span> Continue with Google
-                </button>
+                <GoogleSignInButton
+                  onError={(googleError) => setAuthError(googleError.message)}
+                  className="flex justify-center"
+                />
               )}
               {GOOGLE_AUTH_ENABLED && (
                 <div className="my-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-stone-400">
