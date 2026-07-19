@@ -288,3 +288,39 @@ def test_metro_from_area_rollup():
     assert metro_from_area("Daytona Beach") == "Daytona Beach"
     assert metro_from_area(None) == "Unknown"
     assert metro_from_area("Unknown") == "Unknown"
+
+
+def test_sibling_location_menu_pages_filtered_by_their_own_text():
+    # Domu: /eemenu (Orlando, this record) vs /jaxmenu (Jacksonville) —
+    # initialism slugs carry no street evidence, but the pages say where
+    # they are.
+    from location_filter import filter_location_pages
+
+    address = "3201 Corrine Dr Ste 100, Orlando, FL 32803, USA"
+    ee = "DOMU East End Market\nOrlando dining\nOrlando FL\nRamen $16\nOrlando love\nOrlando"
+    jax = "DOMU Jacksonville\nJacksonville FL\nRamen $17\nOrlando (footer)"
+    pages = [
+        ("https://x.squarespace.com/eemenu", ee),
+        ("https://x.squarespace.com/eemenu#structured-menu", ee),
+        ("https://x.squarespace.com/jaxmenu", jax),
+    ]
+    kept = filter_location_pages(pages, address)
+    assert [u for u, _ in kept] == [
+        "https://x.squarespace.com/eemenu",
+        "https://x.squarespace.com/eemenu#structured-menu",
+    ]
+
+    # Section-slug siblings (dinner-menu/drinks-menu) are menu SECTIONS of
+    # one location: never dropped even when only one mentions the city.
+    sections = [
+        ("https://x.com/dinner-menu", "Orlando Orlando Orlando steak $30"),
+        ("https://x.com/drinks-menu", "Negroni $14\nMartini $15"),
+    ]
+    assert filter_location_pages(sections, address) == sections
+
+    # No page anchors the group to the record's city: keep everything.
+    vague = [
+        ("https://x.com/eemenu", "Ramen $16"),
+        ("https://x.com/jaxmenu", "Ramen $17"),
+    ]
+    assert filter_location_pages(vague, address) == vague

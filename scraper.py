@@ -36,7 +36,11 @@ import httpx
 from bs4 import BeautifulSoup
 
 from headless import RenderedSession, is_available
-from location_filter import LocationUrlFilter, filter_location_urls
+from location_filter import (
+    LocationUrlFilter,
+    filter_location_pages,
+    filter_location_urls,
+)
 from menu_score import MENU_THRESHOLD, score_menu_text
 from structured_menu import extract_structured_menu_text
 
@@ -1645,7 +1649,10 @@ def _filter_pages_by_location(
         return pages
     urls = list(dict.fromkeys(page_url for page_url, _ in pages))
     kept = set(filter_location_urls(urls, address))
-    return [(page_url, text) for page_url, text in pages if page_url in kept]
+    pages = [(page_url, text) for page_url, text in pages if page_url in kept]
+    # URL slugs without street evidence (Domu's /eemenu vs /jaxmenu) never
+    # anchor the URL filter — the pages' own text decides those.
+    return filter_location_pages(pages, address)
 
 
 def scrape_menu_text(

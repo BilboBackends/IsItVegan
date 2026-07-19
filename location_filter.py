@@ -377,3 +377,74 @@ def area_from_address(address: str | None) -> str:
         if i > 0 and re.fullmatch(r"[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?", part):
             return parts[i - 1]
     return "Unknown"
+
+
+def _sibling_menu_slug_prefix(url: str) -> tuple[str, str] | None:
+    """(parent_path, prefix) for location-variant menu slugs, else None.
+
+    Domu publishes /eemenu, /dpmenu, /jaxmenu — sibling slugs whose prefix
+    names a LOCATION, not a menu section. Section slugs (dinner-menu,
+    drinks-menu) return None so multi-section menus are never touched.
+    """
+    path = urlparse(url.split("#")[0]).path.rstrip("/")
+    if "/" not in path:
+        return None
+    parent, _, slug = path.rpartition("/")
+    slug = slug.lower()
+    for word in ("menus", "menu"):
+        if slug.endswith(word) and slug != word:
+            prefix = slug[: -len(word)].strip("-_")
+            if prefix and prefix not in _MENU_SECTION_WORDS:
+                return parent, prefix
+    return None
+
+
+def filter_location_pages(
+    pages: list[tuple[str, str]], address: str | None
+) -> list[tuple[str, str]]:
+    """Drop sibling location-menu PAGES whose text belongs to another city.
+
+    The URL filter can't anchor on initialism slugs (eemenu/jaxmenu carry no
+    street evidence) — but the pages themselves say where they are: Domu's
+    Jacksonville menu names Jacksonville seven times and this record's city
+    once. Within a sibling group, once some page clearly matches the
+    record's city (>= 2 mentions), siblings with less than half that many
+    mentions are foreign and dropped. No qualifying group, no clear match,
+    or no address: everything is kept.
+    """
+    if not pages or not address:
+        return pages
+    city = area_from_address(address)
+    if not city or city == "Unknown":
+        return pages
+    groups: dict[str, list[str]] = {}
+    for page_url, _text in pages:
+        sibling = _sibling_menu_slug_prefix(page_url)
+        if sibling:
+            groups.setdefault(sibling[0], []).append(page_url)
+    city_re = re.compile(re.escape(city), re.I)
+    drop: set[str] = set()
+    for _parent, urls in groups.items():
+        distinct = {u.split("#")[0] for u in urls}
+        if len(distinct) < 2:
+            continue
+        counts = {
+            base: max(
+                (len(city_re.findall(text)) for page_url, text in pages
+                 if page_url.split("#")[0] == base),
+                default=0,
+            )
+            for base in distinct
+        }
+        best = max(counts.values())
+        if best < 2:
+            continue  # nothing anchors this group to the record's city
+        for base, count in counts.items():
+            if count * 2 < best:
+                drop.add(base)
+    if not drop:
+        return pages
+    return [
+        (page_url, text) for page_url, text in pages
+        if page_url.split("#")[0] not in drop
+    ]
