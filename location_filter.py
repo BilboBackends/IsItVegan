@@ -402,46 +402,67 @@ def _sibling_menu_slug_prefix(url: str) -> tuple[str, str] | None:
 def filter_location_pages(
     pages: list[tuple[str, str]], address: str | None
 ) -> list[tuple[str, str]]:
-    """Drop sibling location-menu PAGES whose text belongs to another city.
+    """Drop sibling location-menu PAGES whose text belongs to another spot.
 
-    The URL filter can't anchor on initialism slugs (eemenu/jaxmenu carry no
-    street evidence) — but the pages themselves say where they are: Domu's
-    Jacksonville menu names Jacksonville seven times and this record's city
-    once. Within a sibling group, once some page clearly matches the
-    record's city (>= 2 mentions), siblings with less than half that many
-    mentions are foreign and dropped. No qualifying group, no clear match,
-    or no address: everything is kept.
+    The URL filter can't anchor on initialism slugs (eemenu/dpmenu/jaxmenu
+    carry no street evidence) — but the pages themselves say where they
+    are: Domu's East End page names East End seven times, the Dr. Phillips
+    page four-of-those, the Jacksonville page mostly Jacksonville. Within
+    a sibling group, the most specific anchor level that clearly matches
+    some page (>= 2 hits) decides: pre-city address tokens separate two
+    same-city locations, the city separates cities, and siblings with
+    under half the best page's hits are foreign. No qualifying group, no
+    clear match, or no address: everything is kept.
     """
     if not pages or not address:
         return pages
+    # Two anchor levels, most specific first: distinctive tokens from the
+    # address segments BEFORE the city ("East End Market", "3201 Corrine
+    # Dr") separate two same-city locations; the city separates cities.
+    # A level is used only when some sibling matches it clearly (>= 2).
     city = area_from_address(address)
     if not city or city == "Unknown":
         return pages
+    parts = [part.strip() for part in address.split(",") if part.strip()]
+    pre_city_tokens: set[str] = set()
+    if city in parts:
+        for part in parts[: parts.index(city)]:
+            for token in re.findall(r"[a-z0-9']+", part.lower()):
+                if len(token) > 2 and token not in _GENERIC_ADDRESS_WORDS:
+                    pre_city_tokens.add(token)
+    levels = []
+    if pre_city_tokens:
+        levels.append([re.compile(r"\b" + re.escape(t) + r"\b", re.I)
+                       for t in pre_city_tokens])
+    levels.append([re.compile(re.escape(city), re.I)])
+
     groups: dict[str, list[str]] = {}
     for page_url, _text in pages:
         sibling = _sibling_menu_slug_prefix(page_url)
         if sibling:
             groups.setdefault(sibling[0], []).append(page_url)
-    city_re = re.compile(re.escape(city), re.I)
     drop: set[str] = set()
     for _parent, urls in groups.items():
         distinct = {u.split("#")[0] for u in urls}
         if len(distinct) < 2:
             continue
-        counts = {
-            base: max(
-                (len(city_re.findall(text)) for page_url, text in pages
-                 if page_url.split("#")[0] == base),
-                default=0,
-            )
-            for base in distinct
-        }
-        best = max(counts.values())
-        if best < 2:
-            continue  # nothing anchors this group to the record's city
-        for base, count in counts.items():
-            if count * 2 < best:
-                drop.add(base)
+        for regexes in levels:
+            counts = {
+                base: max(
+                    (sum(len(rx.findall(text)) for rx in regexes)
+                     for page_url, text in pages
+                     if page_url.split("#")[0] == base),
+                    default=0,
+                )
+                for base in distinct
+            }
+            best = max(counts.values())
+            if best < 2:
+                continue  # this level doesn't anchor the group; try next
+            for base, count in counts.items():
+                if count * 2 < best:
+                    drop.add(base)
+            break
     if not drop:
         return pages
     return [

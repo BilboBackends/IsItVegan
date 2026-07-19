@@ -324,3 +324,20 @@ def test_sibling_location_menu_pages_filtered_by_their_own_text():
         ("https://x.com/jaxmenu", "Ramen $17"),
     ]
     assert filter_location_pages(vague, address) == vague
+
+
+def test_same_city_sibling_locations_separated_by_pre_city_tokens():
+    # Domu again: Dr. Phillips is ALSO Orlando, so the city level can't
+    # separate it from the East End record — the address's pre-city
+    # segments ("East End Market") can.
+    from location_filter import filter_location_pages
+
+    address = "East End Market, 3201 Corrine Dr Ste 100, Orlando, FL 32803, USA"
+    pages = [
+        ("https://x.com/eemenu", "East End " * 7 + " Orlando " * 4),
+        ("https://x.com/dpmenu",
+         "Dr. Phillips " * 4 + "East End " * 3 + " Orlando " * 4),
+        ("https://x.com/jaxmenu", "Jacksonville " * 7 + " Orlando"),
+    ]
+    kept = filter_location_pages(pages, address)
+    assert [u for u, _ in kept] == ["https://x.com/eemenu"]
