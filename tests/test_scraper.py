@@ -1011,3 +1011,32 @@ def test_learned_route_on_location_shell_forces_rediscovery():
         "https://locations.qdoba.com/us/fl/cape-coral/537",
         context, timeout=5.0, use_headless=False,
     ) is None
+
+
+def test_server_error_pages_are_never_menu_candidates():
+    # Domu's custom domain 500s every menu path with legacy-host CGI
+    # boilerplate; its chrome scored 0.225 and polluted the crawl.
+    error_html = (
+        "<html><body><h1>Internal Server Error</h1><p>The server "
+        "encountered an internal error or misconfiguration and was unable "
+        "to complete your request.</p></body></html>"
+    )
+    assert scraper._pages_from_html("https://x.com/menu", error_html) == []
+    # A real page mentioning an error in prose is not boilerplate.
+    real = "<html><body>" + "Falafel $9 " * 300 + "</body></html>"
+    assert scraper._pages_from_html("https://x.com/menu", real) != []
+
+
+def test_cross_domain_canonical_yields_twin_root():
+    html = '<link rel="canonical" href="https://domufl.squarespace.com">'
+    assert scraper._canonical_cross_domain_root(
+        html, "https://www.domufl.com/"
+    ) == "https://domufl.squarespace.com"
+    # Same-host canonicals and relative hrefs are not a twin signal.
+    assert scraper._canonical_cross_domain_root(
+        '<link rel="canonical" href="https://www.domufl.com/">',
+        "https://www.domufl.com/",
+    ) is None
+    assert scraper._canonical_cross_domain_root(
+        '<link rel="canonical" href="/here">', "https://www.domufl.com/"
+    ) is None

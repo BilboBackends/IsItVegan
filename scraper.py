@@ -277,6 +277,47 @@ def _extract_text(html: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+# Hosting boilerplate for a page that errored server-side. Domu's custom
+# domain 500s on every menu path (returning a legacy host's CGI error page)
+# while its Squarespace canonical serves them fine — an error page must
+# never become a menu candidate, however its chrome scores.
+_SERVER_ERROR_RE = re.compile(
+    r"internal server error|bad gateway|service unavailable"
+    r"|encountered an internal error", re.I,
+)
+
+
+def _is_server_error_page(text: str) -> bool:
+    return len(text) < 1_500 and bool(_SERVER_ERROR_RE.search(text))
+
+
+_CANONICAL_RE = re.compile(
+    r'<link[^>]+rel=["\']canonical["\'][^>]*href=["\']([^"\']+)["\']'
+    r'|<link[^>]+href=["\']([^"\']+)["\'][^>]*rel=["\']canonical["\']',
+    re.I,
+)
+
+
+def _canonical_cross_domain_root(html: str, page_url: str) -> str | None:
+    """The canonical origin when the page says it lives on ANOTHER host.
+
+    Site builders keep serving the canonical domain after a custom-domain
+    mapping half-breaks (Domu: www 500s every subpage, the declared
+    domufl.squarespace.com twin works). Same-host canonicals return None.
+    """
+    match = _CANONICAL_RE.search(html or "")
+    if not match:
+        return None
+    href = (match.group(1) or match.group(2) or "").strip()
+    if not href.startswith("http"):
+        return None
+    canonical = urlparse(href)
+    page = urlparse(page_url)
+    if not canonical.netloc or canonical.netloc.lower() == page.netloc.lower():
+        return None
+    return f"{canonical.scheme}://{canonical.netloc}"
+
+
 def _pages_from_html(page_url: str, html: str) -> list[tuple[str, str]]:
     """One fetched page can yield TWO menu candidates: its visible DOM text,
     and — when the page embeds a structured menu (schema.org JSON-LD or
@@ -286,7 +327,10 @@ def _pages_from_html(page_url: str, html: str) -> list[tuple[str, str]]:
     virtualized lists) while shipping ALL of it as data; the structured
     pseudo-page is how those menus stop being "1174 chars, 15 items".
     """
-    pages = [(page_url, _extract_text(html))]
+    text = _extract_text(html)
+    if _is_server_error_page(text):
+        return []  # a 5xx boilerplate page is a failed fetch, not a candidate
+    pages = [(page_url, text)]
     try:
         structured = extract_structured_menu_text(html)
     except Exception:
@@ -1163,6 +1207,16 @@ def _collect_http(
         if apex_menu and _norm_url(apex_menu) not in seen:
             seen.add(_norm_url(apex_menu))
             queue.append((apex_menu, 1))
+        # Half-broken custom domains: the declared canonical origin serves
+        # the same paths that error here (Domu's www 500s every menu page;
+        # the Squarespace canonical works). Queue each menu path's twin.
+        canonical_root = _canonical_cross_domain_root(landing.html, landing_url)
+        if canonical_root:
+            for link in [*menu_links, conventional]:
+                twin = urljoin(canonical_root, urlparse(link).path or "/")
+                if _norm_url(twin) not in seen:
+                    seen.add(_norm_url(twin))
+                    queue.append((twin, 1))
         fetches = 0
         while queue and fetches < _MAX_HTTP_FETCHES:
             link, hop = queue.pop(0)
@@ -1263,8 +1317,21 @@ def _collect_headless(
             if any(items >= 8 and categories >= 2 for items, categories in structured_counts):
                 return pages, third_party
             seeded = only_ours([u for u in (seed_urls or []) if not _is_pdf_url(u)])
+            # Same canonical-twin probe as the HTTP path: rendered nav links
+            # still resolve against the broken custom domain.
+            canonical_root = _canonical_cross_domain_root(landing_html, url)
+            twins = (
+                [
+                    urljoin(canonical_root, urlparse(lk).path or "/")
+                    for lk in menu_links
+                ]
+                if canonical_root
+                else []
+            )
+            # Twins first: when a canonical twin exists, the local copies of
+            # those same paths are the ones that are likely broken.
             queue: list[tuple[str, int]] = [
-                (lk, 1) for lk in menu_links + tp_urls[:2] + seeded
+                (lk, 1) for lk in twins + menu_links + tp_urls[:2] + seeded
             ]
             seen = {_norm(url)} | {_norm(lk) for lk, _ in queue}
             renders = 0
@@ -1283,6 +1350,8 @@ def _collect_headless(
                     if pdf_url not in pdf_urls:
                         pdf_urls.append(pdf_url)
                 page_candidates = _pages_from_html(link, page_html)
+                if not page_candidates:
+                    continue  # server-error boilerplate: nothing to keep/follow
                 pages.extend(page_candidates)
                 viguest_categories = _find_viguest_category_urls(page_html, link)
                 if viguest_categories:
@@ -1753,6 +1822,14 @@ def _finish(
     every page that independently clears the threshold is kept and combined —
     keeping only the best page silently dropped the rest of the menu.
     """
+    if not pages:
+        # Every fetch produced server-error boilerplate (or nothing).
+        return ScrapeResult(
+            url=url, ok=False, status_code=status_code,
+            error="Every fetched page was a server error page.",
+            crawl_method=crawl_method,
+            used_learned_context=used_learned_context,
+        )
     # Canonical pseudo-pages (the Square catalog) can be emitted once per
     # fetched page of the same site — keep the first of each URL.
     deduped: list[tuple[str, str]] = []
