@@ -30,7 +30,7 @@ import html as html_lib
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -180,7 +180,31 @@ _SKIP_HINTS = (
     "facebook.", "instagram.", "twitter.", "yelp.", "tel:", "mailto:",
     "maps.app.goo.gl", "google.com/maps", "forms.gle", "youtube.", "tiktok.",
     "gift", "voucher", "donate", "merch", "careers", "hiring",
+    # Retail storefront platform ("Visit Our Market" bean/merch shops). Food
+    # menus never live there; CFS Coffee's shop scored 0.79 as a "menu".
+    "myshopify.",
 )
+
+# URL tokens marking a page/PDF as an auxiliary FOOD DOCUMENT — catering
+# trays, allergen matrices, nutrition guides. These score menu-like but
+# their items/prices are not the dine-in menu (BENTO: catering-PDF tray
+# prices like "Japanese Curry $105" became dish prices). Token match, not
+# substring: George's Cafe's domain (georgescafeandcatering.com) and
+# Subway's /menunutrition/ page must not trigger.
+_AUX_DOC_TOKENS = frozenset(
+    {"catering", "caterings", "allergen", "allergens", "allergy",
+     "nutrition", "nutritional", "ezcater"}
+)
+
+
+def _is_auxiliary_doc_url(url: str) -> bool:
+    parsed = urlparse(url)
+    blob = unquote(
+        f"{parsed.netloc} {parsed.path} {parsed.query} {parsed.fragment}"
+    ).lower()
+    return any(
+        token in _AUX_DOC_TOKENS for token in re.split(r"[^0-9a-z]+", blob)
+    )
 
 # Third-party menu/ordering hosts. If the menu link points here, the page is
 # almost always JS-rendered — we note it so the failure is clearly a
@@ -1863,6 +1887,38 @@ def _finish(
         }
         for page_url, text, score in scored
     ]
+
+    # Auxiliary food documents (catering/allergen/nutrition, incl. ezcater
+    # pages) are only acceptable when they're ALL we have — a restaurant
+    # whose sole food evidence is its catering platform keeps it. The moment
+    # any regular page is a real menu, the auxiliary docs are dropped so
+    # tray prices and allergen matrices can't leak into dishes (BENTO).
+    if any(
+        score.is_menu
+        for page_url, _text, score in scored
+        if not _is_auxiliary_doc_url(page_url)
+    ):
+        dropped_aux = [
+            page_url
+            for page_url, _text, _score in scored
+            if _is_auxiliary_doc_url(page_url)
+        ]
+        if dropped_aux:
+            scored = [
+                entry for entry in scored
+                if not _is_auxiliary_doc_url(entry[0])
+            ]
+            diagnostics.extend(
+                {
+                    "stage": "aux-doc",
+                    "url": page_url,
+                    "decision": "drop",
+                    "reason": "catering/allergen/nutrition document "
+                    "alongside a real menu",
+                }
+                for page_url in dropped_aux
+            )
+
     best_url, best_text, best = max(scored, key=lambda t: t[2].score)
 
     if len(best_text) < _MIN_USEFUL_CHARS:

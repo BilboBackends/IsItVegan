@@ -1040,3 +1040,61 @@ def test_cross_domain_canonical_yields_twin_root():
     assert scraper._canonical_cross_domain_root(
         '<link rel="canonical" href="/here">', "https://www.domufl.com/"
     ) is None
+
+
+def test_auxiliary_docs_dropped_only_when_a_real_menu_exists():
+    # BENTO: the catering-events PDF's tray prices ("Japanese Curry $105")
+    # and the allergen guide were stored next to the real /menu and leaked
+    # into dishes. With a real menu present the auxiliary docs drop...
+    menu = "\n".join(f"Bowl {i} with tofu and rice ${i}.95" for i in range(1, 25))
+    catering = "\n".join(f"Party Tray {i} serves 10 ${i}5.00" for i in range(1, 25))
+    result = scraper._finish(
+        "https://x.example/",
+        [
+            ("https://x.example/menu", menu),
+            ("https://x.example/catering/events_menu.pdf", catering),
+            ("https://x.example/catering/Allergen%20Guide.pdf", catering),
+        ],
+        [],
+        status_code=200,
+    )
+    assert result.ok
+    assert [u for u, _ in result.pages] == ["https://x.example/menu"]
+
+    # ...but a restaurant whose ONLY food evidence is catering keeps it
+    # (Krystal orders exclusively through ezcater).
+    only_catering = scraper._finish(
+        "https://x.example/",
+        [("https://ezcater.com/catering/pvt/krystal", catering)],
+        [],
+        status_code=200,
+    )
+    assert only_catering.ok
+    assert only_catering.pages
+
+
+def test_aux_doc_url_matches_tokens_not_substrings():
+    # George's Cafe's DOMAIN contains "catering"; Subway's real menu lives
+    # at /menunutrition/. Neither may be treated as an auxiliary document.
+    assert not scraper._is_auxiliary_doc_url(
+        "http://www.georgescafeandcatering.com/menu"
+    )
+    assert not scraper._is_auxiliary_doc_url(
+        "https://www.subway.com/en-us/menunutrition/menu"
+    )
+    assert scraper._is_auxiliary_doc_url("https://x.example/catering")
+    assert scraper._is_auxiliary_doc_url(
+        "https://x.example/files/Allergen%20Guide%20Feb%202026.pdf"
+    )
+    assert scraper._is_auxiliary_doc_url("https://www.ezcater.com/brand/pvt/x")
+
+
+def test_retail_storefront_links_are_skipped():
+    # CFS Coffee's "Visit Our Market" myshopify bean store scored 0.79 as a
+    # "menu" and was stored as one. Retail platforms are never menu hosts.
+    assert not scraper._looks_external_menu_like(
+        "Order Online", "https://cfs-coffee.myshopify.com/"
+    )
+    assert not scraper._looks_menu_like(
+        "Visit Our Market", "https://cfs-coffee.myshopify.com/"
+    )

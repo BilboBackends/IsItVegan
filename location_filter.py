@@ -157,24 +157,95 @@ def matches_location(url: str, tokens: AddressTokens) -> bool:
     return bool(tokens.city_fused and tokens.city_fused in present)
 
 
-def looks_location_specific(url: str) -> bool:
-    """True when the URL slug embeds a street address or a location route.
-
-    "Address-like" = a street number (1–5 digits, no leading zero) with a
-    street suffix within the next few tokens (3990-curry-ford-road). Date
-    paths (/2026/05/), leading-zero segments, and random ids (item-12-wings,
-    uuids) don't qualify.
-    """
+def _bears_street_address(url: str) -> bool:
+    """URL slug spells out a street address: a street number (1–5 digits, no
+    leading zero) with a road suffix within the next few tokens
+    (3990-curry-ford-road). Date paths (/2026/05/), leading-zero segments,
+    and random ids (item-12-wings, uuids) don't qualify."""
     tokens = _url_tokens(url)
     for i, tok in enumerate(tokens):
-        if tok in _LOCATION_SEGMENTS and i + 1 < len(tokens):
-            return True
         if not tok.isdigit() or len(tok) > 5 or tok.startswith("0"):
             continue
         nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
         if nxt.isdigit():  # /2026/05/ upload-date paths, not addresses
             continue
         if any(t in _STREET_SUFFIXES for t in tokens[i + 1 : i + 6]):
+            return True
+    return False
+
+
+def looks_location_specific(url: str) -> bool:
+    """True when the URL slug embeds a street address or a location route."""
+    tokens = _url_tokens(url)
+    for i, tok in enumerate(tokens):
+        if tok in _LOCATION_SEGMENTS and i + 1 < len(tokens):
+            return True
+    return _bears_street_address(url)
+
+
+def _foreign_address_drops(urls: list[str], tokens: AddressTokens) -> set[str]:
+    """URLs carrying location evidence for a DIFFERENT location — droppable
+    even when no candidate anchors OUR address. (CFS Coffee: the only
+    ordering links on the brand hub were other cities' toasttab slugs;
+    "no anchor, keep all" stored two wrong menus.)
+
+    Two evidence forms qualify:
+    - a spelled-out street address (number + road suffix) in any URL;
+    - a KNOWN city name in an ORDERING-PLATFORM slug — those slugs are
+      generated from the location (cfs-coffee-maitland-trelago-way), unlike
+      brand names on the restaurant's own domain ("Winter Park Pie Company"
+      in Maitland), which never trigger this.
+
+    /locations/<nickname> routes stay protected by the anchor rule, and the
+    street/city rescue inside matches_location keeps our own slug safe even
+    when its street name is formatted differently."""
+    if not tokens:
+        return set()
+    drops: set[str] = set()
+    for u in urls:
+        if matches_location(u, tokens):
+            continue
+        if _bears_street_address(u) or (
+            _is_ordering_host(u) and _slug_names_known_city(u)
+        ):
+            drops.add(u)
+    return drops
+
+
+# Ordering platforms whose URL slugs are generated from the location name.
+# Mirrors the scraper's third-party menu hosts (kept here to avoid a
+# circular import; the slug-shape reasoning is a location concern anyway).
+_ORDERING_SLUG_HOSTS = (
+    "toasttab.com", "toast.site", "square.site", "squareup.com",
+    "clover.com", "cloveronline.com", "chownow.com", "menufy.com",
+    "slicelife.com", "getsauce.com", "mealkeyway.com", "popmenu.com",
+)
+
+
+def _is_ordering_host(url: str) -> bool:
+    host = (urlparse(url).netloc or "").lower()
+    return any(
+        host == h or host.endswith("." + h) for h in _ORDERING_SLUG_HOSTS
+    )
+
+
+def _slug_names_known_city(url: str) -> bool:
+    """True when the URL tokens contain a known-city name (contiguous words
+    or fused). matches_location has already had its chance to claim the URL
+    as ours before this is consulted."""
+    toks = _url_tokens(url)
+    tok_set = set(toks)
+    for seq in _KNOWN_CITY_SEQS:
+        if len(seq) == 1:
+            if seq[0] in tok_set:
+                return True
+            continue
+        if "".join(seq) in tok_set:  # fused form: /winterpark/
+            return True
+        if any(
+            tuple(toks[i : i + len(seq)]) == seq
+            for i in range(len(toks) - len(seq) + 1)
+        ):
             return True
     return False
 
@@ -285,6 +356,7 @@ class LocationUrlFilter:
         # itself), so compare against everything observed so far.
         pool = list(dict.fromkeys(self._observed + urls))
         drops = _sibling_variant_drops(pool, self._tokens)
+        drops |= _foreign_address_drops(urls, self._tokens)
         kept = [u for u in urls if u not in drops]
         if not self._anchored and any(
             strong_location_match(u, self._tokens) for u in kept
@@ -306,10 +378,12 @@ class LocationUrlFilter:
 def filter_location_urls(urls: list[str], address: str | None) -> list[str]:
     """Drop candidate URLs that belong to a DIFFERENT location of this brand.
 
-    Only acts when at least one candidate carries street-level proof of this
-    record's address — then location-specific candidates that don't match
-    this record at all are other locations' pages and are dropped. With no
-    anchor (shared menu, unmatchable slugs, no address on file) the list is
+    Mostly acts when at least one candidate carries street-level proof of
+    this record's address — then location-specific candidates that don't
+    match this record at all are other locations' pages and are dropped.
+    One drop works WITHOUT that anchor: a URL spelling out a full foreign
+    street address (see _foreign_address_drops). Otherwise, with no anchor
+    (shared menu, unmatchable slugs, no address on file) the list is
     returned unchanged.
     """
     if not urls or not address:
@@ -318,6 +392,7 @@ def filter_location_urls(urls: list[str], address: str | None) -> list[str]:
     if not tokens:
         return urls
     drops = _sibling_variant_drops(urls, tokens)
+    drops |= _foreign_address_drops(urls, tokens)
     urls = [u for u in urls if u not in drops]
     if not any(strong_location_match(u, tokens) for u in urls):
         return urls
@@ -345,6 +420,17 @@ _METRO_AREAS = {
         "lehigh acres", "estero", "bonita springs", "sanibel",
     },
 }
+
+
+# City names usable as foreign-location evidence in ordering-platform slugs.
+# "celebration" is excluded: it's an ordinary English word that appears in
+# bakery/party slugs far more often than it names the town.
+_KNOWN_CITY_SEQS: tuple[tuple[str, ...], ...] = tuple(
+    tuple(t for t in re.split(r"[^0-9a-z]+", city) if t)
+    for cities in _METRO_AREAS.values()
+    for city in cities
+    if city != "celebration"
+)
 
 
 def metro_from_area(area: str | None) -> str:

@@ -118,14 +118,17 @@ def test_other_location_record_keeps_its_own_pages():
 
 
 def test_safety_valve_shared_menu_untouched():
-    # No candidate names our address -> nothing is dropped, even though one
-    # URL looks address-like (we can't prove which page is ours).
+    # No candidate names our address: address-LESS URLs are all kept (we
+    # can't prove which is ours), but a URL spelling out a full FOREIGN
+    # street address is proof enough on its own and drops even unanchored —
+    # CFS Coffee stored two other cities' Toast menus under the old
+    # "no anchor, keep all" rule.
     urls = [
         "https://example.com/menu",
         "https://example.com/menu/dinner",
         "https://example.com/menu/other-town-99-main-st",
     ]
-    assert filter_location_urls(urls, MAITLAND_ADDR) == urls
+    assert filter_location_urls(urls, MAITLAND_ADDR) == urls[:2]
 
 
 def test_safety_valve_no_address():
@@ -160,10 +163,15 @@ def test_stateful_filter_anchors_across_batches():
     assert batch2 == ["https://example.com/pdfs/dessert-menu.pdf"]
 
 
-def test_stateful_filter_never_anchored_keeps_everything():
+def test_stateful_filter_never_anchored_keeps_addressless_urls():
     only_ours = LocationUrlFilter(MAITLAND_ADDR)
-    urls = ["https://example.com/menu/other-town-99-main-st"]
-    assert only_ours(urls) == urls
+    # Address-less URLs survive unanchored; a spelled-out foreign street
+    # address does not (the CFS class) — failing visibly beats storing
+    # another location's menu.
+    assert only_ours(["https://example.com/menu/nickname-page"]) == [
+        "https://example.com/menu/nickname-page"
+    ]
+    assert only_ours(["https://example.com/menu/other-town-99-main-st"]) == []
 
 
 # The exact PDF set the scraper stored for Anejo Cocina Winter Park (id 89):
@@ -341,3 +349,62 @@ def test_same_city_sibling_locations_separated_by_pre_city_tokens():
     ]
     kept = filter_location_pages(pages, address)
     assert [u for u, _ in kept] == ["https://x.com/eemenu"]
+
+
+def test_foreign_street_address_slugs_dropped_without_anchor():
+    # CFS Coffee: the Winter Park record's site only linked OTHER locations'
+    # Toast slugs (each spelling out a full street address). Nothing anchored
+    # our address, so "keep all" stored two wrong cities' menus. A spelled-out
+    # foreign street address is strong enough evidence to drop unanchored.
+    from location_filter import filter_location_urls
+
+    address = "140 N Park Ave, Winter Park, FL 32789, USA"
+    urls = [
+        "https://order.toasttab.com/online/cfs-downtown-orlando-54-west-church-street-150s",
+        "https://order.toasttab.com/online/cfs-dr-philips-7535-west-sand-lake-road",
+        "https://www.cfscoffee.com/menu",
+        "https://www.cfscoffee.com/all-day-breakfast",
+    ]
+    assert filter_location_urls(urls, address) == [
+        "https://www.cfscoffee.com/menu",
+        "https://www.cfscoffee.com/all-day-breakfast",
+    ]
+
+    # Our own slug survives via the street-number rescue even though the
+    # street name is formatted differently than the Places address.
+    ours = "https://order.toasttab.com/online/cfs-winter-park-140-north-park-avenue"
+    assert filter_location_urls(urls + [ours], address)[-1] == ours
+
+    # Nickname-only location routes carry no street evidence — the known
+    # limitation stays protected (never dropped without an anchor).
+    nicknames = [
+        "https://x.com/locations/college-park",
+        "https://x.com/menu",
+    ]
+    assert filter_location_urls(nicknames, address) == nicknames
+
+
+def test_ordering_slug_naming_another_known_city_dropped():
+    # CFS again: the Maitland Toast slug has NO street number
+    # ("...maitland-trelago-way-suite-500"), so street evidence can't drop it
+    # for the Winter Park record — but an ordering-platform slug naming a
+    # known city that isn't ours is location evidence all the same.
+    from location_filter import filter_location_urls
+
+    address = "430 W New England Ave, Winter Park, FL 32789, USA"
+    urls = [
+        "https://order.toasttab.com/online/cfs-coffee-maitland-trelago-way-suite-500",
+        "https://www.cfscoffee.com/menu",
+    ]
+    assert filter_location_urls(urls, address) == [
+        "https://www.cfscoffee.com/menu"
+    ]
+
+    # Our own city in the slug keeps it (the Maitland record's own page).
+    maitland = "701 Trelago Way #500, Maitland, FL 32751, USA"
+    assert filter_location_urls(urls, maitland) == urls
+
+    # A city inside a BRAND name on the restaurant's own domain is not
+    # location evidence (Winter Park Pie Company's Maitland outpost).
+    brand = ["https://winterparkpie.com/menu"]
+    assert filter_location_urls(brand, maitland) == brand
