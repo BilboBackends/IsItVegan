@@ -1821,20 +1821,59 @@ def scrape_menu_text(
         crawl_method="headless",
     )
     headless_result = _validate_completeness(headless_result)
-    # Prefer a real menu; when both attempts found one, keep whichever
-    # captured more of it (headless often finds sections HTTP can't see,
-    # but HTTP sometimes reaches PDF menus headless doesn't).
+    # Prefer a real menu; when both attempts found one, pick the better
+    # capture. Char count alone is a trap: a verbose marketing landing page
+    # (Wix/Squarespace nav + hero copy) can score just over the menu bar with
+    # ZERO prices yet out-length a lean rendered catalog that has the actual
+    # dishes (Goombah Pizzaiolo: HTTP 2589 chars / 0 prices / 0.50 vs headless
+    # 2041 chars / 74 prices / 0.78). Decide on menu SIGNAL first — a capture
+    # with real priced items beats a longer one without — and only fall back
+    # to char count when the two are similarly menu-like.
     if headless_result.ok and http_result and http_result.ok:
-        return (
-            headless_result
-            if headless_result.char_count > http_result.char_count
-            else http_result
-        )
+        return _pick_richer_menu(http_result, headless_result)
     if headless_result.ok:
         return headless_result
     if http_result and http_result.menu_score >= headless_result.menu_score:
         return http_result
     return headless_result
+
+
+# A capture needs at least this many priced items before its price count is
+# trusted as the deciding signal — one stray "$5 off" coupon on a marketing
+# page shouldn't outrank a genuine menu.
+_MEANINGFUL_PRICE_COUNT = 5
+
+
+def _pick_richer_menu(http_result: ScrapeResult, headless_result: ScrapeResult):
+    """Choose the capture that is more genuinely a menu.
+
+    Price count is the primary signal (a real menu lists priced items; a
+    marketing page that merely scored on section words does not). When one
+    capture has meaningfully more prices, it wins outright regardless of
+    length. Only when both are comparably priced does length break the tie —
+    headless often renders sections HTTP can't see, but HTTP sometimes reaches
+    PDF menus headless doesn't.
+    """
+    http_prices = score_menu_text(http_result.text).price_count
+    hl_prices = score_menu_text(headless_result.text).price_count
+    leader, trailer = (
+        (headless_result, http_result)
+        if hl_prices >= http_prices
+        else (http_result, headless_result)
+    )
+    lead_prices = max(http_prices, hl_prices)
+    trail_prices = min(http_prices, hl_prices)
+    # Decisive price gap: the richer-priced capture wins even if shorter.
+    if lead_prices >= _MEANINGFUL_PRICE_COUNT and lead_prices >= 2 * max(
+        trail_prices, 1
+    ):
+        return leader
+    # Otherwise comparably menu-like — keep whichever captured more text.
+    return (
+        headless_result
+        if headless_result.char_count > http_result.char_count
+        else http_result
+    )
 
 
 def _finish(

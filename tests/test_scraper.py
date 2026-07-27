@@ -1098,3 +1098,53 @@ def test_retail_storefront_links_are_skipped():
     assert not scraper._looks_menu_like(
         "Visit Our Market", "https://cfs-coffee.myshopify.com/"
     )
+
+
+def test_richer_menu_prefers_prices_over_length():
+    # Goombah Pizzaiolo: the HTTP landing is verbose Wix chrome that scored
+    # just over the menu bar with ZERO prices, and it out-lengths the lean
+    # headless Square catalog that carries the real priced dishes. Length
+    # must not win over genuine menu signal.
+    # Long marketing copy that scores over the menu bar on SECTION words but
+    # has no priced items (a real Wix/Squarespace landing page).
+    marketing = (
+        "Appetizers Salads Entrees Pizza Pasta Desserts Beverages "
+        "Our fresh dough is made daily. Family recipes. Wood fired. " * 25
+    )
+    real_menu = "\n".join(
+        f"{n}  ${p}.00"
+        for n, p in [
+            ("Margherita Pizza", 20), ("Pepperoni Pizza", 22), ("5 Wings", 8),
+            ("10 Wings", 14), ("Garlic Knots", 6), ("Caesar Salad", 9),
+            ("House Salad", 8), ("Cannoli", 5), ("Tiramisu", 7),
+            ("Meatball Sub", 12), ("Calzone", 15), ("Stromboli", 16),
+        ] * 2
+    )
+    http = scraper._finish(
+        "https://x.example/", [("https://x.example/", marketing)], [],
+        status_code=200, crawl_method="http",
+    )
+    headless = scraper._finish(
+        "https://x.example/", [("https://x.example/menu", real_menu)], [],
+        status_code=200, crawl_method="headless",
+    )
+    assert http.ok and headless.ok  # both cleared the menu bar
+    assert http.char_count > headless.char_count  # the trap: HTTP is longer
+    chosen = scraper._pick_richer_menu(http, headless)
+    assert chosen is headless  # ...but the priced capture wins
+
+
+def test_richer_menu_keeps_longer_when_prices_comparable():
+    # When both captures are genuinely priced menus, length still wins so
+    # headless section-discovery isn't discarded (the original behavior).
+    long_menu = "\n".join(f"Dish {i} ${i}.50" for i in range(1, 30))
+    short_menu = "\n".join(f"Dish {i} ${i}.50" for i in range(1, 15))
+    http = scraper._finish(
+        "https://x.example/", [("https://x.example/menu", short_menu)], [],
+        status_code=200, crawl_method="http",
+    )
+    headless = scraper._finish(
+        "https://x.example/", [("https://x.example/menu", long_menu)], [],
+        status_code=200, crawl_method="headless",
+    )
+    assert scraper._pick_richer_menu(http, headless) is headless
