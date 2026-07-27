@@ -554,6 +554,42 @@ def result_from_data(
                     + f"[{baked_cheese} is baked in — not vegan unless the "
                     "menu offers vegan cheese]"
                 )
+        # Self-contradiction guard: the model sometimes returns a plant-based
+        # verdict on a dish it ALSO tagged dairy_status=contains (Cheesecake
+        # Factory "Barbeque Ranch Chicken Salad": likely_vegan yet
+        # dairy_status=contains, its own reasoning noting the ranch is dairy).
+        # Dairy the model itself asserts is present overrides a vegan/
+        # likely_vegan verdict — a dish that contains dairy is not vegan. When
+        # the dairy is a removable component (a dressing/sauce, not the
+        # namesake) the dish is adaptable rather than flatly not_vegan. Vegan
+        # venues are exempt: their "contains" tags are transcription noise on
+        # plant substitutes. (dairy_status is the only animal attribute the
+        # primary classifier emits; egg/soy/etc. are a later enrichment pass.)
+        # A menu that calls the dish vegan/plant-based overrides a stray
+        # dairy_status=contains tag ("Vegan Brekkie Sandwich" with plant
+        # cheese the model mis-tagged as dairy) — trust the menu's own label
+        # and leave the verdict, exactly as the vegan-name upgrade above did.
+        menu_declares_vegan = bool(
+            _VEGAN_NAME_RE.search(menu_words)
+            or re.search(r"\bplant[- ]?based\b", menu_words, re.IGNORECASE)
+        )
+        if (
+            not fully_vegan_venue
+            and not menu_declares_vegan
+            and verdict in ("vegan", "likely_vegan")
+            and dish.get("dairy_status") == "contains"
+        ):
+            if defining_animal_ingredient(name, menu_words):
+                verdict, confidence = "not_vegan", max(confidence, 0.85)
+                note = "the dairy is definitional here"
+            else:
+                verdict, confidence = "vegan_adaptable", max(confidence, 0.6)
+                note = "hold the dairy component to make it vegan"
+            reasoning = (
+                (reasoning + " " if reasoning else "")
+                + f"[model tagged dairy_status=contains but a plant verdict — "
+                f"{note}]"
+            )
         category = dish.get("category")
         if category not in ("food", "drink", "dessert"):
             category = "food"
