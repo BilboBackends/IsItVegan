@@ -1876,6 +1876,52 @@ def _pick_richer_menu(http_result: ScrapeResult, headless_result: ScrapeResult):
     )
 
 
+# A candidate page is a redundant copy of an already-kept one when at least
+# this fraction of its dish-like lines also appear (case/space-insensitive) in
+# the kept page. High bar: genuinely different menu SECTIONS (lunch vs dinner)
+# share few exact item lines, so they're preserved; a reformatted whole-menu
+# copy repeats almost everything.
+_MENU_OVERLAP_THRESHOLD = 0.7
+# Below this many shared lines we don't judge overlap — two short snippets can
+# coincide by chance (shared "Coke $3" lines) without being the same menu.
+_MENU_OVERLAP_MIN_LINES = 8
+
+
+def _dish_line_keys(text: str) -> set[str]:
+    """Dish-NAME stems for cross-page redundancy comparison.
+
+    Only the leading name is kept, not the trailing price/description: two
+    sources reformat the same dish as "AHI TUNA $19.08" and
+    "Ahi Tuna — fresh sashimi $17.00", which must compare equal on "ahi tuna".
+    The name is the run before the first price, em/en dash, or double-space
+    separator; trailing filler words don't dilute the match.
+    """
+    keys: set[str] = set()
+    for raw in text.splitlines():
+        line = re.sub(r"[ \t]+", " ", raw).strip()
+        if not line or line.startswith("[page:") or line.startswith("[menu image"):
+            continue
+        # Cut at the first price or common name/description separator.
+        name = re.split(r"[$€£]|\s[—–\-]\s|\s{2,}|\s\.{2,}", line, maxsplit=1)[0]
+        stem = name.strip(" -–—|.·•\t").casefold()
+        # Drop pure numbers and keep multi-word or clearly-lexical names only.
+        if len(stem) >= 4 and re.search(r"[a-z]", stem) and not stem.isdigit():
+            keys.add(stem)
+    return keys
+
+
+def _menu_lines_overlap(text: str, kept_text: str) -> bool:
+    """True when `text` is mostly a reformatted duplicate of `kept_text`."""
+    keys = _dish_line_keys(text)
+    if len(keys) < _MENU_OVERLAP_MIN_LINES:
+        return False
+    kept_keys = _dish_line_keys(kept_text)
+    if not kept_keys:
+        return False
+    shared = len(keys & kept_keys)
+    return shared / len(keys) >= _MENU_OVERLAP_THRESHOLD
+
+
 def _finish(
     url: str,
     pages: list[tuple[str, str]],
@@ -2053,6 +2099,17 @@ def _finish(
         ):
             continue
         if any(text in kept_text or kept_text in text for _, kept_text in kept):
+            continue
+        # Same menu from a second source: an ordering platform not on the
+        # known-host list (foodbooking, order.online, beyondmenu) or a second
+        # same-domain page reformats the SAME dishes — ALL CAPS on one, Title
+        # Case on the other — so substring dedup above misses it and both get
+        # stored, producing case-variant duplicate dishes downstream (Captain
+        # Hook's: 48 dupes from a Toast + Foodbooking pair). Drop a page whose
+        # dish-line set mostly repeats an already-kept (higher-scored) page.
+        if any(
+            _menu_lines_overlap(text, kept_text) for _, kept_text in kept
+        ):
             continue
         if kept and total + len(text) > _MAX_COMBINED_CHARS:
             continue

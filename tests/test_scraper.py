@@ -1148,3 +1148,54 @@ def test_richer_menu_keeps_longer_when_prices_comparable():
         status_code=200, crawl_method="headless",
     )
     assert scraper._pick_richer_menu(http, headless) is headless
+
+
+def test_reformatted_duplicate_menu_source_dropped():
+    # Same menu from a second source (a Foodbooking/order.online copy of a
+    # Toast catalog), one ALL CAPS and one Title Case with different price
+    # formatting — substring dedup misses it, so both used to be stored and
+    # produced case-variant duplicate dishes (Captain Hook's, Jason's Deli).
+    items = [
+        ("California Roll", 8), ("Avocado Roll", 7), ("Spicy Tuna Roll", 12),
+        ("Salmon Nigiri", 6), ("Dragon Roll", 15), ("Miso Soup", 4),
+        ("Edamame", 5), ("Gyoza Dumplings", 7), ("Shrimp Tempura", 11),
+        ("Chicken Teriyaki Bowl", 14), ("Rainbow Roll", 16),
+        ("Spider Roll", 13), ("Unagi Nigiri", 8), ("Seaweed Salad", 6),
+    ]
+    primary = "\n".join(
+        f"{n}  ${p}.00 — fresh made to order with premium ingredients"
+        for n, p in items
+    )
+    reformatted = "\n".join(  # same dishes, ALL CAPS, price after a dash
+        f"{n.upper()} — freshly prepared daily ${p + 1}.00" for n, p in items
+    )
+    other_section = "\n".join(
+        f"{n}  ${p}.00 — served chilled or hot to your preference"
+        for n, p in [
+            ("Green Tea", 3), ("Hot Sake", 9), ("Plum Wine", 8),
+            ("Draft Beer", 6), ("Soda", 3), ("Iced Tea", 3),
+            ("Fresh Coffee", 4), ("Sparkling Water", 2),
+        ]
+    )
+    result = scraper._finish(
+        "https://x.example/",
+        [
+            ("https://x.example/menu", primary),
+            ("https://foodbooking.com/x", reformatted),  # duplicate → dropped
+            ("https://x.example/drinks", other_section),  # distinct → kept
+        ],
+        [],
+        status_code=200,
+    )
+    kept = {u for u, _ in result.pages}
+    assert "https://foodbooking.com/x" not in kept  # reformatted copy dropped
+    assert "https://x.example/menu" in kept
+    assert "https://x.example/drinks" in kept  # a real other section survives
+
+
+def test_menu_overlap_ignores_short_incidental_matches():
+    # Two short pages sharing a few drink lines are NOT judged duplicates —
+    # below the min-lines floor, coincidental overlap must not drop a page.
+    a = "Coke $3\nWater $2\nCoffee $4"
+    b = "Coke $3\nWater $2\nTea $3\nPizza $12\nSalad $9"
+    assert not scraper._menu_lines_overlap(a, b)
