@@ -18,7 +18,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Iterator
 
 from config import settings
-from dish_identity import dish_identity_key, dishes_compatible, preferred_dish_name
+from dish_identity import (
+    canonical_dish_name,
+    dish_identity_key,
+    dishes_compatible,
+    preferred_dish_name,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS restaurants (
@@ -54,7 +59,13 @@ CREATE TABLE IF NOT EXISTS dishes (
     price           TEXT,
     calories        TEXT,   -- explicit menu value/range; never estimated
     category        TEXT,   -- food | drink | dessert (NULL = assume food)
-    UNIQUE (restaurant_id, name)
+    -- Identity is (name, price), NOT name alone: menus routinely repeat a
+    -- name for size/portion variants (pizza 12"/16", lunch/dinner, small/
+    -- large bowl). A bare UNIQUE(restaurant_id, name) made ON CONFLICT
+    -- silently overwrite the first variant, so only one price survived
+    -- (Oda Pizzeria's B.Y.O.Pie is on the menu at $15.00 AND $18.00).
+    -- Merging of genuine formatting duplicates is dish_identity's job.
+    UNIQUE (restaurant_id, name, price)
 );
 
 -- A source is evidence: a menu-text excerpt or an image. It can attach to a
@@ -374,12 +385,63 @@ _MIGRATIONS = {
 }
 
 
+def _migrate_dish_uniqueness(conn: sqlite3.Connection) -> bool:
+    """Widen dishes' uniqueness from (restaurant_id, name) to (…, price).
+
+    The old constraint made upsert_dish's ON CONFLICT overwrite same-name
+    size/portion variants, so a menu listing one name at two prices kept only
+    one row. SQLite can't drop a constraint in place, so rebuild the table.
+    Row ids are preserved verbatim — classifications, sources, reports,
+    dish_votes and dish_audit_reviews all reference dishes(id).
+
+    Returns True when a rebuild happened. Idempotent: a no-op once applied.
+    """
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='dishes'"
+    ).fetchone()
+    if sql is None:
+        return False
+    normalized = " ".join(sql[0].split()).lower()
+    if "unique (restaurant_id, name, price)" in normalized:
+        return False
+    if "unique (restaurant_id, name)" not in normalized:
+        return False
+
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(dishes)")]
+    collist = ", ".join(columns)
+    # A straight copy is safe: the new key is strictly WIDER than the old one,
+    # so any row set that satisfied UNIQUE(restaurant_id, name) also satisfies
+    # UNIQUE(restaurant_id, name, price) — no new collisions are possible.
+    conn.executescript(
+        f"""
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE dishes_migrated (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            restaurant_id   INTEGER NOT NULL REFERENCES restaurants(id),
+            name            TEXT NOT NULL,
+            raw_description TEXT,
+            price           TEXT,
+            calories        TEXT,
+            category        TEXT,
+            UNIQUE (restaurant_id, name, price)
+        );
+        INSERT INTO dishes_migrated ({collist})
+            SELECT {collist} FROM dishes;
+        DROP TABLE dishes;
+        ALTER TABLE dishes_migrated RENAME TO dishes;
+        PRAGMA foreign_keys = ON;
+        """
+    )
+    return True
+
+
 def _apply_migrations(conn: sqlite3.Connection) -> None:
     for table, columns in _MIGRATIONS.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
         for col, coltype in columns.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+    _migrate_dish_uniqueness(conn)
 
 
 def init_db(db_path: str | None = None) -> None:
@@ -1008,7 +1070,25 @@ def delete_dish(restaurant_id: int, name: str, db_path: str | None = None) -> bo
             (restaurant_id, name),
         ).fetchone()
         if row is None:
-            return False
+            # The model echoes removed names back from its own reading of the
+            # menu, so casing/punctuation often drifts from the stored row
+            # ("DISH 2" vs "Dish 2"). An exact-only match silently no-ops and
+            # leaves the dish behind with a stale verdict, so fall back to the
+            # same canonical name comparison upsert uses. Ambiguous matches
+            # (one canonical name, several price variants) are left alone —
+            # deleting the wrong variant is worse than keeping both.
+            target = canonical_dish_name(name)
+            candidates = [
+                candidate
+                for candidate in conn.execute(
+                    "SELECT id, name FROM dishes WHERE restaurant_id = ?",
+                    (restaurant_id,),
+                ).fetchall()
+                if canonical_dish_name(candidate["name"]) == target
+            ]
+            if len(candidates) != 1:
+                return False
+            row = candidates[0]
         dish_id = row["id"]
         conn.execute("UPDATE reports SET dish_id = NULL WHERE dish_id = ?", (dish_id,))
         conn.execute("DELETE FROM classifications WHERE dish_id = ?", (dish_id,))
@@ -1128,8 +1208,14 @@ def upsert_dish(
     category: str | None = None,
     calories: str | None = None,
     db_path: str | None = None,
+    allow_reprice: bool = False,
 ) -> int:
-    """Insert/update a dish using conservative canonical identity."""
+    """Insert/update a dish using conservative canonical identity.
+
+    allow_reprice: treat a same-name dish whose price changed as an UPDATE of
+    the existing row rather than a new one. Only delta reclassification may
+    set this — see the reprice branch below for why full mode must not.
+    """
     with connect(db_path) as conn:
         identity = dish_identity_key(name, price, raw_description, calories)
         existing_rows = conn.execute(
@@ -1160,6 +1246,29 @@ def upsert_dish(
                 (row for key, row in keyed if dishes_compatible(key, identity)),
                 None,
             )
+        if existing is None and allow_reprice:
+            # A REPRICE: this dish is already on the menu under the same name
+            # and only its price moved. Delta mode persists surgically (it
+            # does NOT clear the menu first), so without this the old price
+            # lingers beside the new one and the dish shows twice. 48% of
+            # stored dishes carry no description, so a description match
+            # can't be required here.
+            #
+            # Only the caller can tell a reprice from a newly-added size
+            # variant — from the DB alone "Pho $16" is equally "the $12 Pho
+            # went up" or "a large Pho joined the menu". Hence allow_reprice:
+            # delta mode re-emits only dishes it saw CHANGE, so a same-name
+            # dish there is a reprice; full mode wipes first, so every row is
+            # genuinely new and guessing would destroy real variants.
+            same_name = [(key, row) for key, row in keyed if key[0] == identity[0]]
+            if len(same_name) == 1:
+                existing = same_name[0][1]
+            elif identity[2]:
+                # Several rows share the name — only a matching description
+                # identifies which variant was repriced.
+                narrowed = [row for key, row in same_name if key[2] == identity[2]]
+                if len(narrowed) == 1:
+                    existing = narrowed[0]
         if existing is not None:
             display_name = preferred_dish_name(existing["name"], name)
             conn.execute(
@@ -1183,9 +1292,8 @@ def upsert_dish(
             INSERT INTO dishes
                 (restaurant_id, name, raw_description, price, calories, category)
             VALUES (:rid, :name, :descr, :price, :calories, :category)
-            ON CONFLICT (restaurant_id, name) DO UPDATE SET
+            ON CONFLICT (restaurant_id, name, price) DO UPDATE SET
                 raw_description = excluded.raw_description,
-                price           = excluded.price,
                 calories        = excluded.calories,
                 category        = excluded.category
             RETURNING id

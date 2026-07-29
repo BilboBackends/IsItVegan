@@ -184,7 +184,9 @@ def run(
             )
         return source, result, prior, text_hash
 
-    def _persist_dish(r: dict, source, result, d, classified_at: str) -> None:
+    def _persist_dish(
+        r: dict, source, result, d, classified_at: str, allow_reprice: bool = False
+    ) -> None:
         dish_id = db.upsert_dish(
             r["id"],
             d.name,
@@ -192,6 +194,7 @@ def run(
             d.price,
             category=d.category,
             calories=d.calories,
+            allow_reprice=allow_reprice,
         )
         # Evidence lives in reasoning text; source_id links the verdict to
         # the scraped menu source it came from (explainability, CLAUDE.md).
@@ -291,8 +294,12 @@ def run(
 
         if delta:
             # Surgical update: unchanged dishes keep their rows and verdicts.
+            # Delta re-emits only dishes it saw CHANGE, so a same-name dish
+            # whose price moved is a reprice of that row, not a new variant.
             for d in result.dishes:
-                _persist_dish(r, source, result, d, classified_at)
+                _persist_dish(
+                    r, source, result, d, classified_at, allow_reprice=True
+                )
             for name in result.removed_dish_names:
                 db.delete_dish(r["id"], name)
         else:
