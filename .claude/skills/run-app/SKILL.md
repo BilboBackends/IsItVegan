@@ -68,11 +68,30 @@ console.log(errors);
 await browser.close();
 ```
 
+Write the `.mjs` with the **Write tool, not a bash heredoc** — an unquoted
+heredoc eats the `\\` in the Chrome path and you get "Browser was not found at
+the configured executablePath (C:Program FilesGoogleChrome...)".
+
 **Look at the screenshot** with Read; a blank frame means the app didn't
 render. Always print console errors before declaring success.
 
 ## App landmarks for interaction
 
+- The three view tabs are **`<a>` anchors, not buttons** — a `querySelectorAll
+  ("button")` sweep silently finds nothing and your click is a no-op. They are
+  labeled exactly **Restaurants / Dishes / Saved** (the Saved tab appends a
+  count, e.g. "Saved (3)", so match with `startsWith`, not `===`). Prefer
+  navigating by hash directly — `page.goto(".../#dishes")` — over clicking:
+  `#restaurants`, `#dishes`, `#saved`.
+- The **Dishes tab renders "Loading the menu database…" for ~7s** before the
+  ~46k-item list appears. A screenshot taken right after `networkidle2` catches
+  the placeholder and looks broken. Always gate on it clearing:
+  ```js
+  await page.waitForFunction(
+    () => !/Loading the menu database/i.test(document.body.innerText),
+    { timeout: 60000, polling: 500 }
+  );
+  ```
 - Header account popover: `button[aria-label="Sign in"]` (signed-out) or
   `button[aria-label^="Account menu"]` (signed-in). Popover copy when open:
   "Keep your saves everywhere".
@@ -85,6 +104,8 @@ render. Always print console errors before declaring success.
 - Restaurant cards render on the default Restaurants tab; comments open via
   the note-count chip on a card, and the signed-out comments box copy is
   "Join the conversation".
+- With no favorites set, the Saved tab's empty state reads "Nothing saved yet"
+  — that's the correct render, not a data-loading failure.
 - A single 404 console error on page load is pre-existing background noise,
   not a regression signal by itself.
 
