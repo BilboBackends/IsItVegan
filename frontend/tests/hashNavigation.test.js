@@ -133,3 +133,20 @@ test("replacing a dish detail route clears its owned-overlay marker", () => {
   assert.equal(isOwnedDishDetailRoute(win), false);
   assert.equal(calls.replace.length, 1);
 });
+
+test("re-selecting the same route emits no hashchange", () => {
+  // Why PickForMe re-dispatches hashchange itself when the user clicks the
+  // same recommended restaurant twice: replaceHashRoute deliberately does
+  // nothing here, so a listener-driven focus effect would never re-run.
+  const { win, calls } = fakeWindow(
+    "https://dishtune.com/#restaurants?restaurant=19"
+  );
+
+  assert.equal(replaceHashRoute("restaurants?restaurant=19", win), false);
+  assert.deepEqual(calls.events, []);
+  assert.equal(calls.replace.length, 0);
+
+  // A different restaurant does move, and does notify.
+  assert.equal(replaceHashRoute("restaurants?restaurant=20", win), true);
+  assert.deepEqual(calls.events, ["hashchange"]);
+});

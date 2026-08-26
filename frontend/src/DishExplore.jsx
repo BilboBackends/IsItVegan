@@ -938,19 +938,13 @@ export default function DishExplore({
       });
       mapRef.current = map;
       markerLayerRef.current = L.layerGroup().addTo(map);
-      L.tileLayer(
-        isDesktop
-          ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-          : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        {
-          attribution: "© OpenStreetMap © CARTO",
-          subdomains: "abcd",
-          maxZoom: 19,
-          keepBuffer: isDesktop ? 2 : 1,
-          updateWhenIdle: !isDesktop,
-          updateWhenZooming: isDesktop,
-        }
-      ).addTo(map);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© OpenStreetMap",
+        maxZoom: 19,
+        keepBuffer: isDesktop ? 2 : 1,
+        updateWhenIdle: !isDesktop,
+        updateWhenZooming: isDesktop,
+      }).addTo(map);
       map.setView([origin.lat, origin.lng], 10);
       map.on("zoomend", () => setMapZoom(map.getZoom()));
     }

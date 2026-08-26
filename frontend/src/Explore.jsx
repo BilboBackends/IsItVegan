@@ -6,6 +6,7 @@ import DishModal from "./DishModal.jsx";
 import FilterSidebar from "./FilterSidebar.jsx";
 import LocationPicker, { NearMeIconButton } from "./LocationPicker.jsx";
 import FavoriteButton from "./FavoriteButton.jsx";
+import PickForMe from "./PickForMe.jsx";
 import { formatRatingCount, ratingText } from "./RatingBadge.jsx";
 import {
   FreshnessBadge,
@@ -57,8 +58,9 @@ import {
 } from "./cloud.js";
 
 // Consumer-facing view: find vegan-friendly dishes near you. Search, sort,
-// distance filter, and a map (Leaflet + CARTO light tiles — keyless, so
-// nothing secret ever reaches the browser, per CLAUDE.md). Desktop shows
+// distance filter, and a map (Leaflet + OpenStreetMap tiles — keyless, so
+// nothing secret ever reaches the browser, per CLAUDE.md; muted to a light
+// basemap by the .leaflet-tile-pane filter in index.css). Desktop shows
 // list and map side by side; mobile toggles between them.
 
 // Default distance origin: downtown Orlando, the center of gravity of the
@@ -458,19 +460,32 @@ export default function Explore({
   }, [restaurants]);
 
   useEffect(() => {
-    const match = window.location.hash.match(/^#restaurants\?restaurant=(\d+)/);
-    if (!match || restaurants.length === 0) return;
-    const target = restaurants.find((item) => item.id === Number(match[1]));
-    if (!target) return;
-    if (!isDesktop) enterMobileMap();
-    setSelectedRestaurantId(target.place_id);
-    setFocus({
-      id: target.place_id,
-      lat: target.lat,
-      lng: target.lng,
-      ts: Date.now(),
-      source: "card",
-    });
+    // Also listen for hashchange: an in-page link to #restaurants?restaurant=N
+    // (the "Pick for me" result) changes only the hash, so an effect keyed on
+    // [restaurants, isDesktop] alone would never re-run and the link would
+    // silently do nothing. DishExplore syncs its dish deep link the same way.
+    const focusRestaurantFromHash = () => {
+      const match = window.location.hash.match(/^#restaurants\?restaurant=(\d+)/);
+      if (!match || restaurants.length === 0) return;
+      const target = restaurants.find((item) => item.id === Number(match[1]));
+      if (!target) return;
+      if (!isDesktop) enterMobileMap();
+      setSelectedRestaurantId(target.place_id);
+      setFocus({
+        id: target.place_id,
+        lat: target.lat,
+        lng: target.lng,
+        ts: Date.now(),
+        source: "card",
+      });
+    };
+    focusRestaurantFromHash();
+    window.addEventListener("hashchange", focusRestaurantFromHash);
+    window.addEventListener("popstate", focusRestaurantFromHash);
+    return () => {
+      window.removeEventListener("hashchange", focusRestaurantFromHash);
+      window.removeEventListener("popstate", focusRestaurantFromHash);
+    };
   }, [restaurants, isDesktop]);
 
   // One origin change path for every control (sidebar picker, mobile pin,
@@ -657,19 +672,13 @@ export default function Explore({
       });
       mapRef.current = map;
       markerLayerRef.current = L.layerGroup().addTo(map);
-      L.tileLayer(
-        isDesktop
-          ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-          : "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        {
-          attribution: "© OpenStreetMap © CARTO",
-          subdomains: "abcd",
-          maxZoom: 19,
-          keepBuffer: isDesktop ? 2 : 1,
-          updateWhenIdle: !isDesktop,
-          updateWhenZooming: isDesktop,
-        }
-      ).addTo(map);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© OpenStreetMap",
+        maxZoom: 19,
+        keepBuffer: isDesktop ? 2 : 1,
+        updateWhenIdle: !isDesktop,
+        updateWhenZooming: isDesktop,
+      }).addTo(map);
       map.setView([origin.lat, origin.lng], 10);
       map.on("zoomend", () => setMapZoom(map.getZoom()));
     }
@@ -1148,6 +1157,10 @@ export default function Explore({
   // A fly-to changes the viewport split and can move the clicked card. Keep
   // the durable selection visible after the new sections have been laid out.
   // `nearest` is intentionally a no-op while the card is already on screen.
+  //
+  // focus?.ts is a dependency so re-selecting the SAME restaurant still
+  // scrolls: selectedRestaurantId doesn't change then, but every selection
+  // stamps a fresh ts, which is what makes a repeat click work.
   useEffect(() => {
     if (!selectedRestaurantId || (!isDesktop && view !== "list")) return;
     const timer = window.setTimeout(() => {
@@ -1160,7 +1173,7 @@ export default function Explore({
         });
     }, 80);
     return () => window.clearTimeout(timer);
-  }, [selectedRestaurantId, viewBounds, isDesktop, view]);
+  }, [selectedRestaurantId, viewBounds, isDesktop, view, focus?.ts]);
 
   useEffect(() => {
     const target = loadMoreRef.current;
@@ -1538,6 +1551,8 @@ export default function Explore({
           lives behind the collapsed filter sidebar. */}
       <NearMeIconButton className="lg:hidden" onOrigin={changeOrigin} />
       </div>
+
+      <PickForMe restaurants={restaurants} />
 
       {/* Phones: origin status + inline address search, one small line —
           no digging into the collapsed filters for the LocationPicker. */}

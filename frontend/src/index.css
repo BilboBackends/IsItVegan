@@ -111,3 +111,13 @@
   font-weight: 600;
   color: #1c1917;
 }
+
+/* Basemap tiles. OpenStreetMap's standard style is the only light basemap
+   that stays keyless (CARTO now stamps "API KEY REQUIRED" across its tiles,
+   and Stadia's smooth style 401s), but its full-colour render competes with
+   the verdict pins. Desaturating and lightening the tile pane only — pins,
+   tooltips and popups live in sibling panes — restores the muted backdrop
+   the pin colours are designed to sit on. */
+.leaflet-tile-pane {
+  filter: saturate(0.35) brightness(1.06);
+}
