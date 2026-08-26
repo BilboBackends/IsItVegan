@@ -41,15 +41,24 @@ export default function PickForMe({ restaurants }) {
 
   if (!restaurants || restaurants.length === 0) return null;
 
+  // A convenience, not a headline feature: the button stays a quiet
+  // secondary control, and the container only earns its card treatment once
+  // there is an actual pick to frame.
   return (
-    <div className="mt-4 rounded-xl border border-stone-200 bg-white p-3 shadow-sm">
+    <div
+      className={`mt-4 ${
+        pick
+          ? "rounded-xl border border-stone-200 bg-white p-3 shadow-sm"
+          : "px-1"
+      }`}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => roll()}
-          className="rounded-lg bg-emerald-700 px-3.5 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-800"
+          className="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm font-semibold text-stone-600 transition hover:border-stone-400 hover:text-stone-800"
         >
-          {pick ? "↻ Pick another" : "✨ Pick somewhere for me"}
+          {pick ? "↻ Pick another" : "Pick somewhere for me"}
         </button>
 
         <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-stone-500">
@@ -97,7 +106,7 @@ export default function PickForMe({ restaurants }) {
               {pick.name}
             </a>
             {pick.vegan_score != null && (
-              <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-xs font-bold text-white">
+              <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-800">
                 {pick.vegan_score.toFixed(1)}
               </span>
             )}
