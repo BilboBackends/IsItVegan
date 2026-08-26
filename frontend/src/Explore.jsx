@@ -40,6 +40,7 @@ import {
   isFreshMapFocus,
   placeFocusZoom,
 } from "./mapFocus.js";
+import { replaceHashRoute } from "./hashNavigation.js";
 import {
   MAP_INDIVIDUAL_MARKER_ZOOM,
   aggregateMapItems,
@@ -1128,6 +1129,20 @@ export default function Explore({
     setFocus({ id: r.place_id, ts: Date.now(), source: "card" });
   }
 
+  // Drop the selection without moving the map. A selected card is pinned to
+  // the top of the list and re-scrolls itself into view on every pan, which
+  // is wanted while you're tracking that restaurant and just noise once you
+  // aren't — so clearing has to be reachable. Also strip a
+  // #restaurants?restaurant=N deep link (how Pick For Me selects), or the
+  // next hashchange would re-select the restaurant we just cleared.
+  function clearSelectedRestaurant() {
+    setSelectedRestaurantId(null);
+    setFocus(null);
+    if (/^#restaurants\?restaurant=/.test(window.location.hash)) {
+      replaceHashRoute("restaurants");
+    }
+  }
+
   // Split the list by the map viewport: what you can see on the map sits on
   // top; everything else drops to a "Not on the map" section below (never
   // hidden). Before the map has ever reported bounds, show a single list.
@@ -1611,8 +1626,16 @@ export default function Explore({
             <>
               {progressiveSections.pinnedFocused && (
                 <div className="mb-5">
-                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-emerald-700">
+                  <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-emerald-700">
                     Selected restaurant
+                    <button
+                      type="button"
+                      onClick={clearSelectedRestaurant}
+                      title="Clear the selected restaurant"
+                      className="rounded-full border border-stone-300 px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-stone-500 transition hover:border-stone-400 hover:text-stone-700"
+                    >
+                      ✕ Clear
+                    </button>
                   </div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
                     {renderCard(progressiveSections.pinnedFocused)}
@@ -1667,6 +1690,19 @@ export default function Explore({
               ref={mapEl}
               className="h-[calc(100dvh-12.75rem)] min-h-[17rem] w-full overflow-hidden rounded-2xl border border-stone-200 shadow-sm lg:h-[calc(100vh-11rem)] lg:min-h-0"
             />
+            {/* Clearing has to be reachable from the map itself: on mobile
+                the list header holding the other Clear button isn't on
+                screen at all while the map view is open. */}
+            {selectedRestaurantId && (
+              <button
+                type="button"
+                onClick={clearSelectedRestaurant}
+                title="Clear the selected restaurant"
+                className="absolute right-3 top-3 z-[1000] rounded-full border border-stone-300 bg-white/95 px-3 py-1.5 text-xs font-semibold text-stone-600 shadow-sm backdrop-blur transition hover:border-stone-400 hover:text-stone-800"
+              >
+                ✕ Clear selection
+              </button>
+            )}
             <MapLegend isDesktop={isDesktop}>
               {mapZoom < MAP_INDIVIDUAL_MARKER_ZOOM ? (
                 <div className="text-[11px] font-semibold text-stone-600">

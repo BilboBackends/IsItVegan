@@ -150,3 +150,22 @@ test("re-selecting the same route emits no hashchange", () => {
   assert.equal(replaceHashRoute("restaurants?restaurant=20", win), true);
   assert.deepEqual(calls.events, ["hashchange"]);
 });
+
+test("clearing a selection strips the restaurant deep link", () => {
+  // Why clearSelectedRestaurant rewrites the hash rather than only resetting
+  // React state: the selection can arrive from #restaurants?restaurant=N
+  // (Pick For Me links there). Leaving that hash in place means the next
+  // hashchange — or a refresh — re-selects the restaurant just cleared.
+  const { win, calls } = fakeWindow(
+    "https://dishtune.com/#restaurants?restaurant=891"
+  );
+
+  assert.equal(replaceHashRoute("restaurants", win), true);
+  assert.equal(win.location.hash, "#restaurants");
+  assert.equal(calls.replace.length, 1);
+
+  // Clearing again from the already-bare route is a no-op, so repeat clicks
+  // don't stack history entries or fire redundant hashchange events.
+  assert.equal(replaceHashRoute("restaurants", win), false);
+  assert.equal(calls.replace.length, 1);
+});
