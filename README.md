@@ -192,6 +192,47 @@ Always spot-check the printed match (name + address) — a wrong match poisons
 everything downstream, so unmatchable names are reported as not-found rather
 than guessed.
 
+### Refreshing Google data
+
+Google bills each Place Details call at the highest tier of any field in it,
+and each tier has its own monthly free allowance. So refreshes ask only for
+essentials, and full details are for newly added restaurants:
+
+| Run | Tier | Free per month | Then per 1,000 |
+|---|---|---|---|
+| Refresh: still open, renamed, moved | Pro | 5,000 | $17 |
+| Full: ratings, hours, website, food signals | Enterprise + Atmosphere | 1,000 | $25 |
+
+```bash
+# New restaurants (never enriched), full details:
+python enrich.py
+
+# Refresh essentials for rows not checked in 28 days. Rerun to continue:
+python enrich.py --stale-days 28
+
+# Refresh essentials for every active restaurant now:
+python enrich.py --all
+
+# Refetch full details within the free allowance. Rerun to continue:
+python enrich.py --stale-days 28 --limit 1000 --full
+```
+
+Permanent closures are archived (data kept). A listing whose new name shares
+nothing with the old one is reported but not renamed: it may be a different
+restaurant, so its menu needs a look. Bulk runs skip archived rows and take
+the longest-unchecked first. A failed restaurant is listed and keeps its old
+data; the run stops early on key, billing, or quota errors, or after five
+outages in a row. `--dry-run` skips writing but still makes the calls.
+
+The app counts its own successful calls per tier, since an API key can't read
+Google's usage. Admin shows free calls left and the cost past them, and each
+run prints its quote first. If Google's billing report disagrees, correct it:
+
+```bash
+python google_usage.py                         # this month so far
+python google_usage.py --set details_pro 120   # match Google's count
+```
+
 ### Phase 1 — menu-text ingestion
 
 Scrapes each restaurant's website for readable menu text (stored as a
@@ -439,6 +480,7 @@ ingest.py                   # ingestion CLI: scrape + persist menu text + versio
 llm_nav.py                  # cheap LLM (Haiku) menu-link chooser + vision fallback
 pdf_menu.py                 # PDF menu extraction (pypdf local + Claude PDF fallback)
 enrich.py                   # Google food signals (vegetarian, editorial, rating, hours)
+google_usage.py             # Google calls used, free calls left, cost past them
 classifier.py               # dish extraction + vegan verdicts (full + delta modes)
 classification_providers.py # DeepSeek classification transport (no fallback)
 classification_exchange.py  # manual export/import classification jobs

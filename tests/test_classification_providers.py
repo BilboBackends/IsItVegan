@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,23 +61,107 @@ def test_auto_chain_is_deepseek_only(monkeypatch):
     assert cp._provider_chain(None) == ["deepseek"]
 
 
-def test_deepseek_prices_are_v4_rates():
-    # V4-Flash pricing; the deprecated aliases map to the same rates.
-    assert cp.PRICES["deepseek-v4-flash"] == (0.14, 0.28)
-    assert cp.PRICES["deepseek-reasoner"] == (0.14, 0.28)
-    assert cp.PRICES["deepseek-chat"] == (0.14, 0.28)
+# 2026-11-25 is a Wednesday: 12:00 UTC is off-peak, 02:00 UTC is peak.
+_OFF_PEAK = datetime(2026, 11, 25, 12, tzinfo=timezone.utc)
+_PEAK = datetime(2026, 11, 25, 2, tzinfo=timezone.utc)
+
+
+def test_retired_deepseek_names_are_priced_as_flash():
+    # V4-Flash is served and billed as deepseek-flash since its retirement.
+    assert cp.PRICES["deepseek-flash"] == (0.15, 0.60)
+    for alias in ("deepseek-v4-flash", "deepseek-reasoner", "deepseek-chat"):
+        assert cp.PRICES[alias] == cp.PRICES["deepseek-flash"]
+
+
+@pytest.mark.parametrize(
+    "hour, minute, peak",
+    [(0, 59, False), (1, 0, True), (3, 59, True), (4, 0, False),
+     (5, 59, False), (6, 0, True), (9, 59, True), (10, 0, False)],
+)
+def test_deepseek_peak_hours_double_the_price(hour, minute, peak):
+    at = datetime(2026, 11, 25, hour, minute, tzinfo=timezone.utc)
+    expected = (0.30, 1.20) if peak else (0.15, 0.60)
+    assert cp.price_for("deepseek-v4-flash", at=at) == pytest.approx(expected)
+
+
+def test_deepseek_weekends_are_always_off_peak():
+    saturday = datetime(2026, 11, 28, 2, tzinfo=timezone.utc)
+    assert cp.price_for("deepseek-flash", at=saturday) == (0.15, 0.60)
+
+
+def test_deepseek_peak_uses_utc_not_local_time():
+    # Tuesday 9pm Eastern is Wednesday 02:00 UTC.
+    eastern = timezone(timedelta(hours=-5))
+    at = datetime(2026, 11, 24, 21, tzinfo=eastern)
+    assert cp.price_for("deepseek-flash", at=at) == pytest.approx((0.30, 1.20))
+
+
+def test_peak_pricing_is_deepseek_only():
+    assert cp.price_for("claude-sonnet-5", at=_PEAK) == (3.0, 15.0)
 
 
 def test_estimate_cost_prices_against_running_provider(monkeypatch):
     import classifier
 
+    monkeypatch.setattr(cp, "_utcnow", lambda: _OFF_PEAK)
     # Default estimate is the cheap DeepSeek tier, not the Anthropic API model.
     deepseek_est = classifier.estimate_cost(20_000, provider="deepseek")
     anthropic_est = classifier.estimate_cost(20_000, provider="anthropic")
-    assert deepseek_est < 0.05  # ~half a cent for a 20k-char menu
+    assert 0.02 < deepseek_est < 0.05  # ~3 cents for a 20k-char menu
     # Anthropic (Sonnet) is far pricier — the estimate must reflect that so a
     # metered run is not undersold.
-    assert anthropic_est > deepseek_est * 20
+    assert anthropic_est > deepseek_est * 5
+
+
+def test_estimate_cost_reproduces_recorded_july_spend(monkeypatch):
+    # 530 full runs: 10,110,570 menu chars cost $8.40 at the rates then in
+    # force. The old formula came out at about a third of that.
+    import classifier
+
+    monkeypatch.setattr(classifier, "price_for", lambda model: (0.14, 0.28))
+    average_menu = 10_110_570 // 530
+    estimate = classifier.estimate_cost(average_menu, provider="deepseek") * 530
+    assert estimate == pytest.approx(8.40, rel=0.10)
+
+
+def test_estimate_cost_doubles_at_peak(monkeypatch):
+    import classifier
+
+    monkeypatch.setattr(cp, "_utcnow", lambda: _OFF_PEAK)
+    off_peak = classifier.estimate_cost(50_000, provider="deepseek")
+    monkeypatch.setattr(cp, "_utcnow", lambda: _PEAK)
+    peak = classifier.estimate_cost(50_000, provider="deepseek")
+    assert peak == pytest.approx(off_peak * 2, abs=0.002)  # both rounded
+
+
+@pytest.mark.parametrize(
+    "now, peak, changes, back",
+    [
+        # Wednesday: off-peak until 01:00, peak 01-04, gap, peak 06-10.
+        ((25, 12, 30), False, (26, 1), (26, 4)),
+        ((26, 2, 0), True, (26, 4), (26, 6)),
+        ((26, 4, 0), False, (26, 6), (26, 10)),
+        ((26, 9, 59), True, (26, 10), (27, 1)),
+        # Friday after 10:00 stays off-peak through the weekend.
+        ((27, 10, 0), False, (30, 1), (30, 4)),
+        ((29, 2, 0), False, (30, 1), (30, 4)),
+    ],
+)
+def test_deepseek_rate_names_the_next_two_changes(now, peak, changes, back):
+    rate = cp.deepseek_rate(datetime(2026, 11, *now, tzinfo=timezone.utc))
+    assert rate["peak"] is peak
+    assert rate["changes_at"] == datetime(
+        2026, 11, *changes, tzinfo=timezone.utc
+    ).isoformat()
+    assert rate["changes_back_at"] == datetime(
+        2026, 11, *back, tzinfo=timezone.utc
+    ).isoformat()
+
+
+def test_provider_status_carries_the_current_rate(monkeypatch):
+    monkeypatch.setattr(cp, "_utcnow", lambda: _PEAK)
+    rate = cp.provider_status()["providers"]["deepseek"]["rate"]
+    assert rate["peak"] is True and rate["peak_multiplier"] == 2.0
 
 
 def test_estimate_cost_defaults_to_configured_provider(monkeypatch):
@@ -84,6 +169,7 @@ def test_estimate_cost_defaults_to_configured_provider(monkeypatch):
 
     import classifier
 
+    monkeypatch.setattr(cp, "_utcnow", lambda: _OFF_PEAK)
     monkeypatch.setattr(
         cp, "settings", dataclasses.replace(cp.settings, classifier_provider="deepseek")
     )

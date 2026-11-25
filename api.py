@@ -854,15 +854,43 @@ def apply_dish_audit_fix(dish_id: int) -> object:
 
 @app.post("/api/enrich")
 def run_enrich() -> object:
-    """Trigger Google food-signal enrichment (servesVegetarianFood, etc.)."""
+    """Refresh Google data for known restaurants, or enrich new ones.
+
+    Body: {"stale_days": 28, "limit": 1500} checks essentials (open, renamed,
+    moved) on the longest-unchecked rows and continues on the next request;
+    {"all": true} checks every active row. Pro tier, 5k free calls/month.
+    Add "full": true to also refetch ratings, hours, and food signals on the
+    Enterprise + Atmosphere tier (1k free). An empty body enriches rows that
+    were never enriched, also on that tier.
+    """
     if not settings.google_places_api_key:
         return jsonify({"error": "GOOGLE_PLACES_API_KEY is not set."}), 400
     payload = request.get_json(silent=True) or {}
+    bounds = {key: payload.get(key) for key in ("stale_days", "limit")}
+    # These bound spending, so a malformed value is an error, never "no cap".
+    for key, value in bounds.items():
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
+            return jsonify({"error": f"{key} must be a whole number above 0."}), 400
+    do_all = bool(payload.get("all"))
+    bulk = do_all or bounds["stale_days"] is not None
+    job = enrich.refresh if bulk and not payload.get("full") else enrich.run
     try:
-        result = enrich.run(do_all=bool(payload.get("all")))
+        result = job(do_all=do_all, **bounds)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify(result)
+
+
+@app.get("/api/google-usage")
+def google_usage_endpoint() -> object:
+    """Google calls used and left this month, plus a quote for the next
+    closure check. Reads the local count only; never contacts Google."""
+    import google_usage
+
+    db.init_db()
+    return jsonify({**google_usage.usage(), "refresh": enrich.refresh_estimate()})
 
 
 @app.post("/api/prospect")

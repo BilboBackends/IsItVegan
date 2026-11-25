@@ -23,6 +23,7 @@ from pathlib import Path
 
 import httpx
 
+import google_usage
 from venue_filter import is_consumer_food_venue
 
 # Max results a single Nearby Search (New) call can return.
@@ -92,6 +93,12 @@ SUMMARY_FIELD_MASK = ",".join(
     ["id", "displayName", "formattedAddress", "location", "primaryType",
      "businessStatus"]
 )
+
+# Pro-tier Place Details mask for the recurring refresh (5k free calls/month,
+# shared with hydration above): is it still open, still the same business, and
+# still in the same spot. One Enterprise field here (rating, hours, website)
+# would cut the free allowance to 1k and raise the price.
+STATUS_FIELD_MASK = SUMMARY_FIELD_MASK + ",movedPlaceId"
 
 
 def _normalize_place(place: dict) -> dict:
@@ -179,6 +186,7 @@ def prospect_places(
                 payload["pageToken"] = page_token
             resp = client.post(TEXT_SEARCH_URL, headers=headers, json=payload)
             resp.raise_for_status()
+            google_usage.record(google_usage.TEXT_PRO)
             data = resp.json()
             for place in data.get("places", []):
                 normalized = _normalize_place(place)
@@ -230,6 +238,7 @@ def search_place_candidates(
     with httpx.Client(timeout=timeout) as client:
         resp = client.post(TEXT_SEARCH_URL, headers=headers, json=body)
         resp.raise_for_status()
+        google_usage.record(google_usage.TEXT_PRO)
         places = resp.json().get("places", [])
 
     candidates = [_normalize_place(p) for p in places]
@@ -287,6 +296,7 @@ def fetch_place_details(
     with httpx.Client(timeout=timeout) as client:
         resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
         resp.raise_for_status()
+        google_usage.record(google_usage.DETAILS_ATMOSPHERE)
         data = resp.json()
 
     editorial = (data.get("editorialSummary") or {}).get("text")
@@ -333,6 +343,7 @@ def download_place_photo(
             params={"key": api_key, "maxWidthPx": max_width_px},
         )
         resp.raise_for_status()
+        google_usage.record(google_usage.PHOTOS)
     media_type = (
         resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
     )
@@ -366,6 +377,7 @@ def _search_circle(
     }
     resp = client.post(NEARBY_SEARCH_URL, headers=headers, json=body)
     resp.raise_for_status()
+    google_usage.record(google_usage.NEARBY_PRO)
     return resp.json().get("places", [])
 
 
@@ -773,10 +785,36 @@ def fetch_place_summary(place_id: str, *, api_key: str, timeout: float = 30.0) -
     with httpx.Client(timeout=timeout) as client:
         resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
         resp.raise_for_status()
+        google_usage.record(google_usage.DETAILS_PRO)
         data = resp.json()
     place = _normalize_place(data)
     place["business_status"] = data.get("businessStatus")
     return place
+
+
+def fetch_place_status(
+    place_id: str, *, api_key: str, client: httpx.Client
+) -> dict:
+    """Refresh essentials for a known place — Pro-tier Details.
+
+    Fields Google leaves out come back as None (never a placeholder), so
+    callers can keep what they already have.
+    """
+    headers = {"X-Goog-Api-Key": api_key, "X-Goog-FieldMask": STATUS_FIELD_MASK}
+    resp = client.get(f"{PLACE_DETAILS_URL}{place_id}", headers=headers)
+    resp.raise_for_status()
+    google_usage.record(google_usage.DETAILS_PRO)
+    data = resp.json()
+    location = data.get("location") or {}
+    return {
+        "name": (data.get("displayName") or {}).get("text"),
+        "address": data.get("formattedAddress"),
+        "lat": location.get("latitude"),
+        "lng": location.get("longitude"),
+        "business_status": data.get("businessStatus"),
+        # Set only when the place closed here and reopened as a new listing.
+        "moved_place_id": data.get("movedPlaceId"),
+    }
 
 
 def _in_city(restaurant: dict, city: str) -> bool:

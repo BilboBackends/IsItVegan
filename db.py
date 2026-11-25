@@ -236,6 +236,16 @@ CREATE TABLE IF NOT EXISTS reports (
 -- Human disposition of an automated menu-audit finding. The fingerprint
 -- binds the decision to the exact menu/flags reviewed; changed source text or
 -- changed audit findings automatically become active again.
+-- Successful Google Places calls per billing month and SKU (google_usage.py).
+-- The row with an empty month records when counting began.
+CREATE TABLE IF NOT EXISTS google_api_usage (
+    month    TEXT NOT NULL,   -- 'YYYY-MM', Pacific time like Google's billing
+    sku      TEXT NOT NULL,
+    calls    INTEGER NOT NULL DEFAULT 0,
+    first_at TEXT NOT NULL,
+    PRIMARY KEY (month, sku)
+);
+
 CREATE TABLE IF NOT EXISTS menu_quality_reviews (
     restaurant_id INTEGER PRIMARY KEY REFERENCES restaurants(id)
                   ON DELETE CASCADE,
@@ -319,6 +329,9 @@ _MIGRATIONS = {
         # Google businessStatus: OPERATIONAL | CLOSED_TEMPORARILY |
         # CLOSED_PERMANENTLY. Enrichment auto-archives permanent closures.
         "business_status": "TEXT",
+        # Last essentials-only Google check (enrich.refresh). Separate from
+        # enriched_at, which dates the ratings/hours this check doesn't fetch.
+        "status_checked_at": "TEXT",
     },
     "dishes": {
         # food | drink | dessert — drinks are excluded from the headline
@@ -512,7 +525,7 @@ def list_restaurants(db_path: str | None = None) -> list[dict]:
                    r.serves_vegetarian, r.price_level, r.primary_type,
                    r.editorial_summary, r.rating, r.user_rating_count,
                    r.open_now, r.opening_hours, r.hours_enriched_at,
-                   r.enriched_at, r.business_status,
+                   r.enriched_at, r.business_status, r.status_checked_at,
                    (
                        SELECT MAX(s.fetched_at) FROM sources s
                        WHERE s.restaurant_id = r.id AND s.type = 'text'
@@ -620,6 +633,44 @@ def update_food_signals(
                 "enriched": enriched_at,
                 "business_status": business_status,
                 "website_url": website_url,
+            },
+        )
+
+
+def update_place_status(
+    restaurant_id: int,
+    *,
+    checked_at: str,
+    business_status: str | None = None,
+    name: str | None = None,
+    address: str | None = None,
+    lat: float | None = None,
+    lng: float | None = None,
+    db_path: str | None = None,
+) -> None:
+    """Store an essentials-only Google check. None keeps the stored value."""
+    if lat is None or lng is None:  # never mix old and new coordinates
+        lat = lng = None
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE restaurants SET
+                business_status   = COALESCE(:business_status, business_status),
+                name              = COALESCE(:name, name),
+                address           = COALESCE(:address, address),
+                lat               = COALESCE(:lat, lat),
+                lng               = COALESCE(:lng, lng),
+                status_checked_at = :checked_at
+            WHERE id = :id
+            """,
+            {
+                "id": restaurant_id,
+                "business_status": business_status,
+                "name": name,
+                "address": address,
+                "lat": lat,
+                "lng": lng,
+                "checked_at": checked_at,
             },
         )
 

@@ -105,6 +105,108 @@ function UsageBar({ window: w }) {
   );
 }
 
+const shortTime = (iso) =>
+  new Date(iso).toLocaleString([], {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
+const cents = (perThousand) => `${(perThousand / 10).toFixed(1)}¢`;
+
+// One line for what the closure-check button would do, given free calls left.
+function refreshQuote(refresh) {
+  const calls = refresh.calls.toLocaleString();
+  if (!refresh.calls) return "Every restaurant was checked in the last 28 days.";
+  if (!refresh.billable) {
+    const left = refresh.free_remaining - refresh.calls;
+    return `${calls} calls on ${refresh.tier}, all free, leaving ${left.toLocaleString()}. Would be $${refresh.cost_without_free.toFixed(2)} with no free calls left.`;
+  }
+  return `${calls} calls on ${refresh.tier}: ${refresh.free_remaining.toLocaleString()} free, ${refresh.billable.toLocaleString()} paid at ${cents(refresh.price_per_1000)} each = $${refresh.cost.toFixed(2)}.`;
+}
+
+function GoogleUsagePanel({ usage }) {
+  const { refresh } = usage;
+  return (
+    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-bold text-slate-900">Google API calls this month</h2>
+        <span className="text-xs text-slate-400">
+          each tier has its own free calls · resets{" "}
+          {new Date(usage.resets_at).toLocaleString([], {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          })}
+        </span>
+      </div>
+      <p
+        className={`mb-3 rounded-lg px-3 py-2 text-xs ${
+          refresh.billable ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-900"
+        }`}
+      >
+        <strong>Check for closures:</strong> {refreshQuote(refresh)}
+        {refresh.due > refresh.calls &&
+          ` ${(refresh.due - refresh.calls).toLocaleString()} more are due after that.`}
+      </p>
+      <div className="space-y-2">
+        {usage.skus.map((sku) => {
+          const pct = Math.min(100, (sku.used / sku.free) * 100);
+          const tone =
+            pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-amber-500" : "bg-emerald-500";
+          return (
+            <div
+              key={sku.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs"
+            >
+              <span className="w-full sm:w-72 sm:shrink-0">
+                <span className="font-semibold text-slate-700">{sku.label}</span>
+                <span className="block text-slate-400">{sku.used_for}</span>
+              </span>
+              <div className="h-2 min-w-24 flex-1 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full rounded-full ${tone}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <span className="w-44 shrink-0 text-right text-slate-700">
+                <strong>{sku.remaining.toLocaleString()} left</strong> of{" "}
+                {sku.free.toLocaleString()} free
+              </span>
+              <span
+                className={`w-full sm:w-44 sm:shrink-0 sm:text-right ${
+                  sku.over ? "font-semibold text-red-700" : "text-slate-400"
+                }`}
+              >
+                {sku.over
+                  ? `${sku.over.toLocaleString()} over = $${sku.spent.toFixed(2)}`
+                  : `then $${sku.price_per_1000} per 1,000 (${cents(sku.price_per_1000)} each)`}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-xs text-slate-400">
+        Counts successful calls made by this app; the free ID sweep is unlimited.
+        {usage.counting_since &&
+          ` Counting began ${new Date(usage.counting_since).toLocaleDateString([], {
+            month: "short",
+            day: "numeric",
+          })}, so earlier calls this month aren't included.`}{" "}
+        <a
+          href="https://console.cloud.google.com/billing/reports"
+          target="_blank"
+          rel="noreferrer"
+          className="underline"
+        >
+          Google's own count
+        </a>
+      </p>
+    </section>
+  );
+}
+
 const CHANGE_STYLES = {
   added: "bg-emerald-100 text-emerald-800",
   removed: "bg-rose-100 text-rose-700",
@@ -2098,6 +2200,7 @@ export default function Admin() {
   const [qualityOpen, setQualityOpen] = useState(false);
   const [qualityBusy, setQualityBusy] = useState(null);
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
+  const [googleUsage, setGoogleUsage] = useState(null); // Places calls this month
   const [selectedIds, setSelectedIds] = useState([]);
   const [classifierProvider, setClassifierProvider] = useState("deepseek");
   // Scrape Doctor is shared by the failures panel and every restaurant row.
@@ -2138,11 +2241,12 @@ export default function Admin() {
       // Price the cost estimates against the provider currently selected in
       // the classify controls, so the pre-run number matches the button.
       const providerParam = encodeURIComponent(classifierProvider);
-      const [rRes, cRes, reportRes, usageRes] = await Promise.all([
+      const [rRes, cRes, reportRes, usageRes, googleRes] = await Promise.all([
         fetch(`/api/restaurants?include_excluded=true&provider=${providerParam}`),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
         fetch("/api/provider-usage"),
+        fetch("/api/google-usage"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
@@ -2153,6 +2257,7 @@ export default function Admin() {
       if (cRes.ok) setConfig(await cRes.json());
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
       if (usageRes.ok) setProviderUsage(await usageRes.json());
+      if (googleRes.ok) setGoogleUsage(await googleRes.json());
       scheduleMenuQuality();
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
@@ -2511,6 +2616,13 @@ export default function Admin() {
   }
 
   async function runEnrich() {
+    const refresh = googleUsage?.refresh;
+    if (
+      refresh?.billable &&
+      !window.confirm(`This goes past Google's free calls. ${refreshQuote(refresh)} Run it?`)
+    ) {
+      return;
+    }
     setEnriching(true);
     setNotice(null);
     setError(null);
@@ -2518,16 +2630,37 @@ export default function Admin() {
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ all: true }),
+        // The same bounds the quote was priced with.
+        body: JSON.stringify({
+          stale_days: refresh?.stale_days ?? 28,
+          limit: refresh?.limit ?? 1500,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `Enrich failed (${res.status})`);
+      const line = (label, rows, describe = (r) => r.name) =>
+        rows.length ? `${label} (${rows.length}): ${rows.map(describe).join(", ")}` : null;
+      const rename = (r) => `${r.name} → ${r.new_name}`;
+      const changes = [
+        line("Closed for good, archived", data.closed),
+        line("Moved to a new Google listing, old one archived", data.moved_listing),
+        line("Temporarily closed", data.temporarily_closed),
+        line("Reopened", data.reopened),
+        line("May be a different restaurant now", data.renamed.filter((r) => r.review), rename),
+        line("Renamed", data.renamed.filter((r) => !r.review), rename),
+        line("New address", data.relocated, (r) => `${r.name} (${r.address})`),
+        line("Couldn't check", data.failed, (r) => `${r.name} (${r.error})`),
+      ].filter(Boolean);
       setNotice(
-        `Google enrichment: ${data.veg_yes} vegetarian-friendly, ` +
-          `${data.veg_unknown} unknown; ${data.with_editorial} editorial summaries; ` +
-          `${data.with_rating} ratings.`
+        [
+          `Checked ${data.fetched} restaurant${data.fetched === 1 ? "" : "s"} on Google` +
+            (data.remaining ? `, ${data.remaining} still due` : "") +
+            (changes.length ? "." : ". No changes."),
+          ...changes,
+        ].join("\n")
       );
       await loadData();
+      if (data.stopped) setError(`Google check stopped early: ${data.stopped}`);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -2840,6 +2973,20 @@ export default function Admin() {
   );
   const classifierProviderLabel =
     PROVIDER_LABELS[resolvedClassifierProvider] || "No provider available";
+  // DeepSeek charges by time of day. Estimates arrive at the current rate;
+  // input and output scale together, so the other rate is one multiplication.
+  const deepseekRate =
+    resolvedClassifierProvider === "deepseek"
+      ? config?.classifier?.providers?.deepseek?.rate
+      : null;
+  const atOtherRate = (cost) =>
+    deepseekRate.peak
+      ? cost / deepseekRate.peak_multiplier
+      : cost * deepseekRate.peak_multiplier;
+  const rateNow = deepseekRate?.peak ? "peak" : "off-peak";
+  const rateOther = deepseekRate?.peak ? "off-peak" : "peak";
+  const deepseekBalance =
+    resolvedClassifierProvider === "deepseek" ? providerUsage?.deepseek?.balance : null;
 
   const archivedCount = useMemo(
     () => restaurants.filter((restaurant) => restaurant.archived).length,
@@ -3231,11 +3378,36 @@ export default function Admin() {
             </button>
             <button
               onClick={runEnrich}
-              disabled={enriching || Boolean(doctor?.running) || !config?.has_api_key}
+              disabled={
+                enriching ||
+                Boolean(doctor?.running) ||
+                !config?.has_api_key ||
+                googleUsage?.refresh.calls === 0
+              }
               className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
-              title="Refresh ratings, current opening status, and Google food signals for every restaurant"
+              title={`Check whether restaurants not checked in 28 days are still open, renamed, or moved.${
+                googleUsage
+                  ? ` ${refreshQuote(googleUsage.refresh)}${
+                      googleUsage.refresh.calls
+                        ? ` Takes about ${googleUsage.refresh.minutes} min.`
+                        : ""
+                    }`
+                  : ""
+              }`}
             >
-              {enriching ? "Refreshing…" : "Refresh Google data"}
+              {enriching
+                ? "Checking…"
+                : `Check for closures${
+                    !googleUsage
+                      ? ""
+                      : !googleUsage.refresh.calls
+                        ? " (up to date)"
+                        : ` (${googleUsage.refresh.calls.toLocaleString()} · ${
+                            googleUsage.refresh.billable
+                              ? `$${googleUsage.refresh.cost.toFixed(2)}`
+                              : "free"
+                          })`
+                  }`}
             </button>
             <button
               onClick={() => runIngest(true)}
@@ -3290,7 +3462,11 @@ export default function Admin() {
               className="rounded-lg border border-violet-400 px-4 py-2 text-sm font-semibold text-violet-700 shadow-sm transition hover:bg-violet-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
               title={
                 classifierUsesApi
-                  ? `Classify new menus with ${classifierProviderLabel} — est ~$${classifyCostNew.toFixed(2)} API cost`
+                  ? `Classify new menus with ${classifierProviderLabel} — est ~$${classifyCostNew.toFixed(2)} API cost${
+                      deepseekRate
+                        ? ` now (${rateNow}), ~$${atOtherRate(classifyCostNew).toFixed(2)} ${rateOther}`
+                        : ""
+                    }`
                   : `Classify new menus with your ${classifierProviderLabel}`
               }
             >
@@ -3330,6 +3506,20 @@ export default function Admin() {
             Classifier: {classifierProviderLabel}
             {classifierUsesApi &&
               ` · re-running all ${withMenuText} ≈ $${classifyCostAll.toFixed(2)}`}
+            {deepseekRate && (
+              <>
+                {` now (${rateNow}), $${atOtherRate(classifyCostAll).toFixed(2)} ${rateOther}`}
+                {deepseekBalance != null && classifyCostAll > deepseekBalance && (
+                  <span className="font-semibold text-amber-700">
+                    {` · more than your $${deepseekBalance.toFixed(2)} balance`}
+                  </span>
+                )}
+                <br />
+                {deepseekRate.peak
+                  ? `DeepSeek is at peak price (double) until ${shortTime(deepseekRate.changes_at)}`
+                  : `DeepSeek is off-peak. Price doubles ${shortTime(deepseekRate.changes_at)} to ${shortTime(deepseekRate.changes_back_at)}`}
+              </>
+            )}
           </p>
         </header>
 
@@ -3340,7 +3530,7 @@ export default function Admin() {
           </div>
         )}
         {notice && (
-          <div className="mb-4 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          <div className="mb-4 whitespace-pre-line rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
             {notice}
           </div>
         )}
@@ -3449,6 +3639,8 @@ export default function Admin() {
             </div>
           </section>
         )}
+
+        {googleUsage && <GoogleUsagePanel usage={googleUsage} />}
 
         <ScrapeDoctorStatus doctor={doctor} />
         <ScrapeFailuresPanel doctor={doctor} onStartDoctor={startDoctor} />

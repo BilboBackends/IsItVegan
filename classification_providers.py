@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import settings
@@ -36,15 +37,70 @@ PRICES = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
-    # DeepSeek is the cheap bulk tier. V4 pricing (per 1M tokens, cache-miss
-    # input / output). The deprecated deepseek-chat / deepseek-reasoner
-    # aliases both map to V4-Flash until 2026-07-24 and share its rates —
-    # kept here so cost tracking stays right through the transition.
-    "deepseek-v4-flash": (0.14, 0.28),
-    "deepseek-v4-pro": (0.435, 0.87),
-    "deepseek-chat": (0.14, 0.28),
-    "deepseek-reasoner": (0.14, 0.28),
+    # DeepSeek is the cheap bulk tier. OFF-PEAK list prices (cache-miss input /
+    # output) from api-docs.deepseek.com, checked 2026-11-25. Read them through
+    # price_for(), which applies the peak-hour doubling.
+    "deepseek-flash": (0.15, 0.60),
+    "deepseek-v4-pro": (0.66, 1.98),
+    # V4-Flash is retired: its name is still accepted but served and billed as
+    # deepseek-flash. The pricing page no longer lists the two older aliases;
+    # they keep the Flash rate so cost tracking has something to use.
+    "deepseek-v4-flash": (0.15, 0.60),
+    "deepseek-chat": (0.15, 0.60),
+    "deepseek-reasoner": (0.15, 0.60),
 }
+
+# DeepSeek charges double in these UTC [start, end) hours, Monday to Friday.
+# It exempts Chinese public holidays; ignoring that only over-reports.
+_DEEPSEEK_PEAK_HOURS_UTC = ((1, 4), (6, 10))
+_DEEPSEEK_PEAK_MULTIPLIER = 2.0
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _deepseek_peak(at: datetime) -> bool:
+    moment = at.astimezone(timezone.utc)
+    return moment.weekday() < 5 and any(
+        start <= moment.hour < end for start, end in _DEEPSEEK_PEAK_HOURS_UTC
+    )
+
+
+def deepseek_rate(at: datetime | None = None) -> dict:
+    """The rate in effect, when it next changes, and when it changes back."""
+    moment = (at or _utcnow()).astimezone(timezone.utc)
+    peak = _deepseek_peak(moment)
+    changes: list[datetime] = []
+    # Every change falls on the hour, and the longest gap is the weekend.
+    hour = moment.replace(minute=0, second=0, microsecond=0)
+    current = peak
+    while len(changes) < 2:
+        hour += timedelta(hours=1)
+        if _deepseek_peak(hour) != current:
+            current = not current
+            changes.append(hour)
+    return {
+        "peak": peak,
+        "peak_multiplier": _DEEPSEEK_PEAK_MULTIPLIER,
+        "changes_at": changes[0].isoformat(),
+        "changes_back_at": changes[1].isoformat(),
+    }
+
+
+def price_for(
+    model: str,
+    *,
+    default: tuple[float, float] = PRICES["deepseek-flash"],
+    at: datetime | None = None,
+) -> tuple[float, float]:
+    """$/MTok (input, output) for a model at a moment (default: right now)."""
+    input_price, output_price = PRICES.get(model, default)
+    if model.startswith("deepseek") and _deepseek_peak(at or _utcnow()):
+        input_price *= _DEEPSEEK_PEAK_MULTIPLIER
+        output_price *= _DEEPSEEK_PEAK_MULTIPLIER
+    return input_price, output_price
+
 
 _PROVIDER_NAMES = ("claude", "codex", "anthropic", "deepseek")
 # "auto" is intentionally a single-provider alias. A DeepSeek failure stops
@@ -235,6 +291,7 @@ def provider_status() -> dict:
                 "limited": provider_limited("deepseek"),
                 "billing": _BILLING["deepseek"],
                 "model": settings.deepseek_classifier_model,
+                "rate": deepseek_rate(),
                 "audited": False,
             },
         },
@@ -418,7 +475,7 @@ def _run_deepseek(
     usage = envelope.get("usage") or {}
     input_tokens = int(usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("completion_tokens") or 0)
-    input_price, output_price = PRICES.get(model, (0.14, 0.28))
+    input_price, output_price = price_for(model)
     cost = (
         input_tokens * input_price + output_tokens * output_price
     ) / 1_000_000

@@ -19,15 +19,18 @@ vegan when it isn't) are worse than false negatives, and the prompt says so.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 
+import json
+import math
 import re
 
 from alcohol import ALCOHOL_STATUSES, classify_alcohol
-from classification_providers import PRICES as _PRICES
 from classification_providers import (
     CHUNKED_PROVIDERS,
     ProviderResponse,
     UNTRUSTED_PROVIDERS,
+    price_for,
     run_provider,
 )
 from config import settings
@@ -74,14 +77,27 @@ def _is_verified_fully_vegan_venue(name: str | None) -> bool:
 # transports pin their own models (see classification_providers.py).
 MODEL = settings.anthropic_classifier_model
 
-# $/MTok pricing lives in classification_providers.PRICES (imported above) so
-# the transports and these estimates can't drift apart.
+# $/MTok pricing lives in classification_providers (price_for, imported above)
+# so the transports and these estimates can't drift apart.
 
 # Bound per-restaurant cost: menus longer than this are truncated. Matches
 # the scraper's combined-pages cap (scraper._MAX_COMBINED_CHARS) — multi-page
 # menus routinely exceed the old 24k bound, and truncation silently dropped
 # whole menu sections from classification.
 _MAX_MENU_CHARS = 50_000
+
+# DeepSeek output tokens per menu character, thinking included: thinking bills
+# as output and is most of it. Fitted to the 530 full runs recorded in July
+# 2026, where it matches the total within 0.1% (cross-validated). Rough for
+# small batches: groups of ~50 came out between 0.6x and 1.8x, and a single
+# restaurant is typically off by half. Refit if DeepSeek's model changes.
+_DEEPSEEK_OUTPUT_TOKENS_PER_CHAR = 2.71
+
+
+@lru_cache(maxsize=1)
+def _prompt_tokens() -> float:
+    """Instructions plus schema, resent with every call."""
+    return (len(_SYSTEM) + len(json.dumps(_SCHEMA))) / 4
 
 
 def estimate_cost(menu_chars: int, provider: str | None = None) -> float:
@@ -92,10 +108,11 @@ def estimate_cost(menu_chars: int, provider: str | None = None) -> float:
     provider (DeepSeek in this project), NOT the Anthropic API model. Flat-rate
     subscriptions (claude/codex) have no per-token cost, so they estimate $0.
 
-    Calibrated against observed runs: input is prompt overhead plus the menu
-    at ~4 chars/token; output dominates at ~110 tokens per dish, with dishes
-    running ~1 per 120 chars of menu text. An estimate, not a quote — the
-    dashboard shows the actual cost after a run and keeps it per restaurant.
+    DeepSeek is priced at the rate in effect now (it doubles at peak hours)
+    and calibrated against recorded runs; see the constant above. Anthropic
+    has no thinking output: ~110 tokens per dish, ~1 dish per 120 chars. An
+    estimate, not a quote — the dashboard shows the actual cost after a run
+    and keeps it per restaurant.
     """
     from classification_providers import (
         METERED_PROVIDERS,
@@ -114,11 +131,17 @@ def estimate_cost(menu_chars: int, provider: str | None = None) -> float:
         return 0.0  # flat-rate subscription — no per-token cost to estimate
 
     chars = min(max(menu_chars, 0), _MAX_MENU_CHARS)
-    in_price, out_price = _PRICES.get(model_for_provider(name), (0.14, 0.28))
-    input_tokens = 1_200 + chars / 4
-    # Dietary attributes, meal tags, and key ingredients make each extracted
-    # dish somewhat larger than the original vegan-only response.
-    output_tokens = 250 + (chars / 120) * 110
+    in_price, out_price = price_for(model_for_provider(name))
+    if name == "deepseek":
+        # Long menus are sent in chunks, each with the full prompt.
+        calls = max(1, math.ceil(chars / _CHUNK_TARGET_CHARS))
+        input_tokens = calls * _prompt_tokens() + chars / 4
+        output_tokens = chars * _DEEPSEEK_OUTPUT_TOKENS_PER_CHAR
+    else:
+        input_tokens = 1_200 + chars / 4
+        # Dietary attributes, meal tags, and key ingredients make each
+        # extracted dish somewhat larger than the vegan-only response.
+        output_tokens = 250 + (chars / 120) * 110
     return round(
         (input_tokens * in_price + output_tokens * out_price) / 1_000_000, 3
     )
