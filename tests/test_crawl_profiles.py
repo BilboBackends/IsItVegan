@@ -162,6 +162,8 @@ def test_ingest_passes_and_refreshes_learned_context(monkeypatch):
     )
     monkeypatch.setattr(ingest.db, "get_crawl_profile", lambda rid: profile)
     monkeypatch.setattr(ingest.db, "replace_menu_texts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ingest.db, "menu_hold_reason", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ingest.db, "record_menu_version", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         ingest.db,
         "record_crawl_success",

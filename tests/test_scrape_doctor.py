@@ -310,7 +310,8 @@ def test_success_pipeline_ingests_then_starts_deepseek(monkeypatch):
     result = api._finish_scrape_doctor_pipeline(42)
 
     assert calls == [
-        ("ingest", {"restaurant_id": 42}),
+        # The stored menu is the broken one here, so the guard must not keep it.
+        ("ingest", {"restaurant_id": 42, "accept_changes": True}),
         (
             "classify",
             {

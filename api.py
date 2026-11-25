@@ -27,6 +27,7 @@ import db
 import discover
 import enrich
 import ingest
+import menu_guard
 import menu_audit
 from classification_providers import ProviderUnavailable, provider_status, resolve_provider
 from config import settings
@@ -389,6 +390,7 @@ def run_ingest() -> object:
     """Trigger Phase 1 menu-text ingestion.
 
     With {"restaurant_id": N}: synchronous, returns that scrape's result.
+    Adding "accept_changes": true takes a menu that menu_guard held back.
     Bulk ({}, {"all": true}, or {"stale_days": N}): starts a background job
     and returns 202 immediately — poll GET /api/ingest/status for progress.
     """
@@ -412,7 +414,10 @@ def run_ingest() -> object:
                         {"error": "Wait for the active classification before scraping menus."}
                     ), 409
             try:
-                result = ingest.run(restaurant_id=restaurant_id)
+                result = ingest.run(
+                    restaurant_id=restaurant_id,
+                    accept_changes=payload.get("accept_changes") is True,
+                )
             except SystemExit as exc:  # e.g. restaurant has no website
                 return jsonify({"error": str(exc)}), 400
             except Exception as exc:
@@ -601,8 +606,11 @@ def scrape_fix_endpoint() -> object:
 
 
 def _finish_scrape_doctor_pipeline(restaurant_id: int) -> str:
-    """Persist the repaired menu, then start reconnectable DeepSeek work."""
-    result = ingest.run(restaurant_id=restaurant_id)
+    """Persist the repaired menu, then start reconnectable DeepSeek work.
+
+    The stored menu is the thing being repaired, so it isn't worth guarding.
+    """
+    result = ingest.run(restaurant_id=restaurant_id, accept_changes=True)
     if result["succeeded"] != 1 or result["failed"]:
         detail = result.get("failures") or "scrape still failed"
         raise RuntimeError(f"re-scrape failed: {detail}")
@@ -633,6 +641,8 @@ def scrape_failures_endpoint() -> object:
     the Admin "why did this menu fail" panel."""
     db.init_db()
     failures = db.scrape_failures()
+    for failure in failures:
+        failure["held"] = menu_guard.HELD_PREFIX in (failure["last_error"] or "")
     return jsonify({"count": len(failures), "failures": failures})
 
 
@@ -891,6 +901,15 @@ def google_usage_endpoint() -> object:
 
     db.init_db()
     return jsonify({**google_usage.usage(), "refresh": enrich.refresh_estimate()})
+
+
+@app.get("/api/restaurant-changes")
+def restaurant_changes_endpoint() -> object:
+    """Closures, renames, and moves found by past checks, by month."""
+    import restaurant_history
+
+    db.init_db()
+    return jsonify(restaurant_history.report())
 
 
 @app.post("/api/prospect")
@@ -1266,7 +1285,15 @@ def update_restaurant_archived(restaurant_id: int) -> object:
         return jsonify({"error": "archived must be true or false."}), 400
     if not db.set_restaurant_archived(restaurant_id, payload["archived"]):
         return jsonify({"error": "Restaurant not found."}), 404
-    return jsonify({"id": restaurant_id, "archived": payload["archived"]})
+    row = next(r for r in db.list_restaurants() if r["id"] == restaurant_id)
+    return jsonify(
+        {
+            "id": restaurant_id,
+            "archived": payload["archived"],
+            "refresh_enabled": row["refresh_enabled"],
+            "is_consumer_venue": is_consumer_food_venue(row),
+        }
+    )
 
 
 @app.patch("/api/restaurants/<int:restaurant_id>/refresh-enabled")

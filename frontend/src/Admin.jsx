@@ -207,6 +207,115 @@ function GoogleUsagePanel({ usage }) {
   );
 }
 
+// What each finding is and where it leaves the restaurant.
+const RESTAURANT_CHANGES = [
+  ["closed", "Closed for good", "Archived: off the site, data kept. Restore it from the Archived tab."],
+  ["moved_listing", "Moved to a new listing", "Old listing archived. Add the new one from Prospect."],
+  ["temporarily_closed", "Temporarily closed", "Still active, marked temporarily closed."],
+  ["reopened", "Reopened", "Active again."],
+  ["name_review", "May be a different restaurant", "Still active under its old name until you decide."],
+  ["missing", "Not found on Google", "Still active. Google no longer recognizes the listing."],
+  ["relocated", "New address", "Address and map pin updated."],
+  ["renamed", "Renamed", "Name updated."],
+];
+
+function restaurantChangeDetail(change) {
+  if (["renamed", "name_review"].includes(change.change_type)) return `now ${change.new_value}`;
+  if (change.change_type === "relocated") return `now ${change.new_value}`;
+  return null;
+}
+
+function RestaurantChangesPanel({ months }) {
+  const [open, setOpen] = useState(null); // `${month}:${change_type}`
+  return (
+    <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-bold text-slate-900">Restaurant changes</h2>
+        <span className="text-xs text-slate-400">kept from every closure check</span>
+      </div>
+      {months.length === 0 && (
+        <p className="text-xs text-slate-400">No closure checks yet.</p>
+      )}
+      <div className="space-y-4">
+        {months.map((m) => {
+          const [year, month] = m.month.split("-").map(Number);
+          const title = new Date(year, month - 1, 1).toLocaleDateString([], {
+            month: "long",
+            year: "numeric",
+          });
+          const shown = RESTAURANT_CHANGES.find(([type]) => open === `${m.month}:${type}`);
+          return (
+            <div key={m.month}>
+              <div className="text-xs text-slate-600">
+                <strong className="text-slate-900">{title}</strong> ·{" "}
+                {m.checked.toLocaleString()} checked
+                {m.closure_rate != null && (
+                  <>
+                    {" "}· <strong>{m.closure_rate}% closed</strong>
+                    {m.vegan_meals_lost > 0 &&
+                      `, taking ${m.vegan_meals_lost.toLocaleString()} vegan meal${m.vegan_meals_lost === 1 ? "" : "s"} off the site`}
+                  </>
+                )}
+              </div>
+              {m.metros.length > 1 && (
+                <div className="mt-0.5 text-xs text-slate-400">
+                  {m.metros
+                    .filter((x) => x.checked > 0)
+                    .map(
+                      (x) =>
+                        `${x.metro}: ${x.closed} of ${x.checked.toLocaleString()} closed (${x.rate}%)`
+                    )
+                    .join(" · ")}
+                </div>
+              )}
+              <div className="mt-2 flex flex-wrap gap-2">
+                {RESTAURANT_CHANGES.filter(([type]) => m.counts[type]).map(([type, label]) => {
+                  const key = `${m.month}:${type}`;
+                  return (
+                    <button
+                      key={type}
+                      onClick={() => setOpen(open === key ? null : key)}
+                      aria-expanded={open === key}
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                        open === key
+                          ? "border-slate-700 bg-slate-700 text-white"
+                          : "border-slate-300 text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {label} {m.counts[type]}
+                    </button>
+                  );
+                })}
+              </div>
+              {shown && (
+                <div className="mt-2 rounded-lg bg-slate-50 p-3 text-xs">
+                  <p className="mb-2 font-semibold text-slate-700">{shown[2]}</p>
+                  <ul className="max-h-72 space-y-1 overflow-y-auto">
+                    {m.changes
+                      .filter((change) => change.change_type === shown[0])
+                      .sort((a, b) => b.vegan_meals - a.vegan_meals || b.dishes - a.dishes)
+                      .map((change) => (
+                        <li key={change.id} className="text-slate-600">
+                          <span className="font-medium text-slate-900">
+                            {change.restaurant_name}
+                          </span>{" "}
+                          · {change.area}
+                          {restaurantChangeDetail(change) && ` · ${restaurantChangeDetail(change)}`}
+                          {change.dishes > 0 &&
+                            ` · ${change.dishes} dish${change.dishes === 1 ? "" : "es"}, ${change.vegan_meals} vegan meal${change.vegan_meals === 1 ? "" : "s"}`}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 const CHANGE_STYLES = {
   added: "bg-emerald-100 text-emerald-800",
   removed: "bg-rose-100 text-rose-700",
@@ -294,13 +403,16 @@ function ScrapeFailuresPanel({ doctor, onStartDoctor }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doctor?.running, doctor?.verdict, doctor?.restaurant_id]);
 
-  async function retry(failure) {
+  async function retry(failure, acceptChanges = false) {
     setRetrying(failure.id);
     try {
       await fetch("/api/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ restaurant_id: failure.id }),
+        body: JSON.stringify({
+          restaurant_id: failure.id,
+          accept_changes: acceptChanges,
+        }),
       });
       await load();
     } finally {
@@ -380,6 +492,16 @@ function ScrapeFailuresPanel({ doctor, onStartDoctor }) {
                   >
                     {retrying === f.id ? "Scraping…" : "Retry"}
                   </button>
+                  {f.held && (
+                    <button
+                      onClick={() => retry(f, true)}
+                      disabled={retrying !== null || Boolean(doctor?.running)}
+                      className="rounded-lg border border-amber-300 px-2.5 py-1 text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                      title="Scrape again and replace the stored menu, even though the new page is missing most of its dishes. Check the website first."
+                    >
+                      Use new menu
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setOpen(true);
@@ -2201,6 +2323,7 @@ export default function Admin() {
   const [qualityBusy, setQualityBusy] = useState(null);
   const [providerUsage, setProviderUsage] = useState(null); // subscription limits
   const [googleUsage, setGoogleUsage] = useState(null); // Places calls this month
+  const [restaurantChanges, setRestaurantChanges] = useState(null); // closure history
   const [selectedIds, setSelectedIds] = useState([]);
   const [classifierProvider, setClassifierProvider] = useState("deepseek");
   // Scrape Doctor is shared by the failures panel and every restaurant row.
@@ -2241,12 +2364,13 @@ export default function Admin() {
       // Price the cost estimates against the provider currently selected in
       // the classify controls, so the pre-run number matches the button.
       const providerParam = encodeURIComponent(classifierProvider);
-      const [rRes, cRes, reportRes, usageRes, googleRes] = await Promise.all([
+      const [rRes, cRes, reportRes, usageRes, googleRes, changesRes] = await Promise.all([
         fetch(`/api/restaurants?include_excluded=true&provider=${providerParam}`),
         fetch("/api/config"),
         fetch("/api/reports?status=open"),
         fetch("/api/provider-usage"),
         fetch("/api/google-usage"),
+        fetch("/api/restaurant-changes"),
       ]);
       if (!rRes.ok) throw new Error(`/api/restaurants ${rRes.status}`);
       const rData = await rRes.json();
@@ -2258,6 +2382,7 @@ export default function Admin() {
       if (reportRes.ok) setReports((await reportRes.json()).reports || []);
       if (usageRes.ok) setProviderUsage(await usageRes.json());
       if (googleRes.ok) setGoogleUsage(await googleRes.json());
+      if (changesRes.ok) setRestaurantChanges((await changesRes.json()).months);
       scheduleMenuQuality();
     } catch (e) {
       setError(e.message || "Failed to load. Is the backend running on :5000?");
@@ -2804,9 +2929,17 @@ export default function Admin() {
       body: JSON.stringify({ archived }),
     });
     if (!response.ok) return;
+    const saved = await response.json();
     setRestaurants((current) =>
       current.map((item) =>
-        item.id === restaurant.id ? { ...item, archived: archived ? 1 : 0 } : item
+        item.id === restaurant.id
+          ? {
+              ...item,
+              archived: archived ? 1 : 0,
+              refresh_enabled: saved.refresh_enabled,
+              is_consumer_venue: saved.is_consumer_venue,
+            }
+          : item
       )
     );
   }
@@ -2941,28 +3074,35 @@ export default function Admin() {
     () => restaurants.reduce((sum, r) => sum + (r.vegan_sides || 0), 0),
     [restaurants]
   );
-  const staleMenus = useMemo(
-    () => restaurants.filter((restaurant) => isMenuStale(restaurant.menu_fetched_at)).length,
+  // What bulk runs will actually touch: the backend skips archived, hidden,
+  // non-food, and paused rows, so counts and estimates must too.
+  const refreshable = useMemo(
+    () => restaurants.filter((r) => !r.archived && r.is_consumer_venue && r.refresh_enabled),
     [restaurants]
   );
+  const classifiable = useMemo(
+    () => refreshable.filter((r) => r.has_menu_text),
+    [refreshable]
+  );
+  const staleMenus = useMemo(
+    () => refreshable.filter((r) => r.website_url && isMenuStale(r.menu_fetched_at)).length,
+    [refreshable]
+  );
   const unclassified = useMemo(
-    () =>
-      restaurants.filter((r) => r.has_menu_text && (r.dish_count || 0) === 0)
-        .length,
-    [restaurants]
+    () => classifiable.filter((r) => (r.dish_count || 0) === 0).length,
+    [classifiable]
   );
   // Pre-run cost estimates (from menu size): everything vs. only-new.
   const classifyCostAll = useMemo(
-    () =>
-      restaurants.reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
-    [restaurants]
+    () => classifiable.reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
+    [classifiable]
   );
   const classifyCostNew = useMemo(
     () =>
-      restaurants
-        .filter((r) => r.has_menu_text && (r.dish_count || 0) === 0)
+      classifiable
+        .filter((r) => (r.dish_count || 0) === 0)
         .reduce((sum, r) => sum + (r.classify_estimate || 0), 0),
-    [restaurants]
+    [classifiable]
   );
   const resolvedClassifierProvider =
     classifierProvider === "auto"
@@ -3505,7 +3645,7 @@ export default function Admin() {
           >
             Classifier: {classifierProviderLabel}
             {classifierUsesApi &&
-              ` · re-running all ${withMenuText} ≈ $${classifyCostAll.toFixed(2)}`}
+              ` · re-running all ${classifiable.length} ≈ $${classifyCostAll.toFixed(2)}`}
             {deepseekRate && (
               <>
                 {` now (${rateNow}), $${atOtherRate(classifyCostAll).toFixed(2)} ${rateOther}`}
@@ -3641,6 +3781,7 @@ export default function Admin() {
         )}
 
         {googleUsage && <GoogleUsagePanel usage={googleUsage} />}
+        {restaurantChanges && <RestaurantChangesPanel months={restaurantChanges} />}
 
         <ScrapeDoctorStatus doctor={doctor} />
         <ScrapeFailuresPanel doctor={doctor} onStartDoctor={startDoctor} />
@@ -4146,6 +4287,21 @@ export default function Admin() {
                         title={r.editorial_summary || ""}
                       >
                         {r.name}
+                        {["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"].includes(
+                          r.business_status
+                        ) && (
+                          <span
+                            className={`ml-2 whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              r.business_status === "CLOSED_PERMANENTLY"
+                                ? "bg-rose-100 text-rose-800"
+                                : "bg-amber-100 text-amber-800"
+                            }`}
+                          >
+                            {r.business_status === "CLOSED_PERMANENTLY"
+                              ? "closed for good"
+                              : "temporarily closed"}
+                          </span>
+                        )}
                         {!r.is_consumer_venue && (
                           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
                             {r.consumer_hidden ? "hidden from Explore" : "non-restaurant"}
@@ -4158,18 +4314,28 @@ export default function Admin() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <label className="inline-flex cursor-pointer items-center gap-2" title={r.refresh_enabled ? "Included in bulk refresh jobs" : "Paused from bulk refresh jobs"}>
+                        <label
+                          className={`inline-flex items-center gap-2 ${r.archived ? "cursor-not-allowed" : "cursor-pointer"}`}
+                          title={
+                            r.archived
+                              ? "Archived restaurants are never refreshed. Restore it first."
+                              : r.refresh_enabled
+                                ? "Included in bulk refresh jobs"
+                                : "Paused from bulk refresh jobs"
+                          }
+                        >
                           <input
                             type="checkbox"
                             checked={Boolean(r.refresh_enabled)}
                             onChange={() => toggleRefreshEnabled(r)}
-                            className="h-4 w-4 rounded border-slate-300 accent-emerald-600"
+                            disabled={Boolean(r.archived)}
+                            className="h-4 w-4 rounded border-slate-300 accent-emerald-600 disabled:cursor-not-allowed"
                             aria-label={`Enable refreshes for ${r.name}`}
                           />
                           <span className={`text-[10px] font-bold uppercase tracking-wide ${
                             r.refresh_enabled ? "text-emerald-700" : "text-slate-400"
                           }`}>
-                            {r.refresh_enabled ? "on" : "paused"}
+                            {r.refresh_enabled ? "on" : r.archived ? "off" : "paused"}
                           </span>
                         </label>
                       </td>

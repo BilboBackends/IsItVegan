@@ -57,6 +57,12 @@ _HTTP_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Some hosts (seen on 16 sites sharing one provider, Nov 2026) hang up on the
+# browser-ish UA above: an outdated Chrome reads as a fake browser. They serve
+# the plain bot name, and the robots.txt files checked allow it.
+_PLAIN_USER_AGENT = "VeganFindBot/0.1"
+_plain_ua_hosts: set[str] = set()
+
 # Tags whose text is never menu content.
 _STRIP_TAGS = ["script", "style", "noscript", "svg", "head", "nav", "footer"]
 
@@ -523,6 +529,20 @@ def _structured_counts(text: str) -> tuple[int, int]:
     )
 
 
+def _get(client: httpx.Client, url: str) -> httpx.Response:
+    """client.get that goes by our plain name on hosts that hang up otherwise."""
+    host = urlparse(url).netloc.lower()
+    plain = {"User-Agent": _PLAIN_USER_AGENT}
+    if host in _plain_ua_hosts:
+        return client.get(url, headers=plain)
+    try:
+        return client.get(url)
+    except httpx.RemoteProtocolError:
+        resp = client.get(url, headers=plain)
+        _plain_ua_hosts.add(host)
+        return resp
+
+
 def _fetch(client: httpx.Client, url: str) -> _Fetched:
     """Fetch one URL: HTML, PDF bytes, or a classified error (never raises).
 
@@ -532,11 +552,11 @@ def _fetch(client: httpx.Client, url: str) -> _Fetched:
     and from location filtering.
     """
     try:
-        resp = client.get(url)
+        resp = _get(client, url)
         for _ in range(_TRANSIENT_FORBIDDEN_RETRIES):
             if resp.status_code != 403:
                 break
-            resp = client.get(url)
+            resp = _get(client, url)
     except httpx.HTTPError as exc:
         if not _is_cert_verify_error(exc):
             return _Fetched(error=f"{type(exc).__name__}: {exc}")
@@ -892,7 +912,7 @@ def _fetch_pdf_pages(pdf_urls: list[str]) -> list[tuple[str, str]]:
     ) as client:
         for pdf_url in pdf_urls[:_MAX_PDF_FETCHES]:
             try:
-                resp = client.get(pdf_url)
+                resp = _get(client, pdf_url)
             except httpx.HTTPError as exc:
                 if not _is_cert_verify_error(exc):
                     continue

@@ -34,6 +34,8 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterator
@@ -46,8 +48,8 @@ if hasattr(sys.stdout, "reconfigure"):
 import db
 import google_usage
 from config import settings
+from location_filter import area_from_address, metro_from_area
 from places_client import (
-    _names_overlap,
     _RateGate,
     distance_meters,
     fetch_place_details,
@@ -74,6 +76,26 @@ REFRESH_MAX_CALLS = 1_500
 
 # Smaller shifts are Google nudging a pin, not a restaurant moving.
 _RELOCATED_METERS = 200.0
+
+# Words that say what a place is, not which one. Sharing only these means
+# nothing: "Z Cafe Restaurant" became "Ngoc Ha Vietnamese Restaurant".
+_GENERIC_NAME_WORDS = frozenset(
+    """
+    a an and at by de el for in la of on the to with
+    bakery bar bbq barbecue bistro bowl bowls brewery brewing buffet burger
+    burgers cafe cafeteria catering chicken co coffee company cream cuisine
+    deli delivery dessert desserts diner donut donuts eatery eats express fare
+    food foods fresh fried garden gourmet grill grille hall house ice inc juice
+    kitchen llc lounge market noodle noodles pasta pastries pho pizza pizzeria
+    poke pub ramen restaurant restaurante ristorante salad sandwich sandwiches
+    seafood shop smoothie smoothies spot steak steakhouse street sub subs sushi
+    taco tacos taqueria tavern tea truck wine wings
+    american asian caribbean chinese cuban french greek indian italian
+    jamaican japanese korean latin mediterranean mexican peruvian thai
+    turkish vegan vegetarian venezuelan vietnamese
+    downtown east north south west
+    """.split()
+)
 
 _NEVER = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -213,7 +235,14 @@ def _fetch_each(
         except (httpx.HTTPError, ValueError) as exc:
             reason = _failure_text(exc)
             kind = _failure_kind(exc)
-            tally.failed.append({"id": t["id"], "name": t["name"], "error": reason})
+            code = (
+                exc.response.status_code
+                if isinstance(exc, httpx.HTTPStatusError)
+                else None
+            )
+            tally.failed.append(
+                {"id": t["id"], "name": t["name"], "error": reason, "code": code}
+            )
             print(f"  [fail] {t['name']} — {reason}")
             outages_in_a_row = outages_in_a_row + 1 if kind == "outage" else 0
             if kind == "account":
@@ -284,6 +313,58 @@ def _same_name(a: str, b: str) -> bool:
     return plain(a) == plain(b)
 
 
+def _name_words(name: str) -> set[str]:
+    plain = unicodedata.normalize("NFKD", name.casefold())
+    plain = "".join(c for c in plain if not unicodedata.combining(c))
+    return set(re.findall(r"\w+", re.sub(r"['\u2018\u2019]s\b", "", plain)))
+
+
+def _resembles(old: str, new: str, address: str | None) -> bool:
+    """Whether a new name reads as the same business, lightly edited.
+
+    The distinctive words of one must all appear in the other; what kind of
+    place it is and where it is don't count. Unsure means no: a wrong yes puts
+    one restaurant's dishes under another's name.
+    """
+    old_words, new_words = _name_words(old), _name_words(new)
+    ignored = _GENERIC_NAME_WORDS | _name_words(address or "")
+    a, b = old_words - ignored, new_words - ignored
+    if not a or not b:  # nothing distinctive, so compare everything
+        a, b = old_words, new_words
+    return a <= b or b <= a
+
+
+class _History:
+    """Keeps what a job found (db.restaurant_changes); nothing on a dry run."""
+
+    def __init__(self, observed_at: str, dry_run: bool, check_id: int | None = None):
+        self.observed_at = observed_at
+        self.dry_run = dry_run
+        self.check_id = check_id
+        self._counts: dict[int, dict] | None = None
+
+    def note(
+        self, row: dict, change: str, old: str | None = None, new: str | None = None
+    ) -> None:
+        if self.dry_run:
+            return
+        if self._counts is None:  # one query, and only when something changed
+            self._counts = db.verdict_counts_by_restaurant()
+        area = area_from_address(row.get("address"))
+        db.record_restaurant_change(
+            row["id"],
+            change,
+            name=row["name"],
+            area=area,
+            metro=metro_from_area(area),
+            observed_at=self.observed_at,
+            check_id=self.check_id,
+            old_value=old,
+            new_value=new,
+            vegan_meals=(self._counts.get(row["id"]) or {}).get("vegan_meals", 0),
+        )
+
+
 def refresh(
     do_all: bool = False,
     dry_run: bool = False,
@@ -296,6 +377,8 @@ def refresh(
     is saved only when it resembles the old one. Otherwise the listing may be
     a different restaurant whose menu we don't have, so it is reported on
     every check until someone deals with it.
+
+    Every check and change is kept; restaurant_history.py reports on them.
     """
     if not do_all and stale_days is None:
         raise ValueError("refresh needs do_all or stale_days.")
@@ -311,41 +394,58 @@ def refresh(
     reopened: list[dict] = []
     renamed: list[dict] = []
     relocated: list[dict] = []
+    checked_by_metro: Counter[str] = Counter()
+    check_id = db.start_status_check(now) if targets and not dry_run else None
+    history = _History(now, dry_run, check_id)
 
     gate = _RateGate(_REFRESH_CALLS_PER_SECOND)
-    with httpx.Client(timeout=30.0) as client:
+    client = httpx.Client(timeout=30.0)
 
-        def fetch(place_id: str) -> dict:
-            gate.wait()
-            return fetch_place_status(
-                place_id, api_key=settings.google_places_api_key, client=client
-            )
+    def fetch(place_id: str) -> dict:
+        gate.wait()
+        return fetch_place_status(
+            place_id, api_key=settings.google_places_api_key, client=client
+        )
 
+    try:
         for t, found in _fetch_each(targets, fetch, tally):
             row = {"id": t["id"], "name": t["name"]}
+            checked_by_metro[
+                metro_from_area(area_from_address(t.get("address")))
+            ] += 1
             before, after = t.get("business_status"), found["business_status"]
             gone = after == "CLOSED_PERMANENTLY"
 
             if gone and found["moved_place_id"]:
                 moved_listing.append({**row, "place_id": found["moved_place_id"]})
+                history.note(t, "moved_listing", new=found["moved_place_id"])
                 print(f"  [moved] {t['name']} → listing {found['moved_place_id']}")
             elif gone:
                 closed.append(row)
+                history.note(t, "closed", old=before)
                 print(f"  [closed] {t['name']}")
             elif after == "CLOSED_TEMPORARILY" and before != after:
                 temporarily_closed.append(row)
+                history.note(t, "temporarily_closed")
                 print(f"  [temporarily closed] {t['name']}")
             elif after == "OPERATIONAL" and before == "CLOSED_TEMPORARILY":
                 reopened.append(row)
+                history.note(t, "reopened")
                 print(f"  [reopened] {t['name']}")
 
             new_name = found["name"]
             if new_name and _same_name(new_name, t["name"]):
                 new_name = None
-            review = bool(new_name) and not _names_overlap(t["name"], new_name)
+            review = bool(new_name) and not _resembles(
+                t["name"], new_name, t.get("address")
+            )
             # A closed listing is leaving anyway; its name no longer matters.
             if new_name and not gone:
                 renamed.append({**row, "new_name": new_name, "review": review})
+                kind = "name_review" if review else "renamed"
+                # A flagged name comes back every check; it happened once.
+                if not db.has_restaurant_change(t["id"], kind, new_value=new_name):
+                    history.note(t, kind, old=t["name"], new=new_name)
                 label = "check name" if review else "renamed"
                 print(f"  [{label}] {t['name']} → {new_name}")
 
@@ -355,6 +455,9 @@ def refresh(
                 if meters > _RELOCATED_METERS:
                     relocated.append(
                         {**row, "meters": round(meters), "address": found["address"]}
+                    )
+                    history.note(
+                        t, "relocated", old=t.get("address"), new=found["address"]
                     )
                     print(f"  [address moved] {t['name']} → {found['address']}")
 
@@ -371,6 +474,26 @@ def refresh(
                 # Data is kept; Admin's Archived tab still shows it.
                 if gone:
                     db.set_restaurant_archived(t["id"], True)
+
+        by_id = {t["id"]: t for t in targets}
+        for f in tally.failed:
+            if f["code"] != 404:
+                continue
+            # Once per disappearance, not once per check that can't find it.
+            t = by_id[f["id"]]
+            since = _last_checked(t).isoformat()
+            if not db.has_restaurant_change(t["id"], "missing", since=since):
+                history.note(t, "missing")
+    finally:
+        client.close()
+        if check_id is not None:
+            db.finish_status_check(
+                check_id,
+                checked=tally.fetched,
+                failed=len(tally.failed),
+                stopped=tally.stopped,
+                checked_by_metro=checked_by_metro,
+            )
 
     print(
         f"\nDone. {tally.fetched} checked: {len(closed)} closed, "
@@ -411,6 +534,7 @@ def run(
     now = datetime.now(timezone.utc).isoformat()
     veg_yes = veg_no = veg_unknown = with_editorial = with_rating = 0
     tally = _Tally()
+    history = _History(now, dry_run)
 
     def fetch(place_id: str) -> dict:
         return fetch_place_details(
@@ -456,6 +580,8 @@ def run(
             # leaves consumer views and pipeline runs (data kept; Admin's
             # Archived tab still shows it).
             if details.get("business_status") == "CLOSED_PERMANENTLY":
+                if t.get("business_status") != "CLOSED_PERMANENTLY":
+                    history.note(t, "closed", old=t.get("business_status"))
                 db.set_restaurant_archived(t["id"], True)
                 print("          ⚠ CLOSED PERMANENTLY — auto-archived")
             # Persist the blurb as citable evidence alongside scraped menu text.

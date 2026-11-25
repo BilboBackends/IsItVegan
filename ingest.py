@@ -17,6 +17,10 @@ Runnable in isolation (per CLAUDE.md conventions):
 
     # Don't write to the DB, just report what would happen:
     python ingest.py --dry-run
+
+    # A re-scrape that lost most of a menu's dishes is held back (menu_guard).
+    # Take the new menu anyway:
+    python ingest.py --restaurant-id 12 --accept-changes
 """
 from __future__ import annotations
 
@@ -98,6 +102,7 @@ def run(
     restaurant_ids: list[int] | None = None,
     on_progress=None,
     should_stop=None,
+    accept_changes: bool = False,
 ) -> dict:
     """Scrape targets; on_progress (optional) receives event dicts so a live
     caller (the Admin dashboard) can show progress: {"total": N} once targets
@@ -107,6 +112,9 @@ def run(
     restaurant; when it returns True the loop exits cleanly, keeping every
     menu scraped so far. It cannot interrupt a scrape already in flight — a
     hung headless browser is unstuck separately by killing its processes.
+
+    accept_changes takes the new menu even when menu_guard would keep the
+    stored one.
     """
     def _emit(event: dict) -> None:
         if on_progress is not None:
@@ -134,9 +142,27 @@ def run(
             crawl_context=crawl_profile,
             address=t.get("address"),
         )
-        if result.ok:
+        pages = result.pages or [(result.menu_url or result.url, result.text)]
+        held = (
+            db.menu_hold_reason(t["id"], pages)
+            if result.ok and not accept_changes
+            else None
+        )
+        if held:
+            # Not a scrape failure the photo ladder should spend money on:
+            # the page was read, it just isn't trusted over what's stored.
+            failed += 1
+            failures.append((t["name"], held))
+            if not dry_run:
+                db.record_crawl_failure(
+                    t["id"], held, attempted_at=now, diagnostics=result.diagnostics
+                )
+            print(f"  [held] {t['name']}  — {held}")
+            _emit({"result": {
+                "name": t["name"], "ok": False, "held": True, "error": held,
+            }})
+        elif result.ok:
             succeeded += 1
-            pages = result.pages or [(result.menu_url or result.url, result.text)]
             changed = (
                 not crawl_profile
                 or not crawl_profile.get("content_hash")
@@ -204,7 +230,7 @@ def run(
             photo = None
             if not dry_run and not social_dead_end:
                 try:
-                    photo = photo_menu.run(t["id"])
+                    photo = photo_menu.run(t["id"], accept_changes=accept_changes)
                 except Exception as exc:  # fallback must never kill the batch
                     print(f"  [photo] fallback error: {exc}")
             if photo is not None and photo.ok:
@@ -272,12 +298,20 @@ def main() -> None:
         "--dry-run", action="store_true",
         help="Report results without writing to the database.",
     )
+    parser.add_argument(
+        "--accept-changes", action="store_true",
+        help="Take the new menu even if it lost most of the known dishes "
+        "(needs --restaurant-id).",
+    )
     args = parser.parse_args()
+    if args.accept_changes and args.restaurant_id is None:
+        parser.error("--accept-changes needs --restaurant-id")
     run(
         restaurant_id=args.restaurant_id,
         do_all=args.all,
         dry_run=args.dry_run,
         stale_days=args.stale_days,
+        accept_changes=args.accept_changes,
     )
 
 

@@ -224,6 +224,10 @@ the longest-unchecked first. A failed restaurant is listed and keeps its old
 data; the run stops early on key, billing, or quota errors, or after five
 outages in a row. `--dry-run` skips writing but still makes the calls.
 
+Every check and change is kept, with dish counts as they were at the time:
+Admin's "Restaurant changes" panel shows closure rates by month and metro, and
+`python restaurant_history.py` prints them.
+
 The app counts its own successful calls per tier, since an API key can't read
 Google's usage. Admin shows free calls left and the cost past them, and each
 run prints its quote first. If Google's billing report disagrees, correct it:
@@ -254,7 +258,19 @@ python ingest.py --restaurant-id 30
 
 # Preview without writing:
 python ingest.py --dry-run
+
+# Take a new menu that was held back (see below):
+python ingest.py --restaurant-id 30 --accept-changes
 ```
+
+A re-scrape that would lose most of a menu's known dishes is held back and the
+stored menu kept (`menu_guard.py`): the page is mostly different, much shorter,
+or missing dishes with nothing new. Held menus appear under Scrape failures in
+Admin with the reason and a "Use new menu" button. New restaurants, and menus
+with fewer than five recognizable dishes, are never held.
+
+Hosts that drop the scraper's browser-like headers are asked again as
+`VeganFindBot/0.1`.
 
 The scraper follows menu-like links two hops deep (menu index pages link out
 to per-section pages), always probes the conventional `/menu` path (JS-built
@@ -477,9 +493,11 @@ headless.py                 # Playwright fetch: scroll banking, tab clicking, fr
 menu_score.py               # heuristic: is this text a real menu vs homepage copy?
 menu_audit.py               # automated menu-quality audit (Admin warnings)
 ingest.py                   # ingestion CLI: scrape + persist menu text + versions
+menu_guard.py               # keeps a stored menu when a re-scrape comes back worse
 llm_nav.py                  # cheap LLM (Haiku) menu-link chooser + vision fallback
 pdf_menu.py                 # PDF menu extraction (pypdf local + Claude PDF fallback)
 enrich.py                   # Google food signals (vegetarian, editorial, rating, hours)
+restaurant_history.py       # closures, renames, and moves found over time
 google_usage.py             # Google calls used, free calls left, cost past them
 classifier.py               # dish extraction + vegan verdicts (full + delta modes)
 classification_providers.py # DeepSeek classification transport (no fallback)

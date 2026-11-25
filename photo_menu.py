@@ -42,7 +42,7 @@ from bs4 import BeautifulSoup
 import db
 from config import settings
 from menu_score import score_menu_text
-from scraper import _HTTP_HEADERS
+from scraper import _HTTP_HEADERS, _get
 
 # Candidate filtering. Menu images are big; icons, sprites, and nav glyphs
 # (Square ships a literal menu.svg hamburger) are not.
@@ -340,9 +340,10 @@ def _candidate_page_urls(restaurant: dict, db_path: str | None = None) -> list[s
 
 def _fetch(url: str) -> httpx.Response | None:
     try:
-        return httpx.get(
-            url, headers=_HTTP_HEADERS, follow_redirects=True, timeout=30
-        )
+        with httpx.Client(
+            headers=_HTTP_HEADERS, follow_redirects=True, timeout=30
+        ) as client:
+            return _get(client, url)
     except httpx.HTTPError:
         return None
 
@@ -590,6 +591,7 @@ def run(
     restaurant_id: int,
     *,
     dry_run: bool = False,
+    accept_changes: bool = False,
     db_path: str | None = None,
 ) -> PhotoMenuResult:
     restaurant = next(
@@ -668,6 +670,15 @@ def run(
     score = score_menu_text(combined)
     content_hash = hashlib.sha256(combined.encode("utf-8")).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
+    held = (
+        None
+        if accept_changes
+        else db.menu_hold_reason(restaurant_id, pages, db_path=db_path)
+    )
+    if held:
+        return PhotoMenuResult(
+            ok=False, error=held, cost_estimate=cost, images_seen=seen
+        )
     if not dry_run:
         db.replace_menu_texts(restaurant_id, pages, fetched_at=now, db_path=db_path)
         db.record_menu_version(

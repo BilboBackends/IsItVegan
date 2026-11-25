@@ -91,6 +91,7 @@ def test_classify_can_stop_cleanly_between_restaurants(monkeypatch):
         "get_menu_text",
         lambda restaurant_id: {"id": restaurant_id, "content": "Vegan bowl $12"},
     )
+    monkeypatch.setattr(classify.db, "snapshot_dishes", lambda restaurant_id: {})
     stop_checks = iter([False, True])
 
     result = classify.run(
@@ -101,3 +102,48 @@ def test_classify_can_stop_cleanly_between_restaurants(monkeypatch):
 
     assert result["cancelled"] is True
     assert result["ok"] == 1
+
+
+def test_archiving_turns_refresh_off_and_restoring_turns_it_on(tmp_path):
+    path = str(tmp_path / "archive.db")
+    db.init_db(path)
+    db.upsert_restaurants(
+        [{"name": "Cafe", "place_id": "p1", "website_url": "https://x.com"}], path
+    )
+    rid = db.list_restaurants(path)[0]["id"]
+    db.set_restaurant_archived(rid, True, path)
+    assert db.list_restaurants(path)[0]["refresh_enabled"] == 0
+    db.set_restaurant_archived(rid, False, path)
+    assert db.list_restaurants(path)[0]["refresh_enabled"] == 1
+
+
+def test_archive_endpoint_returns_the_new_refresh_state(tmp_path, monkeypatch):
+    import dataclasses
+
+    import api
+
+    path = str(tmp_path / "archive_api.db")
+    monkeypatch.setattr(
+        db, "settings", dataclasses.replace(db.settings, database_path=path)
+    )
+    db.init_db()
+    db.upsert_restaurants(
+        [{"name": "Cafe", "place_id": "p1", "website_url": "https://x.com"}]
+    )
+    rid = db.list_restaurants()[0]["id"]
+    client = api.app.test_client()
+    for archived in (True, False):
+        body = client.patch(
+            f"/api/restaurants/{rid}/archived", json={"archived": archived}
+        ).get_json()
+        assert body["refresh_enabled"] == int(not archived)
+        assert body["is_consumer_venue"] is (not archived)
+
+
+def test_bulk_jobs_skip_archived_rows_whatever_the_switch_says(monkeypatch):
+    live, gone = _row(1), {**_row(2), "archived": 1}  # refresh still enabled
+    monkeypatch.setattr(db, "list_restaurants", lambda *a, **kw: [live, gone])
+    assert [t["id"] for t in ingest._targets(None, True)] == [1]
+    assert [t["id"] for t in ingest._targets(None, False, None, [1, 2])] == [1]
+    assert [t["id"] for t in classify._targets(None, True)] == [1]
+    assert [t["id"] for t in classify._targets(None, False, [1, 2])] == [1]

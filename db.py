@@ -236,6 +236,39 @@ CREATE TABLE IF NOT EXISTS reports (
 -- Human disposition of an automated menu-audit finding. The fingerprint
 -- binds the decision to the exact menu/flags reviewed; changed source text or
 -- changed audit findings automatically become active again.
+-- One row per closure check (enrich.refresh), so closure rates have a
+-- denominator. checked_by_metro is JSON: {"Greater Orlando": 735, ...}.
+CREATE TABLE IF NOT EXISTS status_checks (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at       TEXT NOT NULL,
+    checked          INTEGER NOT NULL DEFAULT 0,  -- successful lookups
+    failed           INTEGER NOT NULL DEFAULT 0,
+    stopped          TEXT,                        -- why it ended early
+    checked_by_metro TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Restaurant-level history: closures, renames, moves (dish_changes is the
+-- dish-level one). Name, place, and dish counts are copied in so the numbers
+-- survive reclassification and permanent deletion, which clears restaurant_id.
+CREATE TABLE IF NOT EXISTS restaurant_changes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant_id   INTEGER REFERENCES restaurants(id),
+    check_id        INTEGER REFERENCES status_checks(id),
+    change_type     TEXT NOT NULL,   -- closed | moved_listing |
+                                     -- temporarily_closed | reopened | renamed |
+                                     -- name_review | relocated | missing
+    restaurant_name TEXT NOT NULL,
+    area            TEXT NOT NULL,
+    metro           TEXT NOT NULL,
+    dishes          INTEGER NOT NULL DEFAULT 0,
+    vegan_meals     INTEGER NOT NULL DEFAULT 0,  -- strict headline count
+    old_value       TEXT,
+    new_value       TEXT,
+    observed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_restaurant_changes_restaurant
+    ON restaurant_changes(restaurant_id, observed_at DESC);
+
 -- Successful Google Places calls per billing month and SKU (google_usage.py).
 -- The row with an empty month records when counting began.
 CREATE TABLE IF NOT EXISTS google_api_usage (
@@ -675,6 +708,102 @@ def update_place_status(
         )
 
 
+def start_status_check(started_at: str, db_path: str | None = None) -> int:
+    with connect(db_path) as conn:
+        return conn.execute(
+            "INSERT INTO status_checks (started_at) VALUES (?)", (started_at,)
+        ).lastrowid
+
+
+def finish_status_check(
+    check_id: int,
+    *,
+    checked: int,
+    failed: int,
+    stopped: str | None,
+    checked_by_metro: dict[str, int],
+    db_path: str | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE status_checks
+            SET checked = ?, failed = ?, stopped = ?, checked_by_metro = ?
+            WHERE id = ?
+            """,
+            (checked, failed, stopped, json.dumps(checked_by_metro), check_id),
+        )
+
+
+def record_restaurant_change(
+    restaurant_id: int,
+    change_type: str,
+    *,
+    name: str,
+    area: str,
+    metro: str,
+    observed_at: str,
+    check_id: int | None = None,
+    old_value: str | None = None,
+    new_value: str | None = None,
+    vegan_meals: int = 0,
+    db_path: str | None = None,
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO restaurant_changes
+                (restaurant_id, check_id, change_type, restaurant_name, area,
+                 metro, dishes, vegan_meals, old_value, new_value, observed_at)
+            VALUES (?, ?, ?, ?, ?, ?,
+                    (SELECT COUNT(*) FROM dishes WHERE restaurant_id = ?),
+                    ?, ?, ?, ?)
+            """,
+            (restaurant_id, check_id, change_type, name, area, metro,
+             restaurant_id, vegan_meals, old_value, new_value, observed_at),
+        )
+
+
+def has_restaurant_change(
+    restaurant_id: int,
+    change_type: str,
+    *,
+    new_value: str | None = None,
+    since: str | None = None,
+    db_path: str | None = None,
+) -> bool:
+    """Whether this is already on record, so a standing issue counts once."""
+    query = (
+        "SELECT 1 FROM restaurant_changes WHERE restaurant_id = ? AND change_type = ?"
+    )
+    params: list = [restaurant_id, change_type]
+    if new_value is not None:
+        query += " AND new_value = ?"
+        params.append(new_value)
+    if since is not None:
+        query += " AND observed_at >= ?"
+        params.append(since)
+    with connect(db_path) as conn:
+        return conn.execute(query + " LIMIT 1", params).fetchone() is not None
+
+
+def list_status_checks(db_path: str | None = None) -> list[dict]:
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT * FROM status_checks ORDER BY id").fetchall()
+    return [
+        {**dict(r), "checked_by_metro": json.loads(r["checked_by_metro"])} for r in rows
+    ]
+
+
+def list_restaurant_changes(db_path: str | None = None) -> list[dict]:
+    """Every recorded change, newest first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM restaurant_changes ORDER BY observed_at DESC, id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def record_classify_cost(
     restaurant_id: int,
     cost: float | None,
@@ -697,11 +826,14 @@ def set_restaurant_archived(
     restaurant_id: int, archived: bool, db_path: str | None = None
 ) -> bool:
     """Archive/restore a listing. Archived rows keep all their data but
-    leave the Admin working set, consumer views, and bulk pipeline runs."""
+    leave the Admin working set, consumer views, and bulk pipeline runs.
+
+    The refresh switch follows, so it never reads "on" for a row that bulk
+    runs skip; restoring turns it back on."""
     with connect(db_path) as conn:
         cur = conn.execute(
-            "UPDATE restaurants SET archived = ? WHERE id = ?",
-            (int(archived), restaurant_id),
+            "UPDATE restaurants SET archived = ?, refresh_enabled = ? WHERE id = ?",
+            (int(archived), int(not archived), restaurant_id),
         )
     return cur.rowcount > 0
 
@@ -800,6 +932,22 @@ def replace_menu_texts(
             params,
         )
         conn.execute(f"DELETE FROM sources WHERE {stale_predicate}", params)
+
+
+def menu_hold_reason(
+    restaurant_id: int, pages: list[tuple[str, str]], db_path: str | None = None
+) -> str | None:
+    """Why these pages shouldn't replace the stored menu (see menu_guard)."""
+    import menu_guard
+
+    stored = get_menu_text(restaurant_id, db_path)
+    if stored is None:
+        return None
+    return menu_guard.hold_reason(
+        stored["content"],
+        "\n\n".join(text for _, text in pages),
+        snapshot_dishes(restaurant_id, db_path),
+    )
 
 
 def get_crawl_profile(
@@ -2158,6 +2306,12 @@ def delete_restaurant(
         conn.execute("DELETE FROM dish_changes WHERE restaurant_id = ?", (restaurant_id,))
         conn.execute(
             "DELETE FROM menu_quality_reviews WHERE restaurant_id = ?",
+            (restaurant_id,),
+        )
+        # Closure statistics outlive the row they are about.
+        conn.execute(
+            "UPDATE restaurant_changes SET restaurant_id = NULL"
+            " WHERE restaurant_id = ?",
             (restaurant_id,),
         )
         conn.execute("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))

@@ -396,6 +396,44 @@ def test_similar_rename_is_saved_and_reported_once(seeded, google):
     assert enrich.refresh(do_all=True)["renamed"] == []
 
 
+ADDRESS = "1 N Orange Ave, Orlando, FL 32801, USA"
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [  # the first four are from the first real run, 2026-11-25
+        ("Z Cafe Restaurant", "Ngọc Hà Vietnamese Restaurant"),
+        ("Wo Sushi", "Wa sushi"),
+        ("The Boheme", "Libra Restaurant"),
+        ("Bread Pete", "Mel's Sunrise Cafe & Bakery"),
+        ("Orlando Thai Cafe", "Orlando Sushi House"),  # place and type only
+        ("Thai Cafe", "Thai House"),
+    ],
+)
+def test_names_sharing_only_generic_words_need_review(old, new):
+    assert not enrich._resembles(old, new, ADDRESS)
+    assert not enrich._resembles(new, old, ADDRESS)
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("Cuban’s Coco Loco", "Coco Loco Latin Grill"),
+        ("Jalapenos Mexican Eats", "Jalapeños Mexican Eats"),
+        ("Grain and Berry - Maitland", "Grain & Berry - Maitland"),
+        ("Koa Sushi & Poke II Mills 50", "Koa Sushi & Poke Mills 50"),
+        ("Lelulo's Pizza Life", "Lelulo's Pizzeria - Orlando"),
+        ("Curry Element", "CURRY ELEMENT ZABIHA HALAL INDO-PAK CHINESE CUISINE"),
+        ("GATEWAY TO INDIA [BAR & GRILL][AWARDED INDIAN CUISINE]",
+         "GATEWAY TO INDIA ORLANDO"),
+        ("Whole Foods Bakery", "Whole Foods Bakery Orlando"),
+        ("Pizza Kitchen", "Pizza Kitchen & Bar"),
+    ],
+)
+def test_lightly_edited_names_are_the_same_business(old, new):
+    assert enrich._resembles(old, new, ADDRESS)
+
+
 def test_punctuation_only_name_changes_are_not_reported(seeded, google):
     ids = seeded({"a": _days_ago(90)})
     google.status["a"] = _status(name="CAFE - A")

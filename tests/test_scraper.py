@@ -642,6 +642,52 @@ def test_fetch_retries_intermittent_forbidden_response():
     assert "Complete menu" in result.html
 
 
+class _HangsUpOnBrowsers:
+    """A host that drops our browser-ish UA but serves the plain bot name."""
+
+    def __init__(self, drops_plain=False):
+        self.sent: list[str | None] = []
+        self.drops_plain = drops_plain
+
+    def get(self, url, headers=None):
+        agent = (headers or {}).get("User-Agent")
+        self.sent.append(agent)
+        if agent is None or self.drops_plain:
+            raise scraper.httpx.RemoteProtocolError(
+                "Server disconnected without sending a response."
+            )
+        return SimpleNamespace(
+            status_code=200, headers={"content-type": "text/html"},
+            text="<html><body>Menu</body></html>", url=url,
+        )
+
+
+def test_fetch_gives_its_plain_name_to_hosts_that_hang_up(monkeypatch):
+    monkeypatch.setattr(scraper, "_plain_ua_hosts", set())
+    client = _HangsUpOnBrowsers()
+    assert "Menu" in scraper._fetch(client, "https://drop.example/").html
+    # The host is remembered, so later pages don't need to fail first.
+    assert "Menu" in scraper._fetch(client, "https://drop.example/menu").html
+    assert client.sent == [None, "VeganFindBot/0.1", "VeganFindBot/0.1"]
+
+
+def test_fetch_still_fails_when_a_host_hangs_up_on_both(monkeypatch):
+    monkeypatch.setattr(scraper, "_plain_ua_hosts", set())
+    client = _HangsUpOnBrowsers(drops_plain=True)
+    result = scraper._fetch(client, "https://down.example/")
+    assert result.html is None and "RemoteProtocolError" in result.error
+    # One retry only, and nothing learned from a host that is simply down.
+    assert len(client.sent) == 2
+    assert scraper._plain_ua_hosts == set()
+
+
+def test_other_hosts_keep_the_usual_headers(monkeypatch):
+    monkeypatch.setattr(scraper, "_plain_ua_hosts", {"drop.example"})
+    client = _FakeClient({"https://ok.example/": ("https://ok.example/", "<p>Hi</p>")})
+    # _FakeClient.get takes no headers, so passing any would raise.
+    assert scraper._fetch(client, "https://ok.example/").error is None
+
+
 def test_fetch_pdf_pages_retries_certificate_errors(monkeypatch):
     import pdf_menu
 
